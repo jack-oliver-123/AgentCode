@@ -1,10 +1,14 @@
 import { Box, Text } from 'ink';
-import React from 'react';
+import React, { useEffect, useState, type ReactElement } from 'react';
 
 import type { ChatMessage, ChatSessionDraft } from '../../session/types.js';
 
 const MAX_VISIBLE_MESSAGES = 8;
+const MAX_VISIBLE_MESSAGES_WITH_DRAFT = 5;
 const MAX_VISIBLE_TEXT_LENGTH = 1200;
+const ACTIVITY_FRAME_INTERVAL_MS = 120;
+const WAITING_FOR_FIRST_TOKEN_TEXT = 'Waiting for the first token…';
+const ACTIVITY_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧'] as const;
 
 export interface TranscriptPaneProps {
   messages: ChatMessage[];
@@ -12,33 +16,114 @@ export interface TranscriptPaneProps {
   showThinking: boolean;
 }
 
-export function TranscriptPane({ messages, draft, showThinking }: TranscriptPaneProps) {
-  const hiddenMessageCount = Math.max(0, messages.length - MAX_VISIBLE_MESSAGES);
-  const visibleMessages = messages.slice(-MAX_VISIBLE_MESSAGES);
+interface TranscriptMessageProps {
+  message: ChatMessage;
+}
+
+interface DraftMessageProps {
+  draft: ChatSessionDraft;
+  showThinking: boolean;
+}
+
+export function TranscriptPane({ messages, draft, showThinking }: TranscriptPaneProps): ReactElement {
+  const visibleMessageLimit = draft === undefined ? MAX_VISIBLE_MESSAGES : MAX_VISIBLE_MESSAGES_WITH_DRAFT;
+  const hiddenMessageCount = Math.max(0, messages.length - visibleMessageLimit);
+  const visibleMessages = messages.slice(-visibleMessageLimit);
+  const hasConversation = messages.length > 0 || draft !== undefined;
 
   return (
     <Box flexDirection="column" marginY={1} flexShrink={1} overflowY="hidden">
-      {messages.length === 0 ? <Text color="gray">Start a conversation by typing below.</Text> : null}
-      {hiddenMessageCount > 0 ? <Text color="gray">… {hiddenMessageCount} earlier messages hidden</Text> : null}
+      {!hasConversation ? (
+        <Box flexDirection="column">
+          <Text color="cyan">Ready for a new AgentCode conversation.</Text>
+          <Text color="gray">Ask a question about your project or describe what you want to explore.</Text>
+        </Box>
+      ) : null}
+      {hiddenMessageCount > 0 ? <Text color="gray">… {hiddenMessageCount} earlier messages hidden; latest context is shown below</Text> : null}
       {visibleMessages.map((message) => (
-        <Box key={message.id} flexDirection="column" marginBottom={1}>
-          <Text color={message.role === 'user' ? 'green' : 'magenta'}>{message.role === 'user' ? 'You' : 'AgentCode'}:</Text>
-          <Text wrap="wrap">{truncateText(message.parts.map((part) => part.text).join(''))}</Text>
-        </Box>
+        <TranscriptMessage key={message.id} message={message} />
       ))}
-      {draft !== undefined ? (
-        <Box flexDirection="column" marginBottom={1}>
-          <Text color="magenta">AgentCode:</Text>
-          <Text wrap="wrap">{truncateText(draft.visibleText, 'tail')}</Text>
-          {showThinking && draft.thinkingText.length > 0 ? (
-            <Text color="gray" wrap="wrap">
-              Thinking: {truncateText(draft.thinkingText, 'tail')}
-            </Text>
-          ) : null}
+      {draft !== undefined ? <DraftMessage draft={draft} showThinking={showThinking} /> : null}
+    </Box>
+  );
+}
+
+function TranscriptMessage({ message }: TranscriptMessageProps): ReactElement {
+  const text = truncateText(message.parts.map((part) => part.text).join(''));
+
+  if (message.role === 'user') {
+    return (
+      <Box marginBottom={1}>
+        <Box flexShrink={0} width={2}>
+          <Text color="blue">▌</Text>
         </Box>
+        <Box flexDirection="column" flexShrink={1}>
+          <Text color="cyan" wrap="wrap">{text}</Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box marginBottom={1} paddingLeft={2}>
+      <Text wrap="wrap">{text}</Text>
+    </Box>
+  );
+}
+
+function DraftMessage({ draft, showThinking }: DraftMessageProps): ReactElement {
+  const frame = useActivityFrame();
+  const visibleText = formatDraftVisibleText(draft.visibleText);
+  const statusText = formatDraftStatus(draft, showThinking);
+
+  return (
+    <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
+      <Text color="blue">{frame} {statusText}</Text>
+      <Text wrap="wrap">{visibleText}</Text>
+      {showThinking && draft.thinkingText.length > 0 ? (
+        <Text color="gray" wrap="wrap">
+          Thinking: {truncateText(draft.thinkingText, 'tail')}
+        </Text>
       ) : null}
     </Box>
   );
+}
+
+function useActivityFrame(): string {
+  const [frameIndex, setFrameIndex] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setFrameIndex((currentIndex) => (currentIndex + 1) % ACTIVITY_FRAMES.length);
+    }, ACTIVITY_FRAME_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  return ACTIVITY_FRAMES[frameIndex] ?? ACTIVITY_FRAMES[0];
+}
+
+function formatDraftVisibleText(visibleText: string): string {
+  if (visibleText.length === 0) {
+    return WAITING_FOR_FIRST_TOKEN_TEXT;
+  }
+
+  return truncateText(visibleText, 'tail');
+}
+
+function formatDraftStatus(draft: ChatSessionDraft, showThinking: boolean): string {
+  const hasVisibleText = draft.visibleText.length > 0;
+  const hasThinkingText = draft.thinkingText.length > 0;
+
+  if (!hasVisibleText && hasThinkingText) {
+    return showThinking ? 'Thinking' : 'Thinking · hidden';
+  }
+
+  if (!hasVisibleText) {
+    return 'Thinking';
+  }
+
+  return `Writing · ${draft.visibleText.length} chars`;
 }
 
 function truncateText(text: string, keep: 'head' | 'tail' = 'head'): string {

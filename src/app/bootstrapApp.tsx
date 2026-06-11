@@ -15,8 +15,9 @@ export interface BootstrapAppOptions extends LoadConfigOptions {
 
 export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<Instance> {
   const { cwd, fetch, homeDir, renderApp = render } = options;
+  const runtimeCwd = cwd ?? process.cwd();
   const resolvedConfig = await loadConfig({
-    ...(cwd !== undefined ? { cwd } : {}),
+    cwd: runtimeCwd,
     ...(homeDir !== undefined ? { homeDir } : {})
   });
   const provider = createProvider({
@@ -28,5 +29,5 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
     config: resolvedConfig.config
   });
 
-  return renderApp(<App controller={controller} resolvedConfig={resolvedConfig} />);
+  return renderApp(<App controller={controller} resolvedConfig={resolvedConfig} cwd={runtimeCwd} />);
 }

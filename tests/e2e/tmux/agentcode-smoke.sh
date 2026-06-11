@@ -220,8 +220,14 @@ run_tmux send-keys -t "$SESSION_NAME" -l "$PROJECT_DIR/start-agentcode.sh"
 run_tmux send-keys -t "$SESSION_NAME" C-m
 
 wait_for_pane_text 'Ask AgentCode' 10
+wait_for_pane_text 'ready' 5
+wait_for_pane_text 'model: e2e-openai-model' 5
+wait_for_pane_text 'provider: openai' 5
+wait_for_pane_text 'config: project' 5
 
 send_prompt 'hello from tmux'
+wait_for_pane_text 'generating' 5
+wait_for_pane_text 'Waiting for model response' 5
 wait_for_pane_text 'first' 5
 
 PARTIAL_PANE="$(capture_pane)"
