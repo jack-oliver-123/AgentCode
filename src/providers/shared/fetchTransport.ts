@@ -1,0 +1,122 @@
+import { AgentCodeError } from '../../shared/errors.js';
+import { createCancellationError, createNetworkError, createProtocolError, createProviderStatusError } from './errors.js';
+
+export interface FetchTransportOptions {
+  fetch?: typeof fetch;
+  timeoutMs: number;
+}
+
+export interface FetchJsonOptions {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: unknown;
+  signal?: AbortSignal;
+}
+
+export async function fetchJsonStream(
+  request: FetchJsonOptions,
+  options: FetchTransportOptions
+): Promise<ReadableStream<Uint8Array>> {
+  const fetchImpl = options.fetch ?? fetch;
+  const timeoutController = new AbortController();
+  let abortSource: 'timeout' | 'caller' | undefined;
+  const timeout = setTimeout(() => {
+    abortSource ??= 'timeout';
+    timeoutController.abort();
+  }, options.timeoutMs);
+  const signal = composeAbortSignals(timeoutController.signal, request.signal, (source) => {
+    abortSource ??= source;
+  });
+
+  try {
+    const init: RequestInit = {
+      method: request.method ?? 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'text/event-stream',
+        ...request.headers
+      },
+      signal
+    };
+
+    if (request.body !== undefined) {
+      init.body = JSON.stringify(request.body);
+    }
+
+    const response = await fetchImpl(request.url, init);
+
+    if (!response.ok) {
+      throw createProviderStatusError(response.status);
+    }
+
+    if (!isEventStreamResponse(response)) {
+      throw createProtocolError('Provider did not return a text/event-stream response.');
+    }
+
+    if (response.body === null) {
+      throw createNetworkError('Provider returned an empty streaming response body.');
+    }
+
+    return response.body;
+  } catch (error) {
+    if (error instanceof AgentCodeError) {
+      throw error;
+    }
+
+    if (isAbortError(error)) {
+      if (abortSource === 'caller') {
+        throw createCancellationError();
+      }
+
+      throw createNetworkError('Provider request timed out before the stream started.');
+    }
+
+    throw createNetworkError('Provider network request failed before the stream started.');
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isEventStreamResponse(response: Response): boolean {
+  return response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') ?? false;
+}
+
+function composeAbortSignals(
+  timeoutSignal: AbortSignal,
+  callerSignal: AbortSignal | undefined,
+  onAbort: (source: 'timeout' | 'caller') => void
+): AbortSignal {
+  if (callerSignal === undefined) {
+    return timeoutSignal;
+  }
+
+  const controller = new AbortController();
+  const abortFromTimeout = () => {
+    onAbort('timeout');
+    controller.abort();
+  };
+  const abortFromCaller = () => {
+    onAbort('caller');
+    controller.abort();
+  };
+
+  if (timeoutSignal.aborted) {
+    abortFromTimeout();
+    return controller.signal;
+  }
+
+  if (callerSignal.aborted) {
+    abortFromCaller();
+    return controller.signal;
+  }
+
+  timeoutSignal.addEventListener('abort', abortFromTimeout, { once: true });
+  callerSignal.addEventListener('abort', abortFromCaller, { once: true });
+
+  return controller.signal;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
