@@ -82,7 +82,7 @@ export class OpenAIProvider implements ChatModelProvider {
           if (sseEvent.event === 'error') {
             yield {
               type: 'response.error',
-              error: toPublicError(createProtocolError('OpenAI-compatible provider returned an SSE error event.'))
+              error: toPublicError(parseOpenAIStreamError(sseEvent.data))
             };
             return;
           }
@@ -118,6 +118,69 @@ export class OpenAIProvider implements ChatModelProvider {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function parseOpenAIStreamError(data: string): AgentCodeError {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || !('error' in parsed)) {
+      return createProtocolError('OpenAI-compatible provider returned an invalid SSE error event.');
+    }
+
+    const error = (parsed as { error?: unknown }).error;
+    if (typeof error !== 'object' || error === null) {
+      return createProtocolError('OpenAI-compatible provider returned an invalid SSE error payload.');
+    }
+
+    const message = (error as { message?: unknown }).message;
+    if (typeof message !== 'string') {
+      return createProtocolError('OpenAI-compatible provider returned an invalid SSE error payload.');
+    }
+
+    const type = (error as { type?: unknown }).type;
+    const code = (error as { code?: unknown }).code;
+    return createOpenAIError(typeof type === 'string' ? type : undefined, typeof code === 'string' ? code : undefined, message);
+  } catch {
+    return createProtocolError('OpenAI-compatible provider returned invalid JSON in an SSE error event.');
+  }
+}
+
+function createOpenAIError(type: string | undefined, code: string | undefined, message: string): AgentCodeError {
+  const errorName = code ?? type ?? '';
+
+  if (isOpenAIAuthError(errorName)) {
+    return new AgentCodeError({
+      code: 'auth_error',
+      message,
+      retryable: false
+    });
+  }
+
+  if (isOpenAIRateLimitError(errorName)) {
+    return new AgentCodeError({
+      code: 'rate_limit',
+      message,
+      retryable: true
+    });
+  }
+
+  return new AgentCodeError({
+    code: 'provider_error',
+    message,
+    retryable: isRetryableOpenAIError(errorName)
+  });
+}
+
+function isOpenAIAuthError(errorName: string): boolean {
+  return ['authentication_error', 'permission_error', 'invalid_api_key', 'invalid_request_error'].includes(errorName);
+}
+
+function isOpenAIRateLimitError(errorName: string): boolean {
+  return ['rate_limit_error', 'rate_limit_exceeded', 'insufficient_quota'].includes(errorName);
+}
+
+function isRetryableOpenAIError(errorName: string): boolean {
+  return ['server_error', 'api_error', 'service_unavailable', 'engine_overloaded'].includes(errorName);
 }
 
 function parseOpenAIChunk(data: string): OpenAIChatCompletionChunk {

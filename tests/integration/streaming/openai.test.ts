@@ -162,6 +162,45 @@ describe('OpenAIProvider', () => {
     }
   });
 
+  it('preserves OpenAI SSE error payload details', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: error\n' +
+          'data: {"error":{"message":"quota exhausted","type":"rate_limit_error","code":"insufficient_quota"}}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Hello' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'rate_limit',
+            message: 'quota exhausted',
+            retryable: true
+          }
+        }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
   it('emits a protocol error when a 200 response is not an event stream', async () => {
     const server = await createMockSseServer({
       headers: {
