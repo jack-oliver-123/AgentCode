@@ -1,15 +1,30 @@
-import { access, lstat, readFile, stat } from 'node:fs/promises';
+import { access, chmod, lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, parse, resolve } from 'node:path';
+import { dirname, join, parse, relative, resolve } from 'node:path';
 import { ZodError } from 'zod';
 import { parseDocument } from 'yaml';
 
 import { AgentCodeError } from '../shared/errors.js';
 import { redactText } from './redact.js';
-import { normalizeConfig, parseRawConfig, type ResolvedConfig } from './schema.js';
+import { normalizeConfig, parseRawConfig, type RawConfig, type ResolvedConfig } from './schema.js';
 
 const CONFIG_DIRECTORY = '.agentcode';
 const CONFIG_FILE = 'config.yaml';
+const CONFIG_DIRECTORY_MODE = 0o700;
+const CONFIG_FILE_MODE = 0o600;
+const EXAMPLE_API_KEY = 'replace-with-your-api-key';
+const DEFAULT_CONFIG_TEMPLATE = `protocol: anthropic
+model: claude-sonnet-4-6
+base_url: https://api.anthropic.com/v1
+api_key: ${EXAMPLE_API_KEY}
+thinking:
+  enabled: false
+request:
+  timeout_ms: 120000
+  headers: {}
+ui:
+  show_thinking: false
+`;
 
 export interface LoadConfigOptions {
   cwd?: string;
@@ -30,9 +45,10 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
     return parseConfigFile(globalConfigPath, 'global');
   }
 
+  const createdConfigPath = await createDefaultProjectConfig(cwd);
   throw new AgentCodeError({
     code: 'config_error',
-    message: `No AgentCode config found. Create ${join(CONFIG_DIRECTORY, CONFIG_FILE)} in this project or ${globalConfigPath}.`,
+    message: `Created ${relative(cwd, createdConfigPath)}. Add your API key, then start AgentCode again.`,
     retryable: false
   });
 }
@@ -60,6 +76,30 @@ export async function findProjectConfigPath(
   }
 }
 
+async function createDefaultProjectConfig(cwd: string): Promise<string> {
+  const configDirectory = join(cwd, CONFIG_DIRECTORY);
+  const configPath = join(configDirectory, CONFIG_FILE);
+
+  try {
+    await mkdir(configDirectory, { recursive: true, mode: CONFIG_DIRECTORY_MODE });
+    const configDirectoryStat = await lstat(configDirectory);
+    if (!configDirectoryStat.isDirectory() || configDirectoryStat.isSymbolicLink()) {
+      throwConfigAccessError(configPath);
+    }
+
+    await chmod(configDirectory, CONFIG_DIRECTORY_MODE);
+    await writeFile(configPath, DEFAULT_CONFIG_TEMPLATE, { encoding: 'utf8', flag: 'wx', mode: CONFIG_FILE_MODE });
+    await chmod(configPath, CONFIG_FILE_MODE);
+    return configPath;
+  } catch (error) {
+    if (error instanceof AgentCodeError) {
+      throw error;
+    }
+
+    throwConfigAccessError(configPath);
+  }
+}
+
 async function parseConfigFile(path: string, source: ResolvedConfig['source']): Promise<ResolvedConfig> {
   const rawText = await readConfigFile(path);
   const yamlValue = parseYaml(rawText, path);
@@ -67,6 +107,7 @@ async function parseConfigFile(path: string, source: ResolvedConfig['source']): 
 
   try {
     const rawConfig = parseRawConfig(yamlValue);
+    rejectPlaceholderApiKey(rawConfig, path);
 
     return {
       source,
@@ -84,6 +125,18 @@ async function parseConfigFile(path: string, source: ResolvedConfig['source']): 
 
     throw error;
   }
+}
+
+function rejectPlaceholderApiKey(rawConfig: RawConfig, path: string): void {
+  if (rawConfig.api_key !== EXAMPLE_API_KEY) {
+    return;
+  }
+
+  throw new AgentCodeError({
+    code: 'config_error',
+    message: `AgentCode config at ${path} still contains the example api_key. Replace it with your real API key.`,
+    retryable: false
+  });
 }
 
 function parseYaml(rawText: string, path: string): unknown {
