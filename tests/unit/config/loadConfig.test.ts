@@ -1,4 +1,4 @@
-import { mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -364,17 +364,71 @@ request:
     }
   });
 
-  it('returns a safe error when config is missing', async () => {
+  it('creates a project config template when config is missing', async () => {
     const workspace = await createTempWorkspace();
+    const expectedConfigPath = join(workspace.nestedProjectDirectory, '.agentcode', 'config.yaml');
 
     await expect(loadConfig({ cwd: workspace.nestedProjectDirectory, homeDir: workspace.home })).rejects.toMatchObject({
       publicError: {
         code: 'config_error',
+        message: expect.stringContaining('Add your API key'),
+        retryable: false
+      }
+    });
+
+    const configTemplate = await readFile(expectedConfigPath, 'utf8');
+    expect(configTemplate).toContain('protocol: anthropic');
+    expect(configTemplate).toContain('api_key: replace-with-your-api-key');
+    await expectOwnerOnlyMode(join(workspace.nestedProjectDirectory, '.agentcode'), 0o700);
+    await expectOwnerOnlyMode(expectedConfigPath, 0o600);
+  });
+
+  it('rejects the generated placeholder api key on later startup', async () => {
+    const workspace = await createTempWorkspace();
+    await writeAgentConfig(
+      workspace.project,
+      `
+protocol: anthropic
+model: claude-sonnet-4-6
+base_url: https://api.anthropic.com/v1
+api_key: replace-with-your-api-key
+`
+    );
+
+    await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
+      publicError: {
+        code: 'config_error',
+        message: expect.stringContaining('still contains the example api_key'),
+        retryable: false
+      }
+    });
+  });
+
+  it('does not create the default config through a symlinked project config directory', async () => {
+    const workspace = await createTempWorkspace();
+    const symlinkTargetDirectory = join(workspace.root, 'outside-agentcode');
+    const projectConfigDirectory = join(workspace.project, '.agentcode');
+    await mkdir(symlinkTargetDirectory, { recursive: true });
+    await createConfigSymlink(symlinkTargetDirectory, projectConfigDirectory);
+
+    await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
+      publicError: {
+        code: 'config_error',
+        message: expect.stringContaining('Cannot access AgentCode config candidate'),
         retryable: false
       }
     });
   });
 });
+
+async function expectOwnerOnlyMode(path: string, expectedMode: number): Promise<void> {
+  if (process.platform === 'win32') {
+    return;
+  }
+
+  const actualMode = (await stat(path)).mode & 0o777;
+  expect(actualMode).toBe(expectedMode);
+}
 
 async function createConfigSymlink(realConfigPath: string, linkPath: string): Promise<void> {
   try {
