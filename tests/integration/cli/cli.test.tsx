@@ -15,17 +15,20 @@ import { FakeProvider } from '../../helpers/FakeProvider.js';
 import { createTempWorkspace, writeAgentConfig } from '../../helpers/tempConfig.js';
 
 describe('TUI App', () => {
-  it('renders model, config source, and empty input prompt', () => {
+  it('renders model, config source, cwd, status, and empty input prompt', () => {
     const controller = createController(new FakeProvider([]));
 
-    const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
+    const output = renderToString(<App controller={controller} cwd="/workspace/demo" resolvedConfig={createResolvedConfig()} />);
 
     expect(output).toContain('AgentCode');
     expect(output).toMatch(/model:\s*test-model/);
     expect(output).toMatch(/provider:\s*openai/);
     expect(output).toMatch(/config:\s*project/);
-    expect(output).toMatch(/status:\s*idle/);
-    expect(output).toContain('Ask AgentCode');
+    expect(output).toMatch(/cwd:\s*demo/);
+    expect(output).toContain('ready');
+    expect(output).toContain('Ready for a new AgentCode conversation');
+    expect(output).toContain('Ask AgentCode about this project');
+    expect(output).toContain('Enter to send');
   });
 
   it('renders completed transcript from ChatSessionController state', async () => {
@@ -38,10 +41,12 @@ describe('TUI App', () => {
 
     const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
 
-    expect(output).toContain('You');
+    expect(output).toContain('▌');
     expect(output).toContain('Hello');
     expect(output).toContain('AgentCode');
     expect(output).toContain('Hello from model');
+    expect(output).not.toContain('You:');
+    expect(output).not.toContain('AgentCode:');
   });
 
   it('disables input while a response is streaming', async () => {
@@ -53,8 +58,10 @@ describe('TUI App', () => {
     try {
       const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
 
-      expect(output).toMatch(/status:\s*streaming/);
-      expect(output).toContain('Waiting for response');
+      expect(output).toContain('generating');
+      expect(output).toContain('Thinking');
+      expect(output).toContain('Waiting for model response');
+      expect(output).toContain('Composer paused while AgentCode is generating');
     } finally {
       provider.release();
       await turn.next();
@@ -63,20 +70,9 @@ describe('TUI App', () => {
   });
 
   it('hides thinking text by default and shows it only when enabled', () => {
-    const hiddenOutput = renderToString(
-      <TranscriptPane
-        messages={[]}
-        draft={{ id: 'draft-1', visibleText: 'visible answer', thinkingText: 'hidden reasoning' }}
-        showThinking={false}
-      />
-    );
-    const visibleOutput = renderToString(
-      <TranscriptPane
-        messages={[]}
-        draft={{ id: 'draft-1', visibleText: 'visible answer', thinkingText: 'hidden reasoning' }}
-        showThinking={true}
-      />
-    );
+    const draft = { id: 'draft-1', visibleText: 'visible answer', thinkingText: 'hidden reasoning' };
+    const hiddenOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
+    const visibleOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={true} />);
 
     expect(hiddenOutput).toContain('visible answer');
     expect(hiddenOutput).not.toContain('hidden reasoning');
@@ -84,18 +80,26 @@ describe('TUI App', () => {
   });
 
   it('keeps transcript bounded to the latest messages', () => {
-    const messages: ChatMessage[] = Array.from({ length: 10 }, (_value, index) => ({
-      id: `message-${index}`,
-      role: index % 2 === 0 ? 'user' : 'assistant',
-      parts: [{ type: 'text', text: `message ${index}` }],
-      createdAt: index
-    }));
+    const messages = createTranscriptMessages(10);
 
     const output = renderToString(<TranscriptPane messages={messages} showThinking={false} />);
 
     expect(output).toContain('2 earlier messages hidden');
     expect(output).not.toContain('message 0');
     expect(output).toContain('message 9');
+  });
+
+  it('reserves transcript space for the active streaming draft', () => {
+    const messages = createTranscriptMessages(8);
+
+    const output = renderToString(
+      <TranscriptPane messages={messages} draft={{ id: 'draft-1', visibleText: 'latest draft token', thinkingText: '' }} showThinking={false} />
+    );
+
+    expect(output).toContain('3 earlier messages hidden');
+    expect(output).not.toContain('message 0');
+    expect(output).toContain('message 7');
+    expect(output).toContain('latest draft token');
   });
 
   it('keeps the newest streaming draft text visible when truncating long output', () => {
@@ -127,7 +131,8 @@ describe('TUI App', () => {
 
     const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
 
-    expect(output).toContain('Error: Provider failed safely');
+    expect(output).toContain('Error (provider_error): Provider failed safely');
+    expect(output).toContain('You can retry by sending another message');
   });
 });
 
@@ -228,6 +233,15 @@ function createController(provider: FakeProvider, configOverrides: Partial<Agent
     createId: (prefix) => `${prefix}-${++idCounter}`,
     now: () => 1234
   });
+}
+
+function createTranscriptMessages(length: number): ChatMessage[] {
+  return Array.from({ length }, (_value, index) => ({
+    id: `message-${index}`,
+    role: index % 2 === 0 ? 'user' : 'assistant',
+    parts: [{ type: 'text', text: `message ${index}` }],
+    createdAt: index
+  }));
 }
 
 function createResolvedConfig(configOverrides: Partial<AgentConfig> = {}): ResolvedConfig {

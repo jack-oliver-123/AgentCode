@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from 'ink';
-import React, { useState } from 'react';
+import React, { useState, type ReactElement } from 'react';
 
 interface SegmenterLike {
   segment(text: string): Iterable<{ segment: string }>;
@@ -9,12 +9,14 @@ interface SegmenterConstructorLike {
   new (locale: string | undefined, options: { granularity: 'grapheme' }): SegmenterLike;
 }
 
+const DIVIDER = '─'.repeat(96);
+
 export interface InputPaneProps {
   disabled: boolean;
   onSubmit(text: string): void;
 }
 
-export function InputPane({ disabled, onSubmit }: InputPaneProps) {
+export function InputPane({ disabled, onSubmit }: InputPaneProps): ReactElement {
   const [input, setInput] = useState('');
 
   useInput(
@@ -44,11 +46,20 @@ export function InputPane({ disabled, onSubmit }: InputPaneProps) {
     { isActive: !disabled }
   );
 
+  const accentColor = disabled ? 'blue' : 'cyan';
+  const inputText = disabled ? 'Waiting for model response…' : input;
+  const helperText = disabled ? 'Composer paused while AgentCode is generating.' : 'Enter to send';
+
   return (
-    <Box borderStyle="single" borderColor={disabled ? 'gray' : 'green'} paddingX={1} aria-role="textbox" aria-state={{ disabled }}>
-      <Text color="green">› </Text>
-      <Text>{disabled ? 'Waiting for response…' : input}</Text>
-      {!disabled && input.length === 0 ? <Text color="gray">Ask AgentCode…</Text> : null}
+    <Box flexDirection="column" aria-role="textbox" aria-state={{ disabled }}>
+      <Text color="blue">{DIVIDER}</Text>
+      <Box>
+        <Text color={accentColor}>❯ </Text>
+        <Text>{inputText}</Text>
+        {!disabled && input.length === 0 ? <Text color="gray">Ask AgentCode about this project…</Text> : null}
+      </Box>
+      <Text color="blue">{DIVIDER}</Text>
+      <Text color="gray">{helperText}</Text>
     </Box>
   );
 }
