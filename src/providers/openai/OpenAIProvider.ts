@@ -10,9 +10,25 @@ interface OpenAIChatCompletionChunk {
   choices?: Array<{
     delta?: {
       content?: unknown;
+      tool_calls?: OpenAIToolCallDelta[];
     };
     finish_reason?: unknown;
   }>;
+}
+
+interface OpenAIToolCallDelta {
+  index?: unknown;
+  id?: unknown;
+  function?: {
+    name?: unknown;
+    arguments?: unknown;
+  };
+}
+
+interface OpenAIToolCallAccumulator {
+  id: string | undefined;
+  name: string | undefined;
+  argumentsText: string;
 }
 
 export interface OpenAIProviderOptions {
@@ -42,14 +58,7 @@ export class OpenAIProvider implements ChatModelProvider {
           authorization: `Bearer ${this.config.apiKey}`,
           ...this.config.request.headers
         },
-        body: {
-          model: request.model,
-          messages: request.messages.map((message) => ({
-            role: message.role,
-            content: message.content
-          })),
-          stream: true
-        },
+        body: createOpenAIRequestBody(request),
         ...(request.signal !== undefined ? { signal: request.signal } : {})
       };
 
@@ -61,6 +70,7 @@ export class OpenAIProvider implements ChatModelProvider {
       const stream = await fetchJsonStream(requestOptions, transportOptions);
 
       let finishReason: string | undefined;
+      const toolCalls = new Map<number, OpenAIToolCallAccumulator>();
       const streamTimeoutController = new AbortController();
       const sseIterator = readSseStream(stream, { signal: streamTimeoutController.signal })[Symbol.asyncIterator]();
 
@@ -98,8 +108,13 @@ export class OpenAIProvider implements ChatModelProvider {
             };
           }
 
+          collectToolCallDeltas(toolCalls, choice?.delta?.tool_calls);
+
           if (typeof choice?.finish_reason === 'string') {
             finishReason = choice.finish_reason;
+            if (finishReason === 'tool_calls') {
+              yield createToolCallEvent(toolCalls);
+            }
             yield createCompleteEvent(finishReason);
             return;
           }
@@ -118,6 +133,115 @@ export class OpenAIProvider implements ChatModelProvider {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function createOpenAIRequestBody(request: ProviderRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages: request.messages.map(toOpenAIMessage),
+    stream: true
+  };
+
+  if (request.toolChoice !== 'none' && request.tools !== undefined && request.tools.length > 0) {
+    body.tools = request.tools.map((tool) => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.inputSchema
+      }
+    }));
+  }
+
+  if (request.toolChoice !== undefined) {
+    body.tool_choice = request.toolChoice;
+  }
+
+  return body;
+}
+
+function toOpenAIMessage(message: ProviderRequest['messages'][number]): Record<string, unknown> {
+  if (message.role === 'tool') {
+    return {
+      role: 'tool',
+      tool_call_id: message.toolCallId,
+      content: message.content
+    };
+  }
+
+  if ('toolCalls' in message) {
+    return {
+      role: 'assistant',
+      content: message.content,
+      tool_calls: message.toolCalls.map((call) => ({
+        id: call.id,
+        type: 'function',
+        function: {
+          name: call.name,
+          arguments: call.argumentsText
+        }
+      }))
+    };
+  }
+
+  return {
+    role: message.role,
+    content: message.content
+  };
+}
+
+function collectToolCallDeltas(toolCalls: Map<number, OpenAIToolCallAccumulator>, deltas: OpenAIToolCallDelta[] | undefined): void {
+  if (deltas === undefined) {
+    return;
+  }
+
+  for (const delta of deltas) {
+    if (typeof delta.index !== 'number' || !Number.isInteger(delta.index) || delta.index < 0) {
+      throw createProtocolError('OpenAI-compatible provider returned an invalid tool call index.');
+    }
+
+    const existing = toolCalls.get(delta.index) ?? { id: undefined, name: undefined, argumentsText: '' };
+
+    if (delta.id !== undefined) {
+      if (typeof delta.id !== 'string' || delta.id.length === 0) {
+        throw createProtocolError('OpenAI-compatible provider returned an invalid tool call id.');
+      }
+      existing.id = delta.id;
+    }
+
+    if (delta.function?.name !== undefined) {
+      if (typeof delta.function.name !== 'string' || delta.function.name.length === 0) {
+        throw createProtocolError('OpenAI-compatible provider returned an invalid tool call name.');
+      }
+      existing.name = delta.function.name;
+    }
+
+    if (delta.function?.arguments !== undefined) {
+      if (typeof delta.function.arguments !== 'string') {
+        throw createProtocolError('OpenAI-compatible provider returned invalid tool call arguments.');
+      }
+      existing.argumentsText = `${existing.argumentsText}${delta.function.arguments}`;
+    }
+
+    toolCalls.set(delta.index, existing);
+  }
+}
+
+function createToolCallEvent(toolCalls: Map<number, OpenAIToolCallAccumulator>): ProviderEvent {
+  const firstToolCall = [...toolCalls.entries()].sort(([left], [right]) => left - right)[0]?.[1];
+
+  if (firstToolCall?.id === undefined || firstToolCall.name === undefined) {
+    throw createProtocolError('OpenAI-compatible provider finished with tool_calls but did not provide a complete tool call.');
+  }
+
+  return {
+    type: 'tool.call',
+    call: {
+      id: firstToolCall.id,
+      name: firstToolCall.name,
+      argumentsText: firstToolCall.argumentsText
+    }
+  };
 }
 
 function parseOpenAIStreamError(data: string): AgentCodeError {
@@ -172,7 +296,7 @@ function createOpenAIError(type: string | undefined, code: string | undefined, m
 }
 
 function isOpenAIAuthError(errorName: string): boolean {
-  return ['authentication_error', 'permission_error', 'invalid_api_key', 'invalid_request_error'].includes(errorName);
+  return ['authentication_error', 'permission_error', 'invalid_api_key'].includes(errorName);
 }
 
 function isOpenAIRateLimitError(errorName: string): boolean {
