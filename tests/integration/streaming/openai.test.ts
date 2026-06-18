@@ -4,6 +4,7 @@ import type { AgentConfig } from '../../../src/config/schema.js';
 import { createProvider } from '../../../src/providers/createProvider.js';
 import { OpenAIProvider } from '../../../src/providers/openai/OpenAIProvider.js';
 import type { ProviderEvent } from '../../../src/providers/types.js';
+import { createDefaultToolRegistry } from '../../../src/tools/registry.js';
 import { createMockSseServer } from '../../helpers/createMockSseServer.js';
 
 describe('OpenAIProvider', () => {
@@ -59,6 +60,306 @@ describe('OpenAIProvider', () => {
         ],
         stream: true
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps tool declarations and tool choice to OpenAI-compatible request bodies', async () => {
+    const server = await createMockSseServer({
+      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n']
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+      const tools = createDefaultToolRegistry().getProviderDeclarations();
+
+      await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Read a file' }],
+          thinking: { enabled: false },
+          tools,
+          toolChoice: 'auto'
+        })
+      );
+
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toMatchObject({
+        model: 'gpt-4.1',
+        stream: true,
+        tool_choice: 'auto',
+        tools: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'function',
+            function: expect.objectContaining({
+              name: 'read_file',
+              parameters: expect.objectContaining({
+                type: 'object'
+              })
+            })
+          })
+        ])
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps tool continuation messages to OpenAI-compatible request bodies', async () => {
+    const server = await createMockSseServer({
+      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n']
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [
+            { role: 'user', content: 'Read a file' },
+            {
+              role: 'assistant',
+              content: '',
+              toolCalls: [{ id: 'call-read', name: 'read_file', argumentsText: '{"path":"README.md"}' }]
+            },
+            {
+              role: 'tool',
+              toolCallId: 'call-read',
+              toolName: 'read_file',
+              content: '{"ok":true}',
+              isError: false
+            }
+          ],
+          thinking: { enabled: false },
+          toolChoice: 'none'
+        })
+      );
+
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toMatchObject({
+        messages: [
+          { role: 'user', content: 'Read a file' },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              {
+                id: 'call-read',
+                type: 'function',
+                function: {
+                  name: 'read_file',
+                  arguments: '{"path":"README.md"}'
+                }
+              }
+            ]
+          },
+          { role: 'tool', tool_call_id: 'call-read', content: '{"ok":true}' }
+        ],
+        tool_choice: 'none'
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('omits tool declarations when tool choice disables tools', async () => {
+    const server = await createMockSseServer({
+      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n']
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'No tools' }],
+          thinking: { enabled: false },
+          tools: createDefaultToolRegistry().getProviderDeclarations(),
+          toolChoice: 'none'
+        })
+      );
+
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toEqual({
+        model: 'gpt-4.1',
+        messages: [{ role: 'user', content: 'No tools' }],
+        stream: true,
+        tool_choice: 'none'
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('assembles streamed OpenAI tool call argument fragments into a provider tool event', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read-file","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"README.md\\"}"}}]},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Read README' }],
+          thinking: { enabled: false },
+          tools: createDefaultToolRegistry().getProviderDeclarations(),
+          toolChoice: 'auto'
+        })
+      );
+
+      expect(events).toEqual([
+        { type: 'response.start' },
+        {
+          type: 'tool.call',
+          call: {
+            id: 'call-read-file',
+            name: 'read_file',
+            argumentsText: '{"path":"README.md"}'
+          }
+        },
+        { type: 'response.complete', finishReason: 'tool_calls' }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports the first streamed tool call when a provider emits multiple tool calls', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}},{"index":1,"id":"call-search","function":{"name":"search_code","arguments":"{\\"query\\":\\"x\\"}"}}]},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Use tools' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toEqual([
+        { type: 'response.start' },
+        {
+          type: 'tool.call',
+          call: {
+            id: 'call-read',
+            name: 'read_file',
+            argumentsText: '{"path":"README.md"}'
+          }
+        },
+        { type: 'response.complete', finishReason: 'tool_calls' }
+      ]);
+      expect(events.filter((event) => event.type === 'tool.call')).toHaveLength(1);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('emits a protocol error for invalid streamed tool call fragments', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read_file","arguments":{}}}]},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Use a tool' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'protocol_error',
+            message: 'OpenAI-compatible provider returned invalid tool call arguments.',
+            retryable: false
+          }
+        }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('emits a protocol error when streamed tool call fragments have invalid indexes', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":"0","id":"call-read","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}\n\n',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Use a tool' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'protocol_error',
+            message: 'OpenAI-compatible provider returned an invalid tool call index.',
+            retryable: false
+          }
+        }
+      ]);
     } finally {
       await server.close();
     }
@@ -193,6 +494,45 @@ describe('OpenAIProvider', () => {
             code: 'rate_limit',
             message: 'quota exhausted',
             retryable: true
+          }
+        }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps OpenAI invalid_request_error SSE events to non-retryable provider errors', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: error\n' +
+          'data: {"error":{"message":"invalid tools schema","type":"invalid_request_error","code":null}}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new OpenAIProvider({
+        config: createOpenAIConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'gpt-4.1',
+          messages: [{ role: 'user', content: 'Hello' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'provider_error',
+            message: 'invalid tools schema',
+            retryable: false
           }
         }
       ]);

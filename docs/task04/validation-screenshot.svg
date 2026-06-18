@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">AgentCode task04 validation screenshot</title>
+  <desc id="desc">Validation evidence for task04 tool system MVP.</desc>
+  <rect width="1200" height="760" fill="#0b1220"/>
+  <rect x="54" y="48" width="1092" height="664" rx="24" fill="#111827" stroke="#60a5fa" stroke-width="3"/>
+  <text x="90" y="112" fill="#93c5fd" font-family="Consolas, 'SFMono-Regular', monospace" font-size="34" font-weight="700">AgentCode task04 validation</text>
+  <text x="90" y="170" fill="#e6f1ff" font-family="Consolas, 'SFMono-Regular', monospace" font-size="24">branch: task04-tool-system</text>
+  <text x="90" y="210" fill="#e6f1ff" font-family="Consolas, 'SFMono-Regular', monospace" font-size="24">issue: #4</text>
+
+  <text x="90" y="286" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="26">✓ npm run typecheck</text>
+  <text x="90" y="330" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="26">✓ npm test — 21 files passed, 263 passed, 2 skipped</text>
+  <text x="90" y="374" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="26">✓ npm run build</text>
+  <text x="90" y="418" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="26">✓ npm run e2e:tmux — tmux E2E smoke passed</text>
+
+  <text x="90" y="500" fill="#93c5fd" font-family="Consolas, 'SFMono-Regular', monospace" font-size="28" font-weight="700">Security checks</text>
+  <text x="90" y="552" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="24">✓ Provider-native tool result continuation</text>
+  <text x="90" y="592" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="24">✓ Strict known-secret redaction for tool results</text>
+  <text x="90" y="632" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="24">✓ E2E checks full sentinel plus identifiable prefix/suffix</text>
+  <text x="90" y="672" fill="#86efac" font-family="Consolas, 'SFMono-Regular', monospace" font-size="24">✓ .agentcode/ and temp E2E files not in git status</text>
+</svg>

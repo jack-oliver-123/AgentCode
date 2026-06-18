@@ -6,19 +6,19 @@ export class FakeProvider implements ChatModelProvider {
   readonly supportsExtendedThinking: boolean;
   readonly requests: ProviderRequest[] = [];
 
-  private readonly events: ProviderEvent[];
+  private readonly eventSequences: ProviderEvent[][];
   private releaseGate: (() => void) | undefined;
   private readonly gate: Promise<void> | undefined;
 
   constructor(
-    events: ProviderEvent[],
+    events: ProviderEvent[] | ProviderEvent[][],
     options: {
       protocol?: ProviderProtocol;
       supportsExtendedThinking?: boolean;
       holdBeforeEvents?: boolean;
     } = {}
   ) {
-    this.events = events;
+    this.eventSequences = normalizeEventSequences(events);
     this.protocol = options.protocol ?? 'openai';
     this.supportsExtendedThinking = options.supportsExtendedThinking ?? false;
 
@@ -30,13 +30,14 @@ export class FakeProvider implements ChatModelProvider {
   }
 
   async *stream(request: ProviderRequest): AsyncIterable<ProviderEvent> {
-    this.requests.push(request);
+    this.requests.push(cloneProviderRequest(request));
 
     if (this.gate !== undefined) {
       await this.gate;
     }
 
-    for (const event of this.events) {
+    const events = this.eventSequences[this.requests.length - 1] ?? [];
+    for (const event of events) {
       yield event;
     }
   }
@@ -44,4 +45,28 @@ export class FakeProvider implements ChatModelProvider {
   release(): void {
     this.releaseGate?.();
   }
+}
+
+function normalizeEventSequences(events: ProviderEvent[] | ProviderEvent[][]): ProviderEvent[][] {
+  return Array.isArray(events[0]) ? (events as ProviderEvent[][]) : [events as ProviderEvent[]];
+}
+
+function cloneProviderRequest(request: ProviderRequest): ProviderRequest {
+  return {
+    ...request,
+    messages: request.messages.map((message) => ({ ...message })),
+    thinking: { ...request.thinking },
+    ...(request.tools !== undefined
+      ? {
+          tools: request.tools.map((tool) => ({
+            ...tool,
+            inputSchema: {
+              ...tool.inputSchema,
+              properties: { ...tool.inputSchema.properties },
+              ...(tool.inputSchema.required !== undefined ? { required: [...tool.inputSchema.required] } : {})
+            }
+          }))
+        }
+      : {})
+  };
 }
