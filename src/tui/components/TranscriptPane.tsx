@@ -79,7 +79,7 @@ function DraftMessage({ draft, showThinking }: DraftMessageProps): ReactElement 
   return (
     <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
       <Text color="blue">{frame} {statusText}</Text>
-      <Text wrap="wrap">{visibleText}</Text>
+      {draft.activity.type === 'tool' ? null : <Text wrap="wrap">{visibleText}</Text>}
       {showThinking && draft.thinkingText.length > 0 ? (
         <Text color="gray" wrap="wrap">
           Thinking: {truncateText(draft.thinkingText, 'tail')}
@@ -112,15 +112,19 @@ function formatDraftVisibleText(visibleText: string): string {
 }
 
 function formatDraftStatus(draft: ChatSessionDraft, showThinking: boolean): string {
+  if (draft.activity.type === 'tool') {
+    return `Using ${draft.activity.toolName}`;
+  }
+
   const hasVisibleText = draft.visibleText.length > 0;
   const hasThinkingText = draft.thinkingText.length > 0;
 
   if (!hasVisibleText && hasThinkingText) {
-    return showThinking ? 'Thinking' : 'Thinking · hidden';
+    return showThinking ? 'Thinking' : 'Waiting for model response';
   }
 
   if (!hasVisibleText) {
-    return 'Thinking';
+    return showThinking ? 'Thinking' : 'Waiting for model response';
   }
 
   return `Writing · ${draft.visibleText.length} chars`;

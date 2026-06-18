@@ -12,11 +12,25 @@ const DEFAULT_THINKING_BUDGET_TOKENS = 1024;
 
 interface AnthropicStreamEvent {
   type?: unknown;
+  index?: unknown;
+  content_block?: {
+    type?: unknown;
+    id?: unknown;
+    name?: unknown;
+    input?: unknown;
+  };
   delta?: {
     type?: unknown;
     text?: unknown;
     thinking?: unknown;
+    partial_json?: unknown;
   };
+}
+
+interface AnthropicToolUseAccumulator {
+  id: string;
+  name: string;
+  argumentsText: string;
 }
 
 export interface AnthropicProviderOptions {
@@ -57,6 +71,8 @@ export class AnthropicProvider implements ChatModelProvider {
       const stream = await fetchJsonStream(requestOptions, transportOptions);
 
       let finishReason: string | undefined;
+      let emittedToolCall = false;
+      const toolUses = new Map<number, AnthropicToolUseAccumulator>();
       const streamTimeoutController = new AbortController();
       const sseIterator = readSseStream(stream, { signal: streamTimeoutController.signal })[Symbol.asyncIterator]();
 
@@ -80,6 +96,10 @@ export class AnthropicProvider implements ChatModelProvider {
 
           const event = parseAnthropicEvent(sseEvent.data);
 
+          if (event.type === 'content_block_start') {
+            collectToolUseStart(toolUses, event);
+          }
+
           if (event.type === 'content_block_delta') {
             const deltaType = event.delta?.type;
             if (deltaType === 'text_delta' && typeof event.delta?.text === 'string' && event.delta.text.length > 0) {
@@ -98,6 +118,18 @@ export class AnthropicProvider implements ChatModelProvider {
                 type: 'thinking.delta',
                 delta: event.delta.thinking
               };
+            }
+
+            if (deltaType === 'input_json_delta') {
+              collectToolUseInputDelta(toolUses, event);
+            }
+          }
+
+          if (event.type === 'content_block_stop' && !emittedToolCall) {
+            const toolCallEvent = createToolCallEvent(event, toolUses);
+            if (toolCallEvent !== undefined) {
+              emittedToolCall = true;
+              yield toolCallEvent;
             }
           }
 
@@ -134,13 +166,18 @@ function getMessagesEndpointPath(baseUrl: string): string {
 function createAnthropicRequestBody(request: ProviderRequest): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: request.messages.map((message) => ({
-      role: message.role,
-      content: message.content
-    })),
+    messages: request.messages.map(toAnthropicMessage),
     stream: true,
     max_tokens: getMaxTokens(request)
   };
+
+  if (request.toolChoice !== 'none' && request.tools !== undefined && request.tools.length > 0) {
+    body.tools = request.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema
+    }));
+  }
 
   if (request.thinking.enabled) {
     body.thinking = {
@@ -152,12 +189,134 @@ function createAnthropicRequestBody(request: ProviderRequest): Record<string, un
   return body;
 }
 
+function toAnthropicMessage(message: ProviderRequest['messages'][number]): Record<string, unknown> {
+  if (message.role === 'tool') {
+    return {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: message.toolCallId,
+          content: message.content,
+          is_error: message.isError
+        }
+      ]
+    };
+  }
+
+  if ('toolCalls' in message) {
+    return {
+      role: 'assistant',
+      content: [
+        ...(message.content.length > 0 ? [{ type: 'text', text: message.content }] : []),
+        ...message.toolCalls.map((call) => ({
+          type: 'tool_use',
+          id: call.id,
+          name: call.name,
+          input: parseToolInput(call.argumentsText)
+        }))
+      ]
+    };
+  }
+
+  return {
+    role: message.role,
+    content: message.content
+  };
+}
+
+function parseToolInput(argumentsText: string): unknown {
+  try {
+    const parsed = JSON.parse(argumentsText) as unknown;
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function getMaxTokens(request: ProviderRequest): number {
   if (!request.thinking.enabled || request.thinking.budgetTokens === undefined) {
     return DEFAULT_MAX_TOKENS;
   }
 
   return Math.max(DEFAULT_MAX_TOKENS, request.thinking.budgetTokens + DEFAULT_THINKING_BUDGET_TOKENS);
+}
+
+function collectToolUseStart(toolUses: Map<number, AnthropicToolUseAccumulator>, event: AnthropicStreamEvent): void {
+  if (event.content_block?.type !== 'tool_use') {
+    return;
+  }
+
+  const index = parseAnthropicBlockIndex(event);
+  const id = event.content_block.id;
+  const name = event.content_block.name;
+
+  if (typeof id !== 'string' || id.length === 0) {
+    throw createProtocolError('Anthropic provider returned an invalid tool_use id.');
+  }
+
+  if (typeof name !== 'string' || name.length === 0) {
+    throw createProtocolError('Anthropic provider returned an invalid tool_use name.');
+  }
+
+  toolUses.set(index, {
+    id,
+    name,
+    argumentsText: createInitialToolUseArgumentsText(event.content_block.input)
+  });
+}
+
+function collectToolUseInputDelta(toolUses: Map<number, AnthropicToolUseAccumulator>, event: AnthropicStreamEvent): void {
+  const index = parseAnthropicBlockIndex(event);
+  const toolUse = toolUses.get(index);
+
+  if (toolUse === undefined) {
+    throw createProtocolError('Anthropic provider returned tool input for an unknown content block.');
+  }
+
+  if (typeof event.delta?.partial_json !== 'string') {
+    throw createProtocolError('Anthropic provider returned invalid tool input JSON delta.');
+  }
+
+  toolUse.argumentsText = `${toolUse.argumentsText}${event.delta.partial_json}`;
+}
+
+function createToolCallEvent(event: AnthropicStreamEvent, toolUses: Map<number, AnthropicToolUseAccumulator>): ProviderEvent | undefined {
+  const index = parseAnthropicBlockIndex(event);
+  const toolUse = toolUses.get(index);
+
+  if (toolUse === undefined) {
+    return undefined;
+  }
+
+  return {
+    type: 'tool.call',
+    call: {
+      id: toolUse.id,
+      name: toolUse.name,
+      argumentsText: toolUse.argumentsText
+    }
+  };
+}
+
+function parseAnthropicBlockIndex(event: AnthropicStreamEvent): number {
+  if (typeof event.index !== 'number' || !Number.isInteger(event.index) || event.index < 0) {
+    throw createProtocolError('Anthropic provider returned an invalid content block index.');
+  }
+
+  return event.index;
+}
+
+function createInitialToolUseArgumentsText(input: unknown): string {
+  if (input === undefined) {
+    return '';
+  }
+
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    throw createProtocolError('Anthropic provider returned invalid tool_use input.');
+  }
+
+  return Object.keys(input).length > 0 ? JSON.stringify(input) : '';
 }
 
 function parseAnthropicStreamError(data: string): AgentCodeError {

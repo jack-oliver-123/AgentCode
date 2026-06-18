@@ -6,7 +6,7 @@ import { bootstrapApp } from '../../../src/app/bootstrapApp.js';
 import { runCli } from '../../../src/cli/main.js';
 import type { AgentConfig, ResolvedConfig } from '../../../src/config/schema.js';
 import { ChatSessionController } from '../../../src/session/ChatSessionController.js';
-import type { ChatMessage } from '../../../src/session/types.js';
+import type { ChatMessage, ChatSessionDraft } from '../../../src/session/types.js';
 import { AgentCodeError } from '../../../src/shared/errors.js';
 import { App } from '../../../src/tui/App.js';
 import { InputPane, removeLastGrapheme } from '../../../src/tui/components/InputPane.js';
@@ -59,8 +59,8 @@ describe('TUI App', () => {
       const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
 
       expect(output).toContain('generating');
-      expect(output).toContain('Thinking');
       expect(output).toContain('Waiting for model response');
+      expect(output).not.toContain('Thinking');
       expect(output).toContain('Composer paused while AgentCode is generating');
     } finally {
       provider.release();
@@ -70,13 +70,39 @@ describe('TUI App', () => {
   });
 
   it('hides thinking text by default and shows it only when enabled', () => {
-    const draft = { id: 'draft-1', visibleText: 'visible answer', thinkingText: 'hidden reasoning' };
+    const draft: ChatSessionDraft = { id: 'draft-1', visibleText: 'visible answer', thinkingText: 'hidden reasoning', activity: { type: 'thinking' } };
     const hiddenOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
     const visibleOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={true} />);
 
     expect(hiddenOutput).toContain('visible answer');
     expect(hiddenOutput).not.toContain('hidden reasoning');
     expect(visibleOutput).toContain('hidden reasoning');
+  });
+
+  it('does not mention thinking status when thinking text is hidden', () => {
+    const draft: ChatSessionDraft = { id: 'draft-1', visibleText: '', thinkingText: 'hidden reasoning', activity: { type: 'thinking' } };
+
+    const hiddenOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
+
+    expect(hiddenOutput).toContain('Waiting for model response');
+    expect(hiddenOutput).not.toContain('Thinking');
+    expect(hiddenOutput).not.toContain('hidden reasoning');
+  });
+
+  it('renders tool activity without raw tool result details', () => {
+    const draft: ChatSessionDraft = {
+      id: 'draft-tool',
+      visibleText: '',
+      thinkingText: '',
+      activity: { type: 'tool', toolName: 'read_file' }
+    };
+
+    const output = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
+
+    expect(output).toContain('Using read_file');
+    expect(output).not.toContain('Waiting for the first token');
+    expect(output).not.toContain('argumentsText');
+    expect(output).not.toContain('sk-test-tui-secret');
   });
 
   it('keeps transcript bounded to the latest messages', () => {
@@ -93,7 +119,7 @@ describe('TUI App', () => {
     const messages = createTranscriptMessages(8);
 
     const output = renderToString(
-      <TranscriptPane messages={messages} draft={{ id: 'draft-1', visibleText: 'latest draft token', thinkingText: '' }} showThinking={false} />
+      <TranscriptPane messages={messages} draft={{ id: 'draft-1', visibleText: 'latest draft token', thinkingText: '', activity: { type: 'thinking' } }} showThinking={false} />
     );
 
     expect(output).toContain('3 earlier messages hidden');
@@ -104,7 +130,7 @@ describe('TUI App', () => {
 
   it('keeps the newest streaming draft text visible when truncating long output', () => {
     const output = renderToString(
-      <TranscriptPane messages={[]} draft={{ id: 'draft-1', visibleText: `${'older '.repeat(220)}latest-token`, thinkingText: '' }} showThinking={false} />
+      <TranscriptPane messages={[]} draft={{ id: 'draft-1', visibleText: `${'older '.repeat(220)}latest-token`, thinkingText: '', activity: { type: 'thinking' } }} showThinking={false} />
     );
 
     expect(output).toContain('latest-token');
