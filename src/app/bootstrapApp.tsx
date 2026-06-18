@@ -5,6 +5,7 @@ import { loadConfig, type LoadConfigOptions } from '../config/loadConfig.js';
 import { createProvider } from '../providers/createProvider.js';
 import { ChatSessionController } from '../session/ChatSessionController.js';
 import { App } from '../tui/App.js';
+import { createDefaultToolRegistry } from '../tools/registry.js';
 
 export type RenderApp = (node: React.ReactNode) => Instance;
 
@@ -26,7 +27,10 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
   });
   const controller = new ChatSessionController({
     provider,
-    config: resolvedConfig.config
+    config: resolvedConfig.config,
+    toolRegistry: createDefaultToolRegistry(),
+    cwd: runtimeCwd,
+    toolTimeoutMs: resolvedConfig.config.request.timeoutMs
   });
 
   return renderApp(<App controller={controller} resolvedConfig={resolvedConfig} cwd={runtimeCwd} />);

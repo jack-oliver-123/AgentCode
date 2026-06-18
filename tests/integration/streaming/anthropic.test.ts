@@ -4,6 +4,7 @@ import type { AgentConfig } from '../../../src/config/schema.js';
 import { AnthropicProvider } from '../../../src/providers/anthropic/AnthropicProvider.js';
 import { createProvider } from '../../../src/providers/createProvider.js';
 import type { ProviderEvent } from '../../../src/providers/types.js';
+import { createDefaultToolRegistry } from '../../../src/tools/registry.js';
 import { createMockSseServer } from '../../helpers/createMockSseServer.js';
 
 describe('AnthropicProvider', () => {
@@ -62,6 +63,322 @@ describe('AnthropicProvider', () => {
         stream: true,
         max_tokens: 4096
       });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps tool declarations to Anthropic Messages request bodies', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+      const tools = createDefaultToolRegistry().getProviderDeclarations();
+
+      await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'Read a file' }],
+          thinking: { enabled: false },
+          tools,
+          toolChoice: 'auto'
+        })
+      );
+
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toEqual({
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'Read a file' }],
+        stream: true,
+        max_tokens: 4096,
+        tools: tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.inputSchema
+        }))
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('maps tool continuation messages to Anthropic Messages request bodies', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [
+            { role: 'user', content: 'Read a file' },
+            {
+              role: 'assistant',
+              content: '',
+              toolCalls: [{ id: 'toolu-read', name: 'read_file', argumentsText: '{"path":"README.md"}' }]
+            },
+            {
+              role: 'tool',
+              toolCallId: 'toolu-read',
+              toolName: 'read_file',
+              content: '{"ok":true}',
+              isError: false
+            }
+          ],
+          thinking: { enabled: false },
+          toolChoice: 'none'
+        })
+      );
+
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toMatchObject({
+        messages: [
+          { role: 'user', content: 'Read a file' },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu-read',
+                name: 'read_file',
+                input: { path: 'README.md' }
+              }
+            ]
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu-read',
+                content: '{"ok":true}',
+                is_error: false
+              }
+            ]
+          }
+        ],
+        max_tokens: 4096
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('omits Anthropic tool declarations when tool choice disables tools', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'No tools' }],
+          thinking: { enabled: false },
+          tools: createDefaultToolRegistry().getProviderDeclarations(),
+          toolChoice: 'none'
+        })
+      );
+
+      expect(JSON.parse(server.requests[0]?.body ?? '{}')).toEqual({
+        model: 'claude-opus-4-8',
+        messages: [{ role: 'user', content: 'No tools' }],
+        stream: true,
+        max_tokens: 4096
+      });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('assembles Anthropic tool_use input JSON deltas into a provider tool event', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu-read-file","name":"read_file","input":{}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":"}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\\"README.md\\"}"}}\n\n',
+        'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'Read README' }],
+          thinking: { enabled: false },
+          tools: createDefaultToolRegistry().getProviderDeclarations(),
+          toolChoice: 'auto'
+        })
+      );
+
+      expect(events).toEqual([
+        { type: 'response.start' },
+        {
+          type: 'tool.call',
+          call: {
+            id: 'toolu-read-file',
+            name: 'read_file',
+            argumentsText: '{"path":"README.md"}'
+          }
+        },
+        { type: 'response.complete', finishReason: 'tool_use' }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('emits a protocol error for invalid Anthropic tool_use input deltas', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu-read-file","name":"read_file","input":{}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":{}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'Use a tool' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'protocol_error',
+            message: 'Anthropic provider returned invalid tool input JSON delta.',
+            retryable: false
+          }
+        }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('emits a protocol error for Anthropic tool_use blocks with invalid ids', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"read_file","input":{}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'Use a tool' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'protocol_error',
+            message: 'Anthropic provider returned an invalid tool_use id.',
+            retryable: false
+          }
+        }
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('emits a protocol error for malformed Anthropic tool_use blocks', async () => {
+    const server = await createMockSseServer({
+      chunks: [
+        'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu-read-file","input":{}}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+      ]
+    });
+
+    try {
+      const provider = new AnthropicProvider({
+        config: createAnthropicConfig({
+          baseUrl: `${server.url}/v1`
+        })
+      });
+
+      const events = await collectProviderEvents(
+        provider.stream({
+          model: 'claude-opus-4-8',
+          messages: [{ role: 'user', content: 'Use a tool' }],
+          thinking: { enabled: false }
+        })
+      );
+
+      expect(events).toMatchObject([
+        { type: 'response.start' },
+        {
+          type: 'response.error',
+          error: {
+            code: 'protocol_error',
+            message: 'Anthropic provider returned an invalid tool_use name.',
+            retryable: false
+          }
+        }
+      ]);
     } finally {
       await server.close();
     }

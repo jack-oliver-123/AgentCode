@@ -17,10 +17,15 @@ export interface ChatMessage {
   };
 }
 
+export type ChatSessionDraftActivity =
+  | { type: 'thinking' }
+  | { type: 'tool'; toolName: string };
+
 export interface ChatSessionDraft {
   id: string;
   visibleText: string;
   thinkingText: string;
+  activity: ChatSessionDraftActivity;
 }
 
 export type ChatSessionStatus = 'idle' | 'streaming' | 'error';

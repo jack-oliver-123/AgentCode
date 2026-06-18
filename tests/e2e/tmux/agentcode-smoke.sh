@@ -12,6 +12,8 @@ PANE_LOG="$TMP_DIR/tmux-pane.log"
 PACK_OUTPUT="$TMP_DIR/npm-pack.out"
 MOCK_PID=""
 SENTINEL_API_KEY="sk-agentcode-e2e-secret-should-not-appear"
+SENTINEL_PREFIX="sk-agentcode"
+SENTINEL_SUFFIX="should-not-appear"
 
 run_tmux() {
   tmux -L "$TMUX_SOCKET" "$@"
@@ -53,7 +55,12 @@ fail() {
 }
 
 redact_output() {
-  sed "s/${SENTINEL_API_KEY}/<redacted-api-key>/g"
+  sed "s/${SENTINEL_API_KEY}/<redacted-api-key>/g; s/${SENTINEL_PREFIX}/<redacted-api-key-prefix>/g; s/${SENTINEL_SUFFIX}/<redacted-api-key-suffix>/g"
+}
+
+has_sentinel_leak() {
+  local text="$1"
+  [[ "$text" == *"$SENTINEL_API_KEY"* || "$text" == *"$SENTINEL_PREFIX"* || "$text" == *"$SENTINEL_SUFFIX"* ]]
 }
 
 require_command() {
@@ -85,7 +92,7 @@ wait_for_pane_text() {
   while (( SECONDS < deadline )); do
     local pane_content
     pane_content="$(capture_pane)"
-    if [[ "$pane_content" == *"$SENTINEL_API_KEY"* ]]; then
+    if has_sentinel_leak "$pane_content"; then
       append_pane_snapshot "$pane_content"
       fail 'sentinel API key leaked into tmux pane snapshot'
     fi
@@ -164,6 +171,14 @@ ui:
 YAML
 }
 
+write_tool_fixture() {
+  local project_dir="$1"
+
+  cat > "$project_dir/tool-fixture.txt" <<'TEXT'
+fixture says tool loop works
+TEXT
+}
+
 write_launcher() {
   local project_dir="$1"
   local launcher="$project_dir/start-agentcode.sh"
@@ -199,6 +214,7 @@ PROJECT_DIR="$TMP_DIR/project"
 mkdir -p "$PROJECT_DIR"
 npm install --prefix "$PROJECT_DIR" --no-save --ignore-scripts "$PACKAGE_TARBALL_PATH" >/dev/null
 write_project_config "$PROJECT_DIR" "$MOCK_URL"
+write_tool_fixture "$PROJECT_DIR"
 write_launcher "$PROJECT_DIR"
 
 if [[ ! -x "$PROJECT_DIR/node_modules/.bin/agentcode" ]]; then
@@ -210,7 +226,8 @@ if [[ ! -f "$PROJECT_DIR/node_modules/agentcode/dist/cli/main.js" ]]; then
 fi
 
 if ! run_tmux new-session -d -s "$SESSION_NAME" -x 100 -y 30; then
-  fail 'tmux could not create an interactive shell session'
+  printf 'E2E smoke blocked: tmux/psmux command is present but cannot create an interactive shell session.\n' >&2
+  exit 2
 fi
 
 run_tmux set-environment -t "$SESSION_NAME" PATH "$PATH"
@@ -228,26 +245,37 @@ wait_for_pane_text 'config: project' 5
 send_prompt 'hello from tmux'
 wait_for_pane_text 'generating' 5
 wait_for_pane_text 'Waiting for model response' 5
-wait_for_pane_text 'first' 5
+wait_for_pane_text 'streammarker' 5
 
 PARTIAL_PANE="$(capture_pane)"
-if [[ "$PARTIAL_PANE" == *'first answer'* ]]; then
+if [[ "$PARTIAL_PANE" == *'streammarker first answer'* ]]; then
   fail 'first response appeared all at once; expected a visible partial streaming state'
 fi
 
-wait_for_pane_text 'first answer' 8
+wait_for_pane_text 'streammarker first answer' 8
 sleep 1
 
 send_prompt 'second question'
 wait_for_pane_text 'I remember first answer.' 10
 
+send_prompt 'please read the fixture file'
+wait_for_pane_text 'Tool summary: fixture says tool loop works.' 15
+
 FINAL_PANE="$(capture_pane)"
-if [[ "$FINAL_PANE" == *"$SENTINEL_API_KEY"* ]]; then
+if has_sentinel_leak "$FINAL_PANE"; then
   fail 'sentinel API key leaked into terminal output'
 fi
 
-if [[ -s "$PANE_LOG" ]] && grep -Fq "$SENTINEL_API_KEY" "$PANE_LOG"; then
+if [[ -s "$PANE_LOG" ]] && has_sentinel_leak "$(<"$PANE_LOG")"; then
   fail 'sentinel API key leaked into tmux pane log'
+fi
+
+if [[ -s "$MOCK_STDOUT" ]] && has_sentinel_leak "$(<"$MOCK_STDOUT")"; then
+  fail 'sentinel API key leaked into mock SSE stdout'
+fi
+
+if [[ -s "$MOCK_STDERR" ]] && has_sentinel_leak "$(<"$MOCK_STDERR")"; then
+  fail 'sentinel API key leaked into mock SSE stderr'
 fi
 
 printf 'tmux E2E smoke passed.\n'
