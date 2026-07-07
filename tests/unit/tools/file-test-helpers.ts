@@ -52,6 +52,10 @@ function createRegistry(tools: ToolDefinition[]): ToolRegistry {
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema
-      }))
+      })),
+    filterByRisk: (allowedRisks) => {
+      const allowed = new Set(allowedRisks);
+      return createRegistry(tools.filter((t) => allowed.has(t.risk)));
+    }
   };
 }

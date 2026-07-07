@@ -1,9 +1,11 @@
 import type { AgentConfig } from '../config/schema.js';
-import type { ChatModelProvider, ChatMessage as ProviderChatMessage, ProviderEvent, ProviderRequest } from '../providers/types.js';
+import type { ChatModelProvider, ChatMessage as ProviderChatMessage } from '../providers/types.js';
 import { createId, type IdGenerator } from '../shared/ids.js';
 import { toPublicError, type PublicError } from '../shared/errors.js';
-import { executeToolCall } from '../tools/executor.js';
-import type { ProviderToolCall, ToolExecutionContext, ToolExecutionResult, ToolRegistry } from '../tools/types.js';
+import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
+import { runAgentLoop } from '../agent/AgentLoop.js';
+import type { AgentLoopConfig, AgentLoopDeps, AgentLoopEvent, AgentLoopInput, AgentLoopMode, PlanStep } from '../agent/types.js';
+import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
 import type { ChatMessage, ChatSessionDraft, ChatSessionEvent, ChatSessionState, MessageRole } from './types.js';
 
 export interface ChatSessionControllerOptions {
@@ -16,6 +18,7 @@ export interface ChatSessionControllerOptions {
   toolTimeoutMs?: number;
   maxToolOutputBytes?: number;
   toolSecrets?: readonly string[];
+  agentLoopConfig?: Partial<AgentLoopConfig>;
 }
 
 export interface SubmitUserTextOptions {
@@ -25,34 +28,41 @@ export interface SubmitUserTextOptions {
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 
-type ProviderTurnOutcome = { type: 'completed' } | { type: 'tool_call'; call: ProviderToolCall } | { type: 'failed' };
-
 export class ChatSessionController {
   private readonly provider: ChatModelProvider;
   private readonly config: AgentConfig;
-  private readonly createId: IdGenerator;
+  private readonly createIdFn: IdGenerator;
   private readonly now: () => number;
   private readonly toolRegistry: ToolRegistry | undefined;
   private readonly cwd: string;
   private readonly toolTimeoutMs: number;
   private readonly maxToolOutputBytes: number;
   private readonly toolSecrets: readonly string[];
+  private readonly agentLoopConfig: AgentLoopConfig;
   private readonly messages: ChatMessage[] = [];
   private readonly contextMessages: ChatMessage[] = [];
+  /** Provider 级别的上下文消息（含工具调用历史），直接作为 AgentLoop 输入 */
+  private providerContext: ProviderChatMessage[] = [];
   private draft: ChatSessionDraft | undefined;
   private status: ChatSessionState['status'] = 'idle';
   private lastError: PublicError | undefined;
+  private currentMode: AgentLoopMode = 'full';
+  private storedPlan: PlanStep[] | undefined;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
     this.config = options.config;
-    this.createId = options.createId ?? createId;
+    this.createIdFn = options.createId ?? createId;
     this.now = options.now ?? Date.now;
     this.toolRegistry = options.toolRegistry;
     this.cwd = options.cwd ?? process.cwd();
     this.toolTimeoutMs = options.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
     this.maxToolOutputBytes = options.maxToolOutputBytes ?? DEFAULT_MAX_TOOL_OUTPUT_BYTES;
     this.toolSecrets = options.toolSecrets ?? [];
+    this.agentLoopConfig = {
+      ...DEFAULT_AGENT_LOOP_CONFIG,
+      ...options.agentLoopConfig,
+    };
   }
 
   getState(): ChatSessionState {
@@ -70,10 +80,14 @@ export class ChatSessionController {
       return;
     }
 
-    const userMessage = this.createMessage('user', text);
+    // 识别 /plan 和 /do 命令
+    const { mode, actualText } = this.parseCommand(text);
+    this.currentMode = mode;
+
+    const userMessage = this.createMessage('user', actualText);
     this.messages.push(userMessage);
     this.draft = {
-      id: this.createId('draft'),
+      id: this.createIdFn('draft'),
       visibleText: '',
       thinkingText: '',
       activity: { type: 'thinking' }
@@ -82,173 +96,119 @@ export class ChatSessionController {
     this.lastError = undefined;
     yield this.createStateChangedEvent();
 
+    // 如果没有 toolRegistry，降级为无工具模式但仍走 AgentLoop
+    const registry = this.toolRegistry;
+
     try {
-      const initialMessages = [...this.contextMessages, userMessage].map(toProviderMessage);
-      const firstTurnOutcome = yield* this.streamProviderTurn(
-        this.createProviderRequest(initialMessages, options.signal, this.toolRegistry === undefined ? undefined : 'auto'),
-        userMessage,
-        'allow_tool_call'
-      );
+      const input: AgentLoopInput = {
+        contextMessages: [...this.providerContext],
+        userMessage: toProviderMessage(userMessage),
+        mode: this.currentMode,
+        ...(this.currentMode === 'full' && this.storedPlan ? { plan: this.storedPlan } : {}),
+        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      };
 
-      if (firstTurnOutcome.type !== 'tool_call') {
-        return;
+      const deps: AgentLoopDeps = {
+        provider: this.provider,
+        toolRegistry: registry ?? createEmptyRegistry(),
+        createToolContext: (signal?: AbortSignal): ToolExecutionContext => ({
+          cwd: this.cwd,
+          timeoutMs: this.toolTimeoutMs,
+          secrets: [this.config.apiKey, ...this.toolSecrets],
+          maxOutputBytes: this.maxToolOutputBytes,
+          ...(signal !== undefined ? { signal } : {}),
+        }),
+        config: this.agentLoopConfig,
+        model: this.config.model,
+        thinking: this.config.thinking,
+      };
+
+      for await (const event of runAgentLoop(input, deps)) {
+        const stateEvent = this.applyAgentLoopEvent(event, userMessage);
+        if (stateEvent !== undefined) {
+          yield stateEvent;
+        }
       }
-
-      if (this.toolRegistry === undefined) {
-        this.failTurn(userMessage, {
-          code: 'protocol_error',
-          message: 'Provider returned a tool call before tool execution is enabled.',
-          retryable: false
-        });
-        yield this.createStateChangedEvent();
-        return;
-      }
-
-      const preToolContent = this.requireDraft().visibleText;
-      this.setToolActivity(this.getToolActivityName(firstTurnOutcome.call));
-      yield this.createStateChangedEvent();
-
-      const toolResult = await executeToolCall(firstTurnOutcome.call, this.toolRegistry, this.createToolExecutionContext(options.signal));
-      const secondTurnMessages = [
-        ...initialMessages,
-        ...createToolContinuationMessages(firstTurnOutcome.call, toolResult, preToolContent)
-      ];
-      this.resetDraftForFinalAnswer();
-      yield this.createStateChangedEvent();
-
-      yield* this.streamProviderTurn(this.createProviderRequest(secondTurnMessages, options.signal, 'none'), userMessage, 'disallow_tool_call');
     } catch (error) {
       this.failTurn(userMessage, toPublicError(error));
       yield this.createStateChangedEvent();
     }
   }
 
-  private async *streamProviderTurn(
-    request: ProviderRequest,
-    userMessage: ChatMessage,
-    toolPolicy: 'allow_tool_call' | 'disallow_tool_call'
-  ): AsyncGenerator<ChatSessionEvent, ProviderTurnOutcome, unknown> {
-    for await (const event of this.provider.stream(request)) {
-      const outcome = this.applyProviderEvent(event, userMessage, toolPolicy);
-      if (outcome === undefined) {
-        if (event.type === 'content.delta' || event.type === 'thinking.delta') {
-          yield this.createStateChangedEvent();
-        }
-        continue;
-      }
-
-      yield this.createStateChangedEvent();
-      return outcome;
-    }
-
-    this.failTurn(userMessage, {
-      code: 'protocol_error',
-      message: 'Provider stream ended without response.complete or response.error.',
-      retryable: false
-    });
-    yield this.createStateChangedEvent();
-    return { type: 'failed' };
-  }
-
-  private applyProviderEvent(
-    event: ProviderEvent,
-    userMessage: ChatMessage,
-    toolPolicy: 'allow_tool_call' | 'disallow_tool_call'
-  ): ProviderTurnOutcome | undefined {
+  private applyAgentLoopEvent(event: AgentLoopEvent, userMessage: ChatMessage): ChatSessionEvent | undefined {
     switch (event.type) {
-      case 'response.start':
-        return undefined;
-      case 'content.delta': {
+      case 'text.delta': {
         const draft = this.requireDraft();
-        this.draft = {
-          ...draft,
-          visibleText: `${draft.visibleText}${event.delta}`
-        };
-        return undefined;
+        this.draft = { ...draft, visibleText: `${draft.visibleText}${event.delta}` };
+        return this.createStateChangedEvent();
       }
+
       case 'thinking.delta': {
         const draft = this.requireDraft();
-        this.draft = {
-          ...draft,
-          thinkingText: `${draft.thinkingText}${event.delta}`
-        };
-        return undefined;
+        this.draft = { ...draft, thinkingText: `${draft.thinkingText}${event.delta}` };
+        return this.createStateChangedEvent();
       }
-      case 'response.error':
-        this.failTurn(userMessage, event.error);
-        return { type: 'failed' };
-      case 'tool.call':
-        if (toolPolicy === 'allow_tool_call') {
-          return { type: 'tool_call', call: event.call };
-        }
 
-        this.failTurn(userMessage, {
-          code: 'protocol_error',
-          message: 'Provider returned a second tool call; only one tool call is allowed per turn.',
-          retryable: false
-        });
-        return { type: 'failed' };
-      case 'response.complete':
-        this.completeTurn(userMessage, event.finishReason);
-        return { type: 'completed' };
+      case 'tool_call.start': {
+        const toolName = event.knownTool ? event.call.name : 'tool';
+        const draft = this.requireDraft();
+        this.draft = { ...draft, activity: { type: 'tool', toolName }, visibleText: '' };
+        return this.createStateChangedEvent();
+      }
+
+      case 'tool_call.result':
+        return undefined; // 工具结果不直接触发 UI 更新
+
+      case 'iteration.start': {
+        // 新一轮迭代开始：重置 draft 文本
+        const draft = this.requireDraft();
+        this.draft = { ...draft, visibleText: '', thinkingText: '', activity: { type: 'thinking' } };
+        return this.createStateChangedEvent();
+      }
+
+      case 'plan.submitted':
+        this.storedPlan = event.steps;
+        return undefined;
+
+      case 'token.usage':
+        return undefined;
+
+      case 'loop.completed':
+        this.completeTurn(userMessage, event.finalText, event.turnMessages, event.reason === 'max_iterations' ? 'max_iterations' : undefined);
+        return this.createStateChangedEvent();
+
+      case 'loop.failed':
+        this.failTurn(userMessage, event.error);
+        return this.createStateChangedEvent();
     }
   }
 
-  private createProviderRequest(
-    messages: ProviderChatMessage[],
-    signal: AbortSignal | undefined,
-    toolChoice: 'auto' | 'none' | undefined
-  ): ProviderRequest {
-    return {
-      model: this.config.model,
-      messages,
-      thinking: this.config.thinking,
-      ...(toolChoice === 'auto' && this.toolRegistry !== undefined
-        ? { tools: this.toolRegistry.getProviderDeclarations(), toolChoice }
-        : {}),
-      ...(toolChoice === 'none' ? { toolChoice } : {}),
-      ...(signal !== undefined ? { signal } : {})
-    };
+  private parseCommand(text: string): { mode: AgentLoopMode; actualText: string } {
+    const trimmed = text.trim();
+    if (/^\/plan\b/i.test(trimmed)) {
+      return { mode: 'plan', actualText: trimmed.slice(5).trim() || trimmed };
+    }
+    if (/^\/do\b/i.test(trimmed)) {
+      return { mode: 'full', actualText: trimmed.slice(3).trim() || trimmed };
+    }
+    return { mode: 'full', actualText: text };
   }
 
-  private createToolExecutionContext(signal: AbortSignal | undefined): ToolExecutionContext {
-    return {
-      cwd: this.cwd,
-      timeoutMs: this.toolTimeoutMs,
-      secrets: [this.config.apiKey, ...this.toolSecrets],
-      maxOutputBytes: this.maxToolOutputBytes,
-      ...(signal !== undefined ? { signal } : {})
-    };
-  }
-
-  private setToolActivity(toolName: string): void {
-    const draft = this.requireDraft();
-    this.draft = {
-      ...draft,
-      activity: { type: 'tool', toolName },
-      visibleText: ''
-    };
-  }
-
-  private getToolActivityName(call: ProviderToolCall): string {
-    return this.toolRegistry?.get(call.name)?.name ?? 'tool';
-  }
-
-  private resetDraftForFinalAnswer(): void {
-    const draft = this.requireDraft();
-    this.draft = {
-      ...draft,
-      visibleText: '',
-      thinkingText: '',
-      activity: { type: 'thinking' }
-    };
-  }
-
-  private completeTurn(userMessage: ChatMessage, finishReason: string | undefined): void {
-    const draft = this.requireDraft();
-    const assistantMessage = this.createMessage('assistant', draft.visibleText, finishReason);
+  private completeTurn(
+    userMessage: ChatMessage,
+    finalText: string,
+    turnMessages: ProviderChatMessage[],
+    finishReason: string | undefined
+  ): void {
+    const assistantMessage = this.createMessage('assistant', finalText, finishReason);
     this.messages.push(assistantMessage);
     this.contextMessages.push(userMessage, assistantMessage);
+    // 跨 turn 上下文：保留用户消息 + 完整工具调用历史 + 最终回答
+    this.providerContext.push(
+      toProviderMessage(userMessage),
+      ...turnMessages,
+      { role: 'assistant', content: finalText }
+    );
     this.draft = undefined;
     this.status = 'idle';
     this.lastError = undefined;
@@ -257,6 +217,7 @@ export class ChatSessionController {
   private failTurn(userMessage: ChatMessage, error: PublicError): void {
     if (!this.contextMessages.some((message) => message.id === userMessage.id)) {
       this.contextMessages.push(userMessage);
+      this.providerContext.push(toProviderMessage(userMessage));
     }
 
     this.draft = undefined;
@@ -266,7 +227,7 @@ export class ChatSessionController {
 
   private createMessage(role: MessageRole, text: string, finishReason?: string): ChatMessage {
     const message: ChatMessage = {
-      id: this.createId(role),
+      id: this.createIdFn(role),
       role,
       parts: [{ type: 'text', text }],
       createdAt: this.now()
@@ -287,15 +248,11 @@ export class ChatSessionController {
     if (this.draft === undefined) {
       throw new Error('Chat session draft is not available.');
     }
-
     return this.draft;
   }
 
   private createStateChangedEvent(): ChatSessionEvent {
-    return {
-      type: 'state.changed',
-      state: this.snapshotState()
-    };
+    return { type: 'state.changed', state: this.snapshotState() };
   }
 
   private snapshotState(): ChatSessionState {
@@ -316,6 +273,8 @@ export class ChatSessionController {
   }
 }
 
+// ─── 辅助函数 ─────────────────────────────────────────────────────────
+
 function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   return {
     role: message.role,
@@ -323,27 +282,19 @@ function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   };
 }
 
-function createToolContinuationMessages(call: ProviderToolCall, result: ToolExecutionResult, preToolContent: string): ProviderChatMessage[] {
-  return [
-    {
-      role: 'assistant',
-      content: preToolContent,
-      toolCalls: [call]
-    },
-    {
-      role: 'tool',
-      toolCallId: call.id,
-      toolName: call.name,
-      content: JSON.stringify(result),
-      isError: !result.ok
-    }
-  ];
-}
-
 function cloneMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
     parts: message.parts.map((part) => ({ ...part })),
     ...(message.meta !== undefined ? { meta: { ...message.meta } } : {})
+  };
+}
+
+function createEmptyRegistry(): ToolRegistry {
+  return {
+    list: () => [],
+    get: () => undefined,
+    getProviderDeclarations: () => [],
+    filterByRisk: () => createEmptyRegistry(),
   };
 }

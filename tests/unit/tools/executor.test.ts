@@ -462,7 +462,11 @@ function createRegistry(tools: ToolDefinition[]): ToolRegistry {
   return {
     list: () => tools,
     get: (name: string) => toolsByName.get(name),
-    getProviderDeclarations: () => tools.map(createProviderDeclaration)
+    getProviderDeclarations: () => tools.map(createProviderDeclaration),
+    filterByRisk: (allowedRisks) => {
+      const allowed = new Set(allowedRisks);
+      return createRegistry(tools.filter((t) => allowed.has(t.risk)));
+    }
   };
 }
 
