@@ -51,6 +51,8 @@ export class ChatSessionController {
   private storedPlan: PlanStep[] | undefined;
   /** 当前 turn 内累积的工具调用摘要 */
   private toolActivities: MessagePart[] = [];
+  /** 瞬态系统提示，下次 state 事件后清除 */
+  private notice: string | undefined;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -70,6 +72,14 @@ export class ChatSessionController {
 
   getState(): ChatSessionState {
     return this.snapshotState();
+  }
+
+  /** 切换运行模式（full ↔ plan），返回切换后的状态事件 */
+  toggleMode(): ChatSessionEvent {
+    this.currentMode = this.currentMode === 'full' ? 'plan' : 'full';
+    const label = this.currentMode === 'plan' ? 'plan' : 'full';
+    this.notice = `Switched to ${label} mode`;
+    return this.createStateChangedEvent();
   }
 
   async *submitUserText(text: string, options: SubmitUserTextOptions = {}): AsyncIterable<ChatSessionEvent> {
@@ -289,7 +299,8 @@ export class ChatSessionController {
   private snapshotState(): ChatSessionState {
     const state: ChatSessionState = {
       messages: this.messages.map(cloneMessage),
-      status: this.status
+      status: this.status,
+      mode: this.currentMode,
     };
 
     if (this.draft !== undefined) {
@@ -298,6 +309,11 @@ export class ChatSessionController {
 
     if (this.lastError !== undefined) {
       state.lastError = { ...this.lastError };
+    }
+
+    if (this.notice !== undefined) {
+      state.notice = this.notice;
+      this.notice = undefined;
     }
 
     return state;

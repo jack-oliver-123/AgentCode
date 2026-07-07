@@ -6,6 +6,7 @@ import type { ChatSessionState } from '../session/types.js';
 export interface UseChatControllerResult {
   state: ChatSessionState;
   submitText(text: string): void;
+  toggleMode(): void;
 }
 
 export function useChatController(controller: ChatSessionController): UseChatControllerResult {
@@ -51,8 +52,14 @@ export function useChatController(controller: ChatSessionController): UseChatCon
     [controller]
   );
 
+  const toggleMode = useCallback(() => {
+    const event = controller.toggleMode();
+    setState(event.state);
+  }, [controller]);
+
   return {
     state,
-    submitText
+    submitText,
+    toggleMode
   };
 }
