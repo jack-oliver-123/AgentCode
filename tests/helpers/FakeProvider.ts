@@ -1,24 +1,32 @@
 import type { ProviderProtocol } from '../../src/config/schema.js';
 import type { ChatModelProvider, ProviderEvent, ProviderRequest } from '../../src/providers/types.js';
 
+export type OnRequestCallback = (request: ProviderRequest, callIndex: number) => ProviderEvent[];
+
 export class FakeProvider implements ChatModelProvider {
   readonly protocol: ProviderProtocol;
   readonly supportsExtendedThinking: boolean;
   readonly requests: ProviderRequest[] = [];
 
   private readonly eventSequences: ProviderEvent[][];
+  private readonly onRequest?: OnRequestCallback;
   private releaseGate: (() => void) | undefined;
   private readonly gate: Promise<void> | undefined;
 
   constructor(
-    events: ProviderEvent[] | ProviderEvent[][],
+    events: ProviderEvent[] | ProviderEvent[][] | OnRequestCallback,
     options: {
       protocol?: ProviderProtocol;
       supportsExtendedThinking?: boolean;
       holdBeforeEvents?: boolean;
     } = {}
   ) {
-    this.eventSequences = normalizeEventSequences(events);
+    if (typeof events === 'function') {
+      this.onRequest = events;
+      this.eventSequences = [];
+    } else {
+      this.eventSequences = normalizeEventSequences(events);
+    }
     this.protocol = options.protocol ?? 'openai';
     this.supportsExtendedThinking = options.supportsExtendedThinking ?? false;
 
@@ -36,7 +44,11 @@ export class FakeProvider implements ChatModelProvider {
       await this.gate;
     }
 
-    const events = this.eventSequences[this.requests.length - 1] ?? [];
+    const callIndex = this.requests.length - 1;
+    const events = this.onRequest
+      ? this.onRequest(request, callIndex)
+      : (this.eventSequences[callIndex] ?? []);
+
     for (const event of events) {
       yield event;
     }
@@ -45,6 +57,15 @@ export class FakeProvider implements ChatModelProvider {
   release(): void {
     this.releaseGate?.();
   }
+}
+
+/** 收集 async generator 的全部事件 */
+export async function collectEvents<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const events: T[] = [];
+  for await (const event of iterable) {
+    events.push(event);
+  }
+  return events;
 }
 
 function normalizeEventSequences(events: ProviderEvent[] | ProviderEvent[][]): ProviderEvent[][] {

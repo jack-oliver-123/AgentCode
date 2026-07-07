@@ -113,7 +113,7 @@ export class OpenAIProvider implements ChatModelProvider {
           if (typeof choice?.finish_reason === 'string') {
             finishReason = choice.finish_reason;
             if (finishReason === 'tool_calls') {
-              yield createToolCallEvent(toolCalls);
+              yield* emitToolCallEvents(toolCalls);
             }
             yield createCompleteEvent(finishReason);
             return;
@@ -227,21 +227,23 @@ function collectToolCallDeltas(toolCalls: Map<number, OpenAIToolCallAccumulator>
   }
 }
 
-function createToolCallEvent(toolCalls: Map<number, OpenAIToolCallAccumulator>): ProviderEvent {
-  const firstToolCall = [...toolCalls.entries()].sort(([left], [right]) => left - right)[0]?.[1];
+function* emitToolCallEvents(toolCalls: Map<number, OpenAIToolCallAccumulator>): Generator<ProviderEvent> {
+  const sorted = [...toolCalls.entries()].sort(([left], [right]) => left - right);
 
-  if (firstToolCall?.id === undefined || firstToolCall.name === undefined) {
-    throw createProtocolError('OpenAI-compatible provider finished with tool_calls but did not provide a complete tool call.');
-  }
-
-  return {
-    type: 'tool.call',
-    call: {
-      id: firstToolCall.id,
-      name: firstToolCall.name,
-      argumentsText: firstToolCall.argumentsText
+  for (const [, toolCall] of sorted) {
+    if (toolCall.id === undefined || toolCall.name === undefined) {
+      throw createProtocolError('OpenAI-compatible provider finished with tool_calls but did not provide a complete tool call.');
     }
-  };
+
+    yield {
+      type: 'tool.call',
+      call: {
+        id: toolCall.id,
+        name: toolCall.name,
+        argumentsText: toolCall.argumentsText
+      }
+    };
+  }
 }
 
 function parseOpenAIStreamError(data: string): AgentCodeError {

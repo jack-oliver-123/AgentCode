@@ -6,7 +6,7 @@ import {
   createSearchCodeTool,
   createWriteFileTool
 } from './builtins/index.js';
-import type { ProviderToolDeclaration, ToolDefinition, ToolRegistry } from './types.js';
+import type { ProviderToolDeclaration, ToolDefinition, ToolRegistry, ToolRisk } from './types.js';
 
 export function createDefaultToolRegistry(): ToolRegistry {
   return new StaticToolRegistry([
@@ -42,5 +42,11 @@ class StaticToolRegistry implements ToolRegistry {
       description: tool.description,
       inputSchema: tool.inputSchema
     }));
+  }
+
+  filterByRisk(allowedRisks: ToolRisk[]): ToolRegistry {
+    const allowed = new Set(allowedRisks);
+    const filtered = this.tools.filter((tool) => allowed.has(tool.risk));
+    return new StaticToolRegistry(filtered);
   }
 }
