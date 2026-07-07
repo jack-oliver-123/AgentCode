@@ -93,6 +93,9 @@ export class ChatSessionController {
       return;
     }
 
+    // 清除上一次切换产生的瞬态通知
+    this.notice = undefined;
+
     // 识别 /plan 和 /do 命令
     const { mode, actualText } = this.parseCommand(text);
     this.currentMode = mode;
@@ -216,7 +219,7 @@ export class ChatSessionController {
     if (/^\/do\b/i.test(trimmed)) {
       return { mode: 'full', actualText: trimmed.slice(3).trim() || trimmed };
     }
-    return { mode: 'full', actualText: text };
+    return { mode: this.currentMode, actualText: text };
   }
 
   private completeTurn(
@@ -313,7 +316,6 @@ export class ChatSessionController {
 
     if (this.notice !== undefined) {
       state.notice = this.notice;
-      this.notice = undefined;
     }
 
     return state;

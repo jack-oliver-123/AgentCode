@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatSessionController } from '../session/ChatSessionController.js';
 import type { ChatSessionState } from '../session/types.js';
 
+const NOTICE_AUTO_DISMISS_MS = 3000;
+
 export interface UseChatControllerResult {
   state: ChatSessionState;
   submitText(text: string): void;
@@ -13,6 +15,7 @@ export function useChatController(controller: ChatSessionController): UseChatCon
   const [state, setState] = useState(() => controller.getState());
   const activeTurnAbortController = useRef<AbortController | undefined>(undefined);
   const generation = useRef(0);
+  const noticeDismissTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   useEffect(() => {
     const currentGeneration = generation.current + 1;
@@ -26,6 +29,11 @@ export function useChatController(controller: ChatSessionController): UseChatCon
 
       activeTurnAbortController.current?.abort();
       activeTurnAbortController.current = undefined;
+
+      if (noticeDismissTimer.current !== undefined) {
+        clearTimeout(noticeDismissTimer.current);
+        noticeDismissTimer.current = undefined;
+      }
     };
   }, [controller]);
 
@@ -55,6 +63,19 @@ export function useChatController(controller: ChatSessionController): UseChatCon
   const toggleMode = useCallback(() => {
     const event = controller.toggleMode();
     setState(event.state);
+
+    // 自动消除 notice
+    if (noticeDismissTimer.current !== undefined) {
+      clearTimeout(noticeDismissTimer.current);
+    }
+    noticeDismissTimer.current = setTimeout(() => {
+      noticeDismissTimer.current = undefined;
+      setState((prev) => {
+        if (prev.notice === undefined) return prev;
+        const { notice: _, ...rest } = prev;
+        return rest as typeof prev;
+      });
+    }, NOTICE_AUTO_DISMISS_MS);
   }, [controller]);
 
   return {
