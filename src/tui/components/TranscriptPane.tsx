@@ -49,7 +49,9 @@ export function TranscriptPane({ messages, draft, showThinking }: TranscriptPane
 }
 
 function TranscriptMessage({ message }: TranscriptMessageProps): ReactElement {
-  const text = truncateText(message.parts.map((part) => part.text).join(''));
+  const textParts = message.parts.filter((part) => part.type === 'text');
+  const toolUseParts = message.parts.filter((part) => part.type === 'tool_use');
+  const text = truncateText(textParts.map((part) => part.text).join(''));
 
   if (message.role === 'user') {
     return (
@@ -65,8 +67,13 @@ function TranscriptMessage({ message }: TranscriptMessageProps): ReactElement {
   }
 
   return (
-    <Box marginBottom={1} paddingLeft={2}>
-      <Text wrap="wrap">{text}</Text>
+    <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
+      {toolUseParts.map((part, index) => (
+        <Text key={index} color={part.isError ? 'yellow' : 'gray'} wrap="wrap">
+          ┄ {part.summary}
+        </Text>
+      ))}
+      {text.length > 0 ? <Text wrap="wrap">{text}</Text> : null}
     </Box>
   );
 }
