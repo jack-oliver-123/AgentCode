@@ -1,5 +1,6 @@
 import type { ProviderToolCall, ToolExecutionContext, ToolExecutionResult, ToolRegistry } from '../tools/types.js';
 import { executeToolCall } from '../tools/executor.js';
+import { toPublicError } from '../shared/errors.js';
 import type { ToolBatch } from './types.js';
 
 /**
@@ -104,6 +105,7 @@ export async function executeBatches(
         } else {
           // 不应发生（executeToolCall 内部 catch），但防御性处理
           const batchCall = batch.calls[i]!;
+          const publicError = toPublicError(outcome.reason);
           results.push({
             call: batchCall,
             result: {
@@ -111,7 +113,7 @@ export async function executeBatches(
               toolName: batchCall.name,
               error: {
                 code: 'tool_internal_error',
-                message: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+                message: publicError.message,
                 retryable: false,
               },
               meta: { durationMs: 0, timedOut: false },

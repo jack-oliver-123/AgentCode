@@ -24,7 +24,7 @@ export async function* runAgentLoop(
   input: AgentLoopInput,
   deps: AgentLoopDeps
 ): AsyncGenerator<AgentLoopEvent, void, undefined> {
-  const { provider, toolRegistry, createToolContext, config } = deps;
+  const { provider, toolRegistry, createToolContext, config, model, thinking } = deps;
   const { signal } = input;
 
   // 根据 mode 过滤工具集
@@ -36,6 +36,9 @@ export async function* runAgentLoop(
     ...(input.plan ? [buildPlanContextMessage(input.plan)] : []),
     input.userMessage,
   ];
+
+  // 记录初始消息数量，后续新增的就是 turnMessages
+  const initialMessageCount = messages.length;
 
   let iteration = 0;
   let consecutiveUnknownTools = 0;
@@ -49,15 +52,15 @@ export async function* runAgentLoop(
 
     // 检查 signal — 可能在迭代之间被取消
     if (signal?.aborted) {
-      yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'cancelled' };
+      yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'cancelled', turnMessages: messages.slice(initialMessageCount) };
       return;
     }
 
     // 构建 provider request
     const request: ProviderRequest = {
-      model: '',  // Controller 会填入实际 model
+      model,
       messages: [...messages],
-      thinking: { enabled: false },
+      thinking,
       tools: activeRegistry.getProviderDeclarations(),
       toolChoice: 'auto',
       ...(signal !== undefined ? { signal } : {}),
@@ -132,9 +135,10 @@ export async function* runAgentLoop(
       hasError: false,
     });
 
-    // 纯文本完成或 cancelled
-    if (decision.stop && (decision.reason === 'natural' || decision.reason === 'cancelled')) {
-      yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: decision.reason };
+    // 任何停止条件满足时直接退出（natural, cancelled, max_iterations, unknown_tool_limit）
+    if (decision.stop) {
+      const reason = decision.reason === 'provider_error' ? 'unknown_tool_limit' : decision.reason;
+      yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason, turnMessages: messages.slice(initialMessageCount) };
       return;
     }
 
@@ -151,7 +155,7 @@ export async function* runAgentLoop(
         consecutiveUnknownTools++;
       }
 
-      // 检查 unknown_tool_limit 和 max_iterations（在执行前）
+      // 更新计数后再检查 unknown_tool_limit（在执行前）
       const postCountDecision = checkStopCondition({
         iteration,
         maxIterations: config.maxIterations,
@@ -164,7 +168,7 @@ export async function* runAgentLoop(
 
       if (postCountDecision.stop) {
         const reason = postCountDecision.reason === 'provider_error' ? 'unknown_tool_limit' : postCountDecision.reason;
-        yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason };
+        yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason, turnMessages: messages.slice(initialMessageCount) };
         return;
       }
 
@@ -178,11 +182,15 @@ export async function* runAgentLoop(
       const context = createToolContext(signal);
       const batchResults = await executeBatches(batches, activeRegistry, context);
 
-      // 合并 unknown results 和 batch results
-      const allResults: Array<{ call: ProviderToolCall; result: ToolExecutionResult; durationMs: number }> = [
-        ...unknownResults.map((r) => ({ ...r, durationMs: 0 })),
-        ...batchResults,
-      ];
+      // 合并 unknown results 和 batch results，按原始调用顺序排列
+      const resultMap = new Map<string, { call: ProviderToolCall; result: ToolExecutionResult; durationMs: number }>();
+      for (const r of unknownResults) {
+        resultMap.set(r.call.id, { ...r, durationMs: 0 });
+      }
+      for (const r of batchResults) {
+        resultMap.set(r.call.id, r);
+      }
+      const allResults = turnToolCalls.map((tc) => resultMap.get(tc.id)!).filter(Boolean);
 
       // yield tool_call.result 事件
       for (const { call, result, durationMs } of allResults) {
@@ -196,7 +204,7 @@ export async function* runAgentLoop(
       if (planResult && planResult.result.ok) {
         const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
         yield { type: 'plan.submitted', steps };
-        yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: 'natural' };
+        yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: 'natural', turnMessages: messages.slice(initialMessageCount) };
         return;
       }
 
@@ -224,12 +232,12 @@ export async function* runAgentLoop(
     }
 
     // 兜底：无工具调用已在上面 decision 处理，此处不应到达
-    yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: 'natural' };
+    yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: 'natural', turnMessages: messages.slice(initialMessageCount) };
     return;
   }
 
   // 达到迭代上限
-  yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'max_iterations' };
+  yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'max_iterations', turnMessages: messages.slice(initialMessageCount) };
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────

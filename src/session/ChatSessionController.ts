@@ -41,6 +41,8 @@ export class ChatSessionController {
   private readonly agentLoopConfig: AgentLoopConfig;
   private readonly messages: ChatMessage[] = [];
   private readonly contextMessages: ChatMessage[] = [];
+  /** Provider 级别的上下文消息（含工具调用历史），直接作为 AgentLoop 输入 */
+  private providerContext: ProviderChatMessage[] = [];
   private draft: ChatSessionDraft | undefined;
   private status: ChatSessionState['status'] = 'idle';
   private lastError: PublicError | undefined;
@@ -99,7 +101,7 @@ export class ChatSessionController {
 
     try {
       const input: AgentLoopInput = {
-        contextMessages: this.contextMessages.map(toProviderMessage),
+        contextMessages: [...this.providerContext],
         userMessage: toProviderMessage(userMessage),
         mode: this.currentMode,
         ...(this.currentMode === 'full' && this.storedPlan ? { plan: this.storedPlan } : {}),
@@ -117,6 +119,8 @@ export class ChatSessionController {
           ...(signal !== undefined ? { signal } : {}),
         }),
         config: this.agentLoopConfig,
+        model: this.config.model,
+        thinking: this.config.thinking,
       };
 
       for await (const event of runAgentLoop(input, deps)) {
@@ -170,7 +174,7 @@ export class ChatSessionController {
         return undefined;
 
       case 'loop.completed':
-        this.completeTurn(userMessage, event.finalText, event.reason === 'max_iterations' ? 'max_iterations' : undefined);
+        this.completeTurn(userMessage, event.finalText, event.turnMessages, event.reason === 'max_iterations' ? 'max_iterations' : undefined);
         return this.createStateChangedEvent();
 
       case 'loop.failed':
@@ -187,13 +191,24 @@ export class ChatSessionController {
     if (/^\/do\b/i.test(trimmed)) {
       return { mode: 'full', actualText: trimmed.slice(3).trim() || trimmed };
     }
-    return { mode: this.currentMode === 'plan' ? 'full' : 'full', actualText: text };
+    return { mode: 'full', actualText: text };
   }
 
-  private completeTurn(userMessage: ChatMessage, finalText: string, finishReason: string | undefined): void {
+  private completeTurn(
+    userMessage: ChatMessage,
+    finalText: string,
+    turnMessages: ProviderChatMessage[],
+    finishReason: string | undefined
+  ): void {
     const assistantMessage = this.createMessage('assistant', finalText, finishReason);
     this.messages.push(assistantMessage);
     this.contextMessages.push(userMessage, assistantMessage);
+    // 跨 turn 上下文：保留用户消息 + 完整工具调用历史 + 最终回答
+    this.providerContext.push(
+      toProviderMessage(userMessage),
+      ...turnMessages,
+      { role: 'assistant', content: finalText }
+    );
     this.draft = undefined;
     this.status = 'idle';
     this.lastError = undefined;
@@ -202,6 +217,7 @@ export class ChatSessionController {
   private failTurn(userMessage: ChatMessage, error: PublicError): void {
     if (!this.contextMessages.some((message) => message.id === userMessage.id)) {
       this.contextMessages.push(userMessage);
+      this.providerContext.push(toProviderMessage(userMessage));
     }
 
     this.draft = undefined;
