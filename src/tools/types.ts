@@ -15,7 +15,19 @@ export type ToolJsonSchemaProperty =
   | {
       type: 'number' | 'boolean';
       description: string;
+    }
+  | {
+      type: 'array';
+      description: string;
+      items: ToolJsonSchemaObjectItem;
     };
+
+/** 数组元素为对象时的 schema（支持 submit_plan 等嵌套结构） */
+export interface ToolJsonSchemaObjectItem {
+  type: 'object';
+  properties: Record<string, { type: 'string'; description: string }>;
+  required?: string[];
+}
 
 export type ToolValidationResult<TInput> =
   | {
@@ -40,6 +52,8 @@ export interface ToolRegistry {
   list(): readonly ToolDefinition[];
   get(name: string): ToolDefinition | undefined;
   getProviderDeclarations(): ProviderToolDeclaration[];
+  /** 按 risk 过滤，返回只含指定 risk 级别工具的新 registry */
+  filterByRisk(allowedRisks: ToolRisk[]): ToolRegistry;
 }
 
 export interface ProviderToolDeclaration {

@@ -203,7 +203,7 @@ if [[ ! -f "$ROOT_DIR/dist/cli/main.js" ]]; then
 fi
 
 cd "$ROOT_DIR"
-AGENTCODE_MOCK_SSE_DELAY_MS=3000 AGENTCODE_MOCK_SSE_URL_FILE="$MOCK_URL_FILE" ./node_modules/.bin/tsx tests/helpers/mockSseCli.ts > "$MOCK_STDOUT" 2> "$MOCK_STDERR" &
+AGENTCODE_MOCK_SSE_DELAY_MS=3000 AGENTCODE_MOCK_SSE_URL_FILE="$MOCK_URL_FILE" node --import tsx/esm tests/helpers/mockSseCli.ts > "$MOCK_STDOUT" 2> "$MOCK_STDERR" &
 MOCK_PID="$!"
 MOCK_URL="$(wait_for_mock_url)"
 

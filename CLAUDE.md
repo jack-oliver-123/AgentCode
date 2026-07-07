@@ -65,6 +65,12 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 - 工具 activity 只显示简短安全状态（例如 `Using read_file`），不得展示原始工具 JSON、stdout/stderr、stack trace 或 secret；未知/恶意工具名应显示为泛化 `tool`。
 - `ui.show_thinking=false` 时 thinking 文本不得出现在 TUI、stdout/stderr、tmux/psmux pane capture 或测试输出中。
 
+## 底线规则
+
+- 发现旧架构不合适时，该重构就重构。不要为了兼容旧接口写出屎山代码。
+- 不要一直"兼容兼容"——干净的设计比向后兼容重要。旧接口该改就改，TUI 和上层跟着适配。
+- 不设"兜底兼容层"。如果新设计更好，直接替换旧实现，不保留过渡代码。
+
 ## 推荐工作方式
 
 实现功能前：
@@ -85,6 +91,46 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
    - 如果 psmux/tmux 兼容命令不可用，必须明确记录为环境阻塞，不要声称 E2E 已通过；
    - 如果存在 `checklist.md`，按清单逐项验收。
 3. 在任务记录或文档中记录验证证据。
+
+## 踩坑记录
+
+以下是开发过程中遇到的问题和解决方案，遇到类似问题时直接参考：
+
+### tsx 在 Git Bash 后台进程中 stdout 被吞
+
+- **现象：** `npx tsx script.ts > file &` 在后台运行时 stdout 为空，URL file 永远不写入
+- **根因：** `npx tsx` 在 Git Bash 背景进程中的 stdout 管道有问题
+- **解决：** 改用 `node --import tsx/esm script.ts`
+
+### OpenAI 兼容代理层 tool call delta 发送空字符串
+
+- **现象：** `protocol_error: OpenAI-compatible provider returned an invalid tool call name.`
+- **根因：** 某些 OpenAI 兼容代理（OneAPI/New API 等）在流式 tool call 的后续 delta chunk 中会发送 `"name": ""` 或 `"id": ""`（空字符串），而非省略该字段
+- **解决：** 将 `name`/`id` 的空字符串视为"无更新"跳过，而非视为非法值报错
+
+### exactOptionalPropertyTypes 导致 undefined 赋值报错
+
+- **现象：** `Type 'AbortSignal | undefined' is not assignable to type 'AbortSignal'`
+- **根因：** tsconfig 开启了 `exactOptionalPropertyTypes`，可选字段不能直接赋 undefined
+- **解决：** 使用 spread 模式：`...(signal !== undefined ? { signal } : {})`
+
+### 扩展接口导致所有 mock 实现编译报错
+
+- **现象：** 给 `ToolRegistry` 加了 `filterByRisk()` 后，所有测试中手写的 mock registry 都报缺少属性
+- **教训：** 修改公共接口后必须立刻全局搜索所有 mock/stub 实现并同步更新
+- **快速定位：** `npx tsc --noEmit` 会一次性列出所有缺失点
+
+### ToolJsonSchemaProperty 不支持 array 类型
+
+- **现象：** `submit_plan` 需要 array schema 但类型系统不允许
+- **解决：** 扩展了 `ToolJsonSchemaProperty` 联合类型，增加 `{ type: 'array'; items: ... }` 分支
+- **教训：** schema 类型系统要预留扩展空间
+
+### 文件系统测试在并行运行时 flaky
+
+- **现象：** `write-file.test.ts`、`run-command.test.ts`、`edit-file.test.ts` 全量运行时偶尔失败，单独运行通过
+- **根因：** 文件系统操作有时间竞争，或 timeout 测试对系统负载敏感
+- **处理：** 这些不是逻辑 bug；单独验证通过即可，全量运行的偶尔失败可忽略
 
 ## 架构方向
 
