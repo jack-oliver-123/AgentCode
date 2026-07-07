@@ -71,7 +71,6 @@ export class AnthropicProvider implements ChatModelProvider {
       const stream = await fetchJsonStream(requestOptions, transportOptions);
 
       let finishReason: string | undefined;
-      let emittedToolCall = false;
       const toolUses = new Map<number, AnthropicToolUseAccumulator>();
       const streamTimeoutController = new AbortController();
       const sseIterator = readSseStream(stream, { signal: streamTimeoutController.signal })[Symbol.asyncIterator]();
@@ -125,10 +124,9 @@ export class AnthropicProvider implements ChatModelProvider {
             }
           }
 
-          if (event.type === 'content_block_stop' && !emittedToolCall) {
+          if (event.type === 'content_block_stop') {
             const toolCallEvent = createToolCallEvent(event, toolUses);
             if (toolCallEvent !== undefined) {
-              emittedToolCall = true;
               yield toolCallEvent;
             }
           }

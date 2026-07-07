@@ -246,7 +246,7 @@ describe('OpenAIProvider', () => {
     }
   });
 
-  it('reports the first streamed tool call when a provider emits multiple tool calls', async () => {
+  it('reports all streamed tool calls when a provider emits multiple tool calls', async () => {
     const server = await createMockSseServer({
       chunks: [
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}},{"index":1,"id":"call-search","function":{"name":"search_code","arguments":"{\\"query\\":\\"x\\"}"}}]},"finish_reason":null}]}\n\n',
@@ -279,9 +279,17 @@ describe('OpenAIProvider', () => {
             argumentsText: '{"path":"README.md"}'
           }
         },
+        {
+          type: 'tool.call',
+          call: {
+            id: 'call-search',
+            name: 'search_code',
+            argumentsText: '{"query":"x"}'
+          }
+        },
         { type: 'response.complete', finishReason: 'tool_calls' }
       ]);
-      expect(events.filter((event) => event.type === 'tool.call')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'tool.call')).toHaveLength(2);
     } finally {
       await server.close();
     }
