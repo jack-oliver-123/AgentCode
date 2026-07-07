@@ -1,3 +1,4 @@
+import type { AgentLoopMode } from '../agent/types.js';
 import type { ProviderProtocol } from '../config/schema.js';
 import type { PublicError } from '../shared/errors.js';
 
@@ -37,6 +38,10 @@ export interface ChatSessionState {
   draft?: ChatSessionDraft;
   status: ChatSessionStatus;
   lastError?: PublicError;
+  /** 当前 Agent Loop 运行模式 */
+  mode: AgentLoopMode;
+  /** 瞬态系统提示（如 "Switched to plan mode"），下次状态更新后清除 */
+  notice?: string;
 }
 
 export type ChatSessionEvent = { type: 'state.changed'; state: ChatSessionState };
