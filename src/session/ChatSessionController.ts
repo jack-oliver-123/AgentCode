@@ -3,10 +3,11 @@ import type { ChatModelProvider, ChatMessage as ProviderChatMessage } from '../p
 import { createId, type IdGenerator } from '../shared/ids.js';
 import { toPublicError, type PublicError } from '../shared/errors.js';
 import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
+import { summarizeToolResult } from '../tools/summarize.js';
 import { runAgentLoop } from '../agent/AgentLoop.js';
 import type { AgentLoopConfig, AgentLoopDeps, AgentLoopEvent, AgentLoopInput, AgentLoopMode, PlanStep } from '../agent/types.js';
 import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
-import type { ChatMessage, ChatSessionDraft, ChatSessionEvent, ChatSessionState, MessageRole } from './types.js';
+import type { ChatMessage, ChatSessionDraft, ChatSessionEvent, ChatSessionState, MessagePart, MessageRole } from './types.js';
 
 export interface ChatSessionControllerOptions {
   provider: ChatModelProvider;
@@ -48,6 +49,8 @@ export class ChatSessionController {
   private lastError: PublicError | undefined;
   private currentMode: AgentLoopMode = 'full';
   private storedPlan: PlanStep[] | undefined;
+  /** 当前 turn 内累积的工具调用摘要 */
+  private toolActivities: MessagePart[] = [];
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -94,6 +97,7 @@ export class ChatSessionController {
     };
     this.status = 'streaming';
     this.lastError = undefined;
+    this.toolActivities = [];
     yield this.createStateChangedEvent();
 
     // 如果没有 toolRegistry，降级为无工具模式但仍走 AgentLoop
@@ -156,8 +160,19 @@ export class ChatSessionController {
         return this.createStateChangedEvent();
       }
 
-      case 'tool_call.result':
-        return undefined; // 工具结果不直接触发 UI 更新
+      case 'tool_call.result': {
+        // 收集工具活动摘要（安全：未知工具名用泛化名称，避免泄露恶意名称）
+        const isUnknownTool = !event.result.ok && event.result.error.code === 'unknown_tool';
+        const safeToolName = isUnknownTool ? 'tool' : event.call.name;
+        const summary = isUnknownTool ? 'tool ✗ unknown_tool' : summarizeToolResult(event.result);
+        this.toolActivities.push({
+          type: 'tool_use',
+          toolName: safeToolName,
+          summary,
+          isError: !event.result.ok,
+        });
+        return undefined;
+      }
 
       case 'iteration.start': {
         // 新一轮迭代开始：重置 draft 文本
@@ -200,7 +215,22 @@ export class ChatSessionController {
     turnMessages: ProviderChatMessage[],
     finishReason: string | undefined
   ): void {
-    const assistantMessage = this.createMessage('assistant', finalText, finishReason);
+    // 构建 assistant message，包含 tool_use parts + text part
+    const parts: MessagePart[] = [
+      ...this.toolActivities,
+      { type: 'text', text: finalText },
+    ];
+    const assistantMessage: ChatMessage = {
+      id: this.createIdFn('assistant'),
+      role: 'assistant',
+      parts,
+      createdAt: this.now(),
+      meta: {
+        model: this.config.model,
+        provider: this.provider.protocol,
+        ...(finishReason !== undefined ? { finishReason } : {})
+      },
+    };
     this.messages.push(assistantMessage);
     this.contextMessages.push(userMessage, assistantMessage);
     // 跨 turn 上下文：保留用户消息 + 完整工具调用历史 + 最终回答
@@ -209,6 +239,7 @@ export class ChatSessionController {
       ...turnMessages,
       { role: 'assistant', content: finalText }
     );
+    this.toolActivities = [];
     this.draft = undefined;
     this.status = 'idle';
     this.lastError = undefined;
@@ -278,7 +309,7 @@ export class ChatSessionController {
 function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   return {
     role: message.role,
-    content: message.parts.map((part) => part.text).join('')
+    content: message.parts.filter((p) => p.type === 'text').map((p) => p.text).join('')
   };
 }
 
