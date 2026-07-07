@@ -203,17 +203,23 @@ function collectToolCallDeltas(toolCalls: Map<number, OpenAIToolCallAccumulator>
     const existing = toolCalls.get(delta.index) ?? { id: undefined, name: undefined, argumentsText: '' };
 
     if (delta.id !== undefined) {
-      if (typeof delta.id !== 'string' || delta.id.length === 0) {
+      if (typeof delta.id !== 'string') {
         throw createProtocolError('OpenAI-compatible provider returned an invalid tool call id.');
       }
-      existing.id = delta.id;
+      // 跳过空字符串（某些 OpenAI 兼容代理在后续 delta 中发送空 id）
+      if (delta.id.length > 0) {
+        existing.id = delta.id;
+      }
     }
 
     if (delta.function?.name !== undefined) {
-      if (typeof delta.function.name !== 'string' || delta.function.name.length === 0) {
+      if (typeof delta.function.name !== 'string') {
         throw createProtocolError('OpenAI-compatible provider returned an invalid tool call name.');
       }
-      existing.name = delta.function.name;
+      // 跳过空字符串（某些 OpenAI 兼容代理在后续 delta 中发送空 name）
+      if (delta.function.name.length > 0) {
+        existing.name = delta.function.name;
+      }
     }
 
     if (delta.function?.arguments !== undefined) {

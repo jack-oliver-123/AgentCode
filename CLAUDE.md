@@ -102,6 +102,12 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 - **根因：** `npx tsx` 在 Git Bash 背景进程中的 stdout 管道有问题
 - **解决：** 改用 `node --import tsx/esm script.ts`
 
+### OpenAI 兼容代理层 tool call delta 发送空字符串
+
+- **现象：** `protocol_error: OpenAI-compatible provider returned an invalid tool call name.`
+- **根因：** 某些 OpenAI 兼容代理（OneAPI/New API 等）在流式 tool call 的后续 delta chunk 中会发送 `"name": ""` 或 `"id": ""`（空字符串），而非省略该字段
+- **解决：** 将 `name`/`id` 的空字符串视为"无更新"跳过，而非视为非法值报错
+
 ### exactOptionalPropertyTypes 导致 undefined 赋值报错
 
 - **现象：** `Type 'AbortSignal | undefined' is not assignable to type 'AbortSignal'`
