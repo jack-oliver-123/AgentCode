@@ -48,6 +48,10 @@ export interface AgentLoopDeps {
   /** 工厂函数，每次工具执行时创建新的 context（确保 signal 正确传播） */
   createToolContext: (signal?: AbortSignal) => ToolExecutionContext;
   config: AgentLoopConfig;
+  /** 模型名称，传递给 provider request */
+  model: string;
+  /** thinking 配置 */
+  thinking: { enabled: boolean; budgetTokens?: number };
 }
 
 // ─── Plan ─────────────────────────────────────────────────────────────
@@ -140,6 +144,8 @@ export interface AgentLoopCompleted {
   totalIterations: number;
   /** 终止原因 */
   reason: AgentLoopStopReason;
+  /** 本次 turn 内产生的全部消息（含工具调用/结果），用于跨 turn 上下文累积 */
+  turnMessages: ProviderMessage[];
 }
 
 export interface AgentLoopFailed {

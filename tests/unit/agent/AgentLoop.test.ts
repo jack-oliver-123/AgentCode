@@ -64,6 +64,8 @@ function makeDeps(
       ...(signal !== undefined ? { signal } : {}),
     }),
     config: { ...DEFAULT_AGENT_LOOP_CONFIG, ...configOverrides },
+    model: 'test-model',
+    thinking: { enabled: false },
   };
 }
 
