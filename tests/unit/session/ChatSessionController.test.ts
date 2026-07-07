@@ -144,13 +144,12 @@ describe('ChatSessionController', () => {
     // 验证有 tool activity 状态
     expect(states.some((state) => state.draft?.activity.type === 'tool' && state.draft.activity.toolName === 'test_tool')).toBe(true);
 
-    expect(finalState).toMatchObject({
-      status: 'idle',
-      messages: [
-        { role: 'user', parts: [{ type: 'text', text: 'Use a tool' }] },
-        { role: 'assistant', parts: [{ type: 'text', text: 'Tool result received' }] }
-      ]
-    });
+    expect(finalState?.status).toBe('idle');
+    expect(finalState?.messages[0]).toMatchObject({ role: 'user', parts: [{ type: 'text', text: 'Use a tool' }] });
+    // assistant message 包含 tool_use part + text part
+    const assistantParts = finalState?.messages[1]?.parts ?? [];
+    expect(assistantParts.some((p) => p.type === 'tool_use' && p.toolName === 'test_tool')).toBe(true);
+    expect(assistantParts.at(-1)).toMatchObject({ type: 'text', text: 'Tool result received' });
 
     // Agent Loop 发起了两次 provider 请求
     expect(provider.requests).toHaveLength(2);
@@ -288,7 +287,9 @@ describe('ChatSessionController', () => {
       isError: true,
       content: expect.stringContaining('tool failed')
     });
-    expect(controller.getState().messages.at(-1)?.parts[0]?.text).toBe('I saw the tool failure');
+    const lastMsg = controller.getState().messages.at(-1);
+    const textPart = lastMsg?.parts.find((p) => p.type === 'text');
+    expect(textPart?.type === 'text' ? textPart.text : undefined).toBe('I saw the tool failure');
   });
 
   it('handles multi-step tool calls autonomously (Agent Loop)', async () => {
@@ -317,13 +318,13 @@ describe('ChatSessionController', () => {
 
     const states = await collectStates(controller.submitUserText('Use two tools'));
 
-    expect(states.at(-1)).toMatchObject({
-      status: 'idle',
-      messages: [
-        { role: 'user' },
-        { role: 'assistant', parts: [{ type: 'text', text: 'Both tools executed' }] }
-      ]
-    });
+    const finalState = states.at(-1);
+    expect(finalState?.status).toBe('idle');
+    expect(finalState?.messages[0]).toMatchObject({ role: 'user' });
+    // assistant message 包含 2 个 tool_use parts + text part
+    const assistantParts = finalState?.messages[1]?.parts ?? [];
+    expect(assistantParts.filter((p) => p.type === 'tool_use')).toHaveLength(2);
+    expect(assistantParts.at(-1)).toMatchObject({ type: 'text', text: 'Both tools executed' });
     expect(registry.executions).toEqual(['hello', 'world']);
     expect(provider.requests).toHaveLength(3);
   });
@@ -381,7 +382,10 @@ describe('ChatSessionController', () => {
       { role: 'user', content: 'Failed question' },
       { role: 'user', content: 'Fresh question' }
     ]);
-    expect(controller.getState().messages.map((message) => message.parts[0]?.text)).toEqual([
+    expect(controller.getState().messages.map((message) => {
+      const textPart = message.parts.find((p) => p.type === 'text');
+      return textPart?.type === 'text' ? textPart.text : undefined;
+    })).toEqual([
       'Failed question',
       'Fresh question',
       'second answer'

@@ -3,7 +3,9 @@ import type { PublicError } from '../shared/errors.js';
 
 export type MessageRole = 'user' | 'assistant';
 
-export type MessagePart = { type: 'text'; text: string };
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; toolName: string; summary: string; isError: boolean };
 
 export interface ChatMessage {
   id: string;
