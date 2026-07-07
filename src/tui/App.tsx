@@ -16,7 +16,7 @@ export interface AppProps {
 }
 
 export function App({ controller, cwd, resolvedConfig }: AppProps): ReactElement {
-  const { state, submitText } = useChatController(controller);
+  const { state, submitText, toggleMode } = useChatController(controller);
   const isStreaming = state.status === 'streaming';
 
   return (
@@ -27,8 +27,8 @@ export function App({ controller, cwd, resolvedConfig }: AppProps): ReactElement
         draft={state.draft}
         showThinking={resolvedConfig.config.ui.showThinking}
       />
-      <NoticeBar error={state.lastError} />
-      <InputPane disabled={isStreaming} onSubmit={submitText} />
+      <NoticeBar error={state.lastError} notice={state.notice} />
+      <InputPane disabled={isStreaming} mode={state.mode} onSubmit={submitText} onToggleMode={toggleMode} />
     </Box>
   );
 }
