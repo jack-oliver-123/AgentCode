@@ -45,8 +45,13 @@ export async function* runAgentLoop(
   // 记录初始消息数量，后续新增的就是 turnMessages
   const initialMessageCount = messages.length;
 
+  // 工具声明在循环内不变，提前计算
+  const declarations = enhanceToolDeclarations(activeRegistry.getProviderDeclarations());
+
   let iteration = 0;
   let consecutiveUnknownTools = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
 
   while (iteration < config.maxIterations) {
     iteration++;
@@ -60,7 +65,6 @@ export async function* runAgentLoop(
     }
 
     // 构建 provider request
-    const declarations = enhanceToolDeclarations(activeRegistry.getProviderDeclarations());
     const request: ProviderRequest = {
       model,
       messages: [...messages],
@@ -99,9 +103,20 @@ export async function* runAgentLoop(
             receivedComplete = true;
             break;
 
-          case 'response.usage':
-            console.debug('[AgentLoop] usage:', event.usage);
+          case 'response.usage': {
+            const promptTokens = typeof event.usage.inputTokens === 'number' ? event.usage.inputTokens : undefined;
+            const completionTokens = typeof event.usage.outputTokens === 'number' ? event.usage.outputTokens : undefined;
+            if (promptTokens !== undefined) totalPromptTokens += promptTokens;
+            if (completionTokens !== undefined) totalCompletionTokens += completionTokens;
+            yield {
+              type: 'token.usage',
+              ...(promptTokens !== undefined ? { promptTokens } : {}),
+              ...(completionTokens !== undefined ? { completionTokens } : {}),
+              totalPromptTokens,
+              totalCompletionTokens,
+            };
             break;
+          }
 
           case 'response.error':
             hasError = true;

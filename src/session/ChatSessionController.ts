@@ -157,7 +157,6 @@ export class ChatSessionController {
         contextMessages: [...this.providerContext],
         userMessage: toProviderMessage(userMessage),
         mode: this.currentMode,
-        ...(this.currentMode === 'full' && this.storedPlan ? { plan: this.storedPlan } : {}),
         ...(reminder.length > 0 ? { reminder } : {}),
         ...(options.signal !== undefined ? { signal: options.signal } : {}),
       };

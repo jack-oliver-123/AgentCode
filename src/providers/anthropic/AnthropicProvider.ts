@@ -463,7 +463,8 @@ function buildBetaHeader(request: ProviderRequest, existingHeaders: Record<strin
     return undefined;
   }
 
-  const existing = existingHeaders?.['anthropic-beta'];
+  // HTTP headers 大小写不敏感，需遍历查找
+  const existing = findHeaderValue(existingHeaders, 'anthropic-beta');
   if (existing !== undefined && existing.length > 0) {
     if (existing.includes(PROMPT_CACHING_BETA)) {
       return existing;
@@ -472,6 +473,18 @@ function buildBetaHeader(request: ProviderRequest, existingHeaders: Record<strin
   }
 
   return PROMPT_CACHING_BETA;
+}
+
+/** 大小写不敏感查找 header 值 */
+function findHeaderValue(headers: Record<string, string> | undefined, name: string): string | undefined {
+  if (headers === undefined) return undefined;
+  const lowerName = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lowerName) {
+      return headers[key];
+    }
+  }
+  return undefined;
 }
 
 function createAnthropicUsageEvent(
