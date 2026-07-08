@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, useStdout } from 'ink';
 import React, { useState, type ReactElement } from 'react';
 
 import type { AgentLoopMode } from '../../agent/types.js';
@@ -11,7 +11,8 @@ interface SegmenterConstructorLike {
   new (locale: string | undefined, options: { granularity: 'grapheme' }): SegmenterLike;
 }
 
-const DIVIDER = '─'.repeat(96);
+const DEFAULT_DIVIDER_WIDTH = 80;
+const MIN_DIVIDER_WIDTH = 40;
 
 export interface InputPaneProps {
   disabled: boolean;
@@ -22,6 +23,10 @@ export interface InputPaneProps {
 
 export function InputPane({ disabled, mode, onSubmit, onToggleMode }: InputPaneProps): ReactElement {
   const [input, setInput] = useState('');
+  const { stdout } = useStdout();
+  const columns = stdout?.columns ?? DEFAULT_DIVIDER_WIDTH;
+  const dividerWidth = Math.max(MIN_DIVIDER_WIDTH, columns - 2);
+  const divider = '─'.repeat(dividerWidth);
 
   useInput(
     (text, key) => {
@@ -65,13 +70,13 @@ export function InputPane({ disabled, mode, onSubmit, onToggleMode }: InputPaneP
 
   return (
     <Box flexDirection="column" aria-role="textbox" aria-state={{ disabled }}>
-      <Text color="blue">{DIVIDER}</Text>
+      <Text color="blue">{divider}</Text>
       <Box>
         <Text color={accentColor}>{modePrefix}</Text>
         <Text>{inputText}</Text>
         {!disabled && input.length === 0 ? <Text color="gray">Ask AgentCode about this project…</Text> : null}
       </Box>
-      <Text color="blue">{DIVIDER}</Text>
+      <Text color="blue">{divider}</Text>
       <Text color="gray">{helperText}</Text>
     </Box>
   );

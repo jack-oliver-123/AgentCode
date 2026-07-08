@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 
 import type { ToolExecutionError } from '../types.js';
 
@@ -19,7 +19,30 @@ export type ReadTextFileResult =
 
 const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
 
+/** 最大允许读入内存的文件大小（10 MB） */
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+
 export async function readTextFile(absolutePath: string): Promise<ReadTextFileResult> {
+  // 大文件前置检查：避免将超大文件一次性读入内存导致 OOM
+  try {
+    const fileStat = await stat(absolutePath);
+    if (fileStat.size > MAX_FILE_SIZE_BYTES) {
+      return {
+        ok: false,
+        error: {
+          code: 'file_too_large',
+          message: `File is ${Math.round(fileStat.size / 1024 / 1024)}MB, exceeding the ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB limit. Use a smaller maxBytes or read specific sections.`,
+          retryable: true,
+        }
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      error: createReadFileError(error)
+    };
+  }
+
   let fileBuffer: Buffer;
   try {
     fileBuffer = await readFile(absolutePath);
