@@ -124,11 +124,6 @@ function formatDraftStatus(draft: ChatSessionDraft, showThinking: boolean): stri
   }
 
   const hasVisibleText = draft.visibleText.length > 0;
-  const hasThinkingText = draft.thinkingText.length > 0;
-
-  if (!hasVisibleText && hasThinkingText) {
-    return showThinking ? 'Thinking' : 'Waiting for model response';
-  }
 
   if (!hasVisibleText) {
     return showThinking ? 'Thinking' : 'Waiting for model response';
