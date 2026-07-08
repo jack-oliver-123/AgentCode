@@ -7,6 +7,12 @@ export type ToolJsonSchema = {
   additionalProperties: boolean;
 };
 
+/**
+ * 工具 schema 属性类型。仅支持标量类型（string/number/boolean）。
+ * 如果工具需要接收数组/对象，请将参数声明为 string 类型，
+ * 由模型传入 JSON 字符串，在 validate 函数中 JSON.parse 并校验结构。
+ * 参考实现：src/tools/builtins/submitPlan.ts
+ */
 export type ToolJsonSchemaProperty =
   | {
       type: 'string';
