@@ -588,6 +588,7 @@ function createController(
     createId: (prefix) => `${prefix}-${++idCounter}`,
     now: () => 1234,
     cwd: process.cwd(),
+    buildSystemPrompt: () => ({ system: '', reminder: '' }),
     ...controllerOptions
   });
 }

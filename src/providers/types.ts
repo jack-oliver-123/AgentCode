@@ -31,6 +31,7 @@ export interface ProviderToolResultMessage {
 export interface ProviderRequest {
   model: string;
   messages: ChatMessage[];
+  system?: string;
   thinking: {
     enabled: boolean;
     budgetTokens?: number;
@@ -40,11 +41,20 @@ export interface ProviderRequest {
   signal?: AbortSignal;
 }
 
+export interface UsageInfo {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  cachedTokens?: number;
+}
+
 export type ProviderEvent =
   | { type: 'response.start' }
   | { type: 'content.delta'; delta: string }
   | { type: 'thinking.delta'; delta: string }
   | { type: 'tool.call'; call: ProviderToolCall }
+  | { type: 'response.usage'; usage: UsageInfo }
   | { type: 'response.complete'; finishReason?: string }
   | { type: 'response.error'; error: PublicError };
 

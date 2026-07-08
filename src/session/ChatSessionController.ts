@@ -8,6 +8,8 @@ import { runAgentLoop } from '../agent/AgentLoop.js';
 import type { AgentLoopConfig, AgentLoopDeps, AgentLoopEvent, AgentLoopInput, AgentLoopMode, PlanStep } from '../agent/types.js';
 import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
 import type { ChatMessage, ChatSessionDraft, ChatSessionEvent, ChatSessionState, MessagePart, MessageRole } from './types.js';
+import { buildSystemPrompt } from '../system-prompt/index.js';
+import type { SystemPromptBuilder, EnvContext } from '../system-prompt/types.js';
 
 export interface ChatSessionControllerOptions {
   provider: ChatModelProvider;
@@ -20,6 +22,8 @@ export interface ChatSessionControllerOptions {
   maxToolOutputBytes?: number;
   toolSecrets?: readonly string[];
   agentLoopConfig?: Partial<AgentLoopConfig>;
+  /** 依赖注入：系统提示构建器，便于测试 mock */
+  buildSystemPrompt?: SystemPromptBuilder;
 }
 
 export interface SubmitUserTextOptions {
@@ -53,6 +57,14 @@ export class ChatSessionController {
   private toolActivities: MessagePart[] = [];
   /** 瞬态系统提示，下次 state 事件后清除 */
   private notice: string | undefined;
+  /** 当前 turn 索引（每轮 +1） */
+  private turnIndex: number = 0;
+  /** 运行环境上下文 */
+  private readonly envContext: EnvContext;
+  /** 会话级系统提示（构造时计算一次） */
+  private readonly systemPrompt: string;
+  /** 系统提示构建器（可注入） */
+  private readonly buildSystemPromptFn: SystemPromptBuilder;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -68,6 +80,21 @@ export class ChatSessionController {
       ...DEFAULT_AGENT_LOOP_CONFIG,
       ...options.agentLoopConfig,
     };
+
+    // 系统提示初始化
+    this.buildSystemPromptFn = options.buildSystemPrompt ?? buildSystemPrompt;
+    this.envContext = {
+      os: process.platform,
+      shell: process.env.SHELL ?? (process.platform === 'win32' ? 'powershell' : 'bash'),
+      cwd: this.cwd,
+      date: new Date().toISOString().slice(0, 10),
+    };
+    const { system } = this.buildSystemPromptFn({
+      mode: this.currentMode,
+      turnIndex: 0,
+      env: this.envContext,
+    });
+    this.systemPrompt = system;
   }
 
   getState(): ChatSessionState {
@@ -117,11 +144,21 @@ export class ChatSessionController {
     const registry = this.toolRegistry;
 
     try {
+      // 构建当前轮 reminder
+      const { reminder } = this.buildSystemPromptFn({
+        mode: this.currentMode,
+        turnIndex: this.turnIndex,
+        ...(this.storedPlan !== undefined ? { plan: this.storedPlan } : {}),
+        env: this.envContext,
+      });
+      this.turnIndex++;
+
       const input: AgentLoopInput = {
         contextMessages: [...this.providerContext],
         userMessage: toProviderMessage(userMessage),
         mode: this.currentMode,
         ...(this.currentMode === 'full' && this.storedPlan ? { plan: this.storedPlan } : {}),
+        ...(reminder.length > 0 ? { reminder } : {}),
         ...(options.signal !== undefined ? { signal: options.signal } : {}),
       };
 
@@ -138,6 +175,7 @@ export class ChatSessionController {
         config: this.agentLoopConfig,
         model: this.config.model,
         thinking: this.config.thinking,
+        ...(this.systemPrompt !== undefined ? { system: this.systemPrompt } : {}),
       };
 
       for await (const event of runAgentLoop(input, deps)) {
@@ -208,6 +246,12 @@ export class ChatSessionController {
       case 'loop.failed':
         this.failTurn(userMessage, event.error);
         return this.createStateChangedEvent();
+
+      default: {
+        // exhaustive check: 新增事件类型时编译器会报错
+        const _exhaustive: never = event;
+        return _exhaustive;
+      }
     }
   }
 
