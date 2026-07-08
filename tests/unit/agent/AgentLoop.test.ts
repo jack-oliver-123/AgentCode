@@ -380,7 +380,12 @@ describe('runAgentLoop - Plan Mode', () => {
 
     const registry = makeRegistry([makeTool('read_file', 'read'), submitPlanTool]);
 
-    const planSteps = JSON.stringify({ steps: [{ title: 'Step 1', description: 'Do thing' }] });
+    // 新 schema 下 steps 是 JSON 字符串，validate 解析后传给 execute 的是数组
+    const planSteps = JSON.stringify({ steps: JSON.stringify([{ title: 'Step 1', description: 'Do thing' }]) });
+    submitPlanTool.validate = (input: unknown) => ({
+      ok: true as const,
+      value: { steps: JSON.parse((input as { steps: string }).steps) },
+    });
     const provider = new FakeProvider([
       [
         { type: 'response.start' },
