@@ -73,6 +73,12 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 
 ## 推荐工作方式
 
+发现 bug 或需要改进时：
+
+1. **不要直接修改代码**。先在 GitHub 创建 issue（`gh issue create`），描述清楚现象、根因分析和建议修复方案。
+2. 等用户确认或分配后，再按 issue 内容实施修改。
+3. 踩坑记录可以同步写入 CLAUDE.md，但代码变更必须有对应 issue。
+
 实现功能前：
 
 1. 先检查现有文件和文档，尤其是 `docs/task01/claude-code-implementation-research.md`。
@@ -120,17 +126,25 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 - **教训：** 修改公共接口后必须立刻全局搜索所有 mock/stub 实现并同步更新
 - **快速定位：** `npx tsc --noEmit` 会一次性列出所有缺失点
 
-### ToolJsonSchemaProperty 不支持 array 类型
+### ToolJsonSchemaProperty 不支持复杂嵌套类型
 
-- **现象：** `submit_plan` 需要 array schema 但类型系统不允许
-- **解决：** 扩展了 `ToolJsonSchemaProperty` 联合类型，增加 `{ type: 'array'; items: ... }` 分支
-- **教训：** schema 类型系统要预留扩展空间
+- **现象：** `submit_plan` 需要 array schema，但嵌套 `array → object` 结构会导致 OneAPI/New API 代理网关 5xx（Issue #11）
+- **解决：** 将参数声明为 `string` 类型，模型传入 JSON 字符串，在 `validate` 函数中 `JSON.parse` 后校验结构。`ToolJsonSchemaProperty` 仅保留标量类型
+- **教训：** 代理网关对复杂 JSON Schema 支持不可靠；用 string + 运行时解析更稳健
+- **参考：** `src/tools/builtins/submitPlan.ts`
 
 ### 文件系统测试在并行运行时 flaky
 
 - **现象：** `write-file.test.ts`、`run-command.test.ts`、`edit-file.test.ts` 全量运行时偶尔失败，单独运行通过
 - **根因：** 文件系统操作有时间竞争，或 timeout 测试对系统负载敏感
 - **处理：** 这些不是逻辑 bug；单独验证通过即可，全量运行的偶尔失败可忽略
+
+### submit_plan 嵌套 schema 导致代理网关报错（Issue #11）
+
+- **现象：** plan 模式下发送任何消息，返回 `provider_error: Upstream request failed`；切回 full 模式正常
+- **根因：** `submit_plan` 工具 schema 使用了 `array → object` 嵌套结构，部分 OneAPI/New API 代理网关对复杂嵌套 tool schema 处理有 bug，转发到上游时被拒绝
+- **解决方向：** 将 `steps` 字段从 `array<object>` 简化为 `string` 类型（模型传 JSON 字符串，validate 侧解析），保留 tool call 语义的同时避免嵌套 schema
+- **关联文件：** `src/tools/builtins/submitPlan.ts`、`src/tools/types.ts`
 
 ## 架构方向
 
