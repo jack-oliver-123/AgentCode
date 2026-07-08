@@ -18,16 +18,9 @@ export function createSubmitPlanTool(): ToolDefinition<SubmitPlanInput, SubmitPl
       type: 'object',
       properties: {
         steps: {
-          type: 'array',
-          description: 'Ordered list of plan steps, each with a title and description.',
-          items: {
-            type: 'object',
-            properties: {
-              title: { type: 'string', description: 'Short title of this step.' },
-              description: { type: 'string', description: 'Detailed description of what to do in this step.' },
-            },
-            required: ['title', 'description'],
-          },
+          type: 'string',
+          description:
+            'JSON array of plan steps. Each element must be an object with "title" and "description" fields. Example: [{"title":"Read config","description":"Check current settings"}]',
         },
       },
       required: ['steps'],
@@ -44,16 +37,27 @@ function validateSubmitPlanInput(input: unknown): ToolValidationResult<SubmitPla
     return invalidArgs('submit_plan arguments must be an object.');
   }
 
-  if (!Array.isArray(input.steps)) {
-    return invalidArgs('submit_plan.steps must be an array.');
+  if (typeof input.steps !== 'string') {
+    return invalidArgs('submit_plan.steps must be a JSON string.');
   }
 
-  if (input.steps.length === 0) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input.steps);
+  } catch {
+    return invalidArgs('submit_plan.steps is not valid JSON.');
+  }
+
+  if (!Array.isArray(parsed)) {
+    return invalidArgs('submit_plan.steps must be a JSON array.');
+  }
+
+  if (parsed.length === 0) {
     return invalidArgs('submit_plan.steps must have at least one step.');
   }
 
-  for (let i = 0; i < input.steps.length; i++) {
-    const step = input.steps[i];
+  for (let i = 0; i < parsed.length; i++) {
+    const step = parsed[i] as unknown;
     if (!isRecord(step)) {
       return invalidArgs(`submit_plan.steps[${i}] must be an object.`);
     }
@@ -68,7 +72,7 @@ function validateSubmitPlanInput(input: unknown): ToolValidationResult<SubmitPla
   return {
     ok: true,
     value: {
-      steps: input.steps.map((s: Record<string, unknown>) => ({
+      steps: (parsed as Record<string, unknown>[]).map((s) => ({
         title: s.title as string,
         description: s.description as string,
       })),
