@@ -4,7 +4,7 @@ import { createCancellationError, createProtocolError } from '../shared/errors.j
 import { joinEndpoint } from '../shared/endpoint.js';
 import { fetchJsonStream, type FetchJsonOptions, type FetchTransportOptions } from '../shared/fetchTransport.js';
 import { readNextSseEvent, readSseStream } from '../shared/sse.js';
-import type { ChatModelProvider, ProviderEvent, ProviderRequest } from '../types.js';
+import type { ChatModelProvider, ProviderEvent, ProviderRequest, UsageInfo } from '../types.js';
 
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MAX_TOKENS = 4096;
@@ -13,6 +13,14 @@ const DEFAULT_THINKING_BUDGET_TOKENS = 1024;
 interface AnthropicStreamEvent {
   type?: unknown;
   index?: unknown;
+  message?: {
+    usage?: {
+      input_tokens?: unknown;
+      output_tokens?: unknown;
+      cache_creation_input_tokens?: unknown;
+      cache_read_input_tokens?: unknown;
+    };
+  };
   content_block?: {
     type?: unknown;
     id?: unknown;
@@ -24,6 +32,9 @@ interface AnthropicStreamEvent {
     text?: unknown;
     thinking?: unknown;
     partial_json?: unknown;
+  };
+  usage?: {
+    output_tokens?: unknown;
   };
 }
 
@@ -54,12 +65,14 @@ export class AnthropicProvider implements ChatModelProvider {
     try {
       yield { type: 'response.start' };
 
+      const betaHeader = buildBetaHeader(request, this.config.request.headers);
       const requestOptions: FetchJsonOptions = {
         url: joinEndpoint(this.config.baseUrl, getMessagesEndpointPath(this.config.baseUrl)),
         headers: {
           'x-api-key': this.config.apiKey,
           'anthropic-version': ANTHROPIC_VERSION,
-          ...this.config.request.headers
+          ...this.config.request.headers,
+          ...(betaHeader !== undefined ? { 'anthropic-beta': betaHeader } : {})
         },
         body: createAnthropicRequestBody(request),
         ...(request.signal !== undefined ? { signal: request.signal } : {})
@@ -71,6 +84,10 @@ export class AnthropicProvider implements ChatModelProvider {
       const stream = await fetchJsonStream(requestOptions, transportOptions);
 
       let finishReason: string | undefined;
+      let usageInputTokens: number | undefined;
+      let usageOutputTokens = 0;
+      let usageCacheCreationTokens: number | undefined;
+      let usageCacheReadTokens: number | undefined;
       const toolUses = new Map<number, AnthropicToolUseAccumulator>();
       const streamTimeoutController = new AbortController();
       const sseIterator = readSseStream(stream, { signal: streamTimeoutController.signal })[Symbol.asyncIterator]();
@@ -94,6 +111,24 @@ export class AnthropicProvider implements ChatModelProvider {
           }
 
           const event = parseAnthropicEvent(sseEvent.data);
+
+          if (event.type === 'message_start') {
+            const msgUsage = event.message?.usage;
+            if (msgUsage !== undefined) {
+              if (typeof msgUsage.input_tokens === 'number') {
+                usageInputTokens = msgUsage.input_tokens;
+              }
+              if (typeof msgUsage.output_tokens === 'number') {
+                usageOutputTokens = msgUsage.output_tokens;
+              }
+              if (typeof msgUsage.cache_creation_input_tokens === 'number') {
+                usageCacheCreationTokens = msgUsage.cache_creation_input_tokens;
+              }
+              if (typeof msgUsage.cache_read_input_tokens === 'number') {
+                usageCacheReadTokens = msgUsage.cache_read_input_tokens;
+              }
+            }
+          }
 
           if (event.type === 'content_block_start') {
             collectToolUseStart(toolUses, event);
@@ -133,9 +168,15 @@ export class AnthropicProvider implements ChatModelProvider {
 
           if (event.type === 'message_delta') {
             finishReason = extractStopReason(event);
+            if (typeof event.usage?.output_tokens === 'number') {
+              usageOutputTokens = event.usage.output_tokens;
+            }
           }
 
           if (event.type === 'message_stop') {
+            if (usageInputTokens !== undefined) {
+              yield createAnthropicUsageEvent(usageInputTokens, usageOutputTokens, usageCacheCreationTokens, usageCacheReadTokens);
+            }
             yield createCompleteEvent(finishReason);
             return;
           }
@@ -168,6 +209,10 @@ function createAnthropicRequestBody(request: ProviderRequest): Record<string, un
     stream: true,
     max_tokens: getMaxTokens(request)
   };
+
+  if (request.system !== undefined && request.system.length > 0) {
+    body.system = [{ type: 'text', text: request.system, cache_control: { type: 'ephemeral' } }];
+  }
 
   if (request.toolChoice !== 'none' && request.tools !== undefined && request.tools.length > 0) {
     body.tools = request.tools.map((tool) => ({
@@ -409,4 +454,38 @@ function createCompleteEvent(finishReason: string | undefined): ProviderEvent {
     type: 'response.complete',
     finishReason
   };
+}
+
+function buildBetaHeader(request: ProviderRequest, existingHeaders: Record<string, string> | undefined): string | undefined {
+  const PROMPT_CACHING_BETA = 'prompt-caching-2024-07-31';
+
+  if (request.system === undefined || request.system.length === 0) {
+    return undefined;
+  }
+
+  const existing = existingHeaders?.['anthropic-beta'];
+  if (existing !== undefined && existing.length > 0) {
+    if (existing.includes(PROMPT_CACHING_BETA)) {
+      return existing;
+    }
+    return `${existing},${PROMPT_CACHING_BETA}`;
+  }
+
+  return PROMPT_CACHING_BETA;
+}
+
+function createAnthropicUsageEvent(
+  inputTokens: number,
+  outputTokens: number,
+  cacheCreationTokens: number | undefined,
+  cacheReadTokens: number | undefined
+): ProviderEvent {
+  const usageInfo: UsageInfo = {
+    inputTokens,
+    outputTokens,
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {})
+  };
+
+  return { type: 'response.usage', usage: usageInfo };
 }
