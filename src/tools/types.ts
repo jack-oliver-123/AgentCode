@@ -15,19 +15,7 @@ export type ToolJsonSchemaProperty =
   | {
       type: 'number' | 'boolean';
       description: string;
-    }
-  | {
-      type: 'array';
-      description: string;
-      items: ToolJsonSchemaObjectItem;
     };
-
-/** 数组元素为对象时的 schema（支持 submit_plan 等嵌套结构） */
-export interface ToolJsonSchemaObjectItem {
-  type: 'object';
-  properties: Record<string, { type: 'string'; description: string }>;
-  required?: string[];
-}
 
 export type ToolValidationResult<TInput> =
   | {
