@@ -124,13 +124,12 @@ export class OpenAIProvider implements ChatModelProvider {
             }
           }
 
-          if (typeof choice?.finish_reason === 'string') {
+          if (typeof choice?.finish_reason === 'string' && choice.finish_reason.length > 0) {
             finishReason = choice.finish_reason;
             if (finishReason === 'tool_calls') {
               yield* emitToolCallEvents(toolCalls);
             }
-            yield createCompleteEvent(finishReason);
-            return;
+            // 不立即 return — 等待后续 usage chunk 和 [DONE] 信号
           }
         }
       } finally {
