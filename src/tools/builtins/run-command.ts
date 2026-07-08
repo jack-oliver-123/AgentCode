@@ -6,6 +6,7 @@ import { runCommandInputSchema } from '../schemas.js';
 import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
 import { redactToolValue } from '../redaction.js';
 import { invalidArguments, isRecord } from './validation.js';
+import { isPositiveInteger, truncateUtf8 } from './file-discovery.js';
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_TIMEOUT_MS = 30_000;
@@ -203,25 +204,6 @@ function redactAndTruncate(content: string, context: ToolExecutionContext): { co
   };
 }
 
-function truncateUtf8(content: string, maxBytes: number): { content: string; bytes: number } {
-  let bytes = 0;
-  let truncatedContent = '';
-
-  for (const char of content) {
-    const charBytes = Buffer.byteLength(char, 'utf8');
-    if (bytes + charBytes > maxBytes) {
-      break;
-    }
-
-    bytes += charBytes;
-    truncatedContent += char;
-  }
-
-  return {
-    content: truncatedContent,
-    bytes
-  };
-}
 
 function getCaptureByteLimit(context: ToolExecutionContext): number {
   const longestSecretBytes = context.secrets.reduce((maxBytes, secret) => Math.max(maxBytes, Buffer.byteLength(secret, 'utf8')), 0);
@@ -401,6 +383,3 @@ function createTimeoutError(timeoutMs: number, output: CommandOutput): ToolExecu
   };
 }
 
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
-}

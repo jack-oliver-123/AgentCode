@@ -103,6 +103,7 @@ export type ToolErrorCode =
   | 'path_outside_workspace'
   | 'file_not_found'
   | 'file_not_text'
+  | 'file_too_large'
   | 'not_unique_match'
   | 'permission_denied'
   | 'command_failed'

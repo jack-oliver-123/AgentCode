@@ -4,6 +4,7 @@ import { redactToolValue } from '../redaction.js';
 import { resolveWorkspacePath } from '../workspace.js';
 import { readTextFile } from './text-file.js';
 import { invalidArguments, isRecord } from './validation.js';
+import { isPositiveInteger, truncateUtf8 } from './file-discovery.js';
 
 interface ReadFileInput {
   path: string;
@@ -102,28 +103,4 @@ function getEffectiveMaxBytes(inputMaxBytes: number | undefined, contextMaxOutpu
   }
 
   return Math.min(inputMaxBytes, contextMaxOutputBytes);
-}
-
-function truncateUtf8(content: string, maxBytes: number): { content: string; bytes: number } {
-  let bytes = 0;
-  let truncatedContent = '';
-
-  for (const char of content) {
-    const charBytes = Buffer.byteLength(char, 'utf8');
-    if (bytes + charBytes > maxBytes) {
-      break;
-    }
-
-    bytes += charBytes;
-    truncatedContent += char;
-  }
-
-  return {
-    content: truncatedContent,
-    bytes
-  };
-}
-
-function isPositiveInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
