@@ -35,8 +35,8 @@ export interface AgentLoopInput {
   userMessage: ProviderMessage;
   /** 运行模式：full 注入全部工具，plan 只注入 read 类 + submit_plan */
   mode: AgentLoopMode;
-  /** /do 时注入的已存储计划 */
-  plan?: PlanStep[];
+  /** 当前轮 reminder 文本（注入到 userMessage 前部） */
+  reminder?: string;
   /** 取消信号 */
   signal?: AbortSignal;
 }
@@ -52,6 +52,8 @@ export interface AgentLoopDeps {
   model: string;
   /** thinking 配置 */
   thinking: { enabled: boolean; budgetTokens?: number };
+  /** 系统提示文本（会话级稳定） */
+  system?: string;
 }
 
 // ─── Plan ─────────────────────────────────────────────────────────────

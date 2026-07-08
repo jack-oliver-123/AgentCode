@@ -1,297 +1,195 @@
-# Agent Loop Tasks
+# 结构化系统提示体系 Tasks
 
 ## 文件清单
 
 | 操作 | 文件 | 职责 |
 |------|------|------|
-| 新建 | `src/agent/types.ts` | Agent Loop 全部类型定义 |
-| 新建 | `src/agent/stopCondition.ts` | 停止条件纯函数 |
-| 新建 | `src/agent/ToolScheduler.ts` | 多工具并发/串行调度 |
-| 新建 | `src/agent/AgentLoop.ts` | 主循环 async generator |
-| 新建 | `src/agent/index.ts` | barrel export |
-| 新建 | `src/tools/builtins/submitPlan.ts` | submit_plan 工具定义 |
-| 修改 | `src/tools/registry.ts` | 新增 filterByRisk() 方法 |
-| 修改 | `src/providers/openai/OpenAIProvider.ts` | emit 所有 tool call |
-| 修改 | `src/providers/anthropic/AnthropicProvider.ts` | emit 所有 tool call |
-| 修改 | `src/session/types.ts` | 扩展 session 状态 |
-| 修改 | `src/session/ChatSessionController.ts` | 重构为 Agent Loop 适配器 |
-| 修改 | `src/tui/useChatController.ts` | 识别 /plan、/do 命令 |
-| 修改 | `src/tui/components/TranscriptPane.tsx` | 显示迭代进度 |
-| 新建 | `tests/unit/agent/stopCondition.test.ts` | 停止条件测试 |
-| 新建 | `tests/unit/agent/ToolScheduler.test.ts` | 调度策略测试 |
-| 新建 | `tests/unit/agent/AgentLoop.test.ts` | 主循环全场景测试 |
-| 修改 | `tests/helpers/FakeProvider.ts` | 支持多轮动态序列 |
-| 修改 | `tests/unit/session/ChatSessionController.test.ts` | 适配重构后的 Controller |
+| 新建 | `src/system-prompt/types.ts` | 接口定义 |
+| 新建 | `src/system-prompt/modules/identity.ts` | 身份模块 |
+| 新建 | `src/system-prompt/modules/constraints.ts` | 约束模块 |
+| 新建 | `src/system-prompt/modules/taskMode.ts` | 任务模式模块 |
+| 新建 | `src/system-prompt/modules/actions.ts` | 动作模块 |
+| 新建 | `src/system-prompt/modules/tools.ts` | 工具模块 |
+| 新建 | `src/system-prompt/modules/tone.ts` | 语气模块 |
+| 新建 | `src/system-prompt/modules/output.ts` | 输出模块 |
+| 新建 | `src/system-prompt/registry.ts` | 模块注册表 |
+| 新建 | `src/system-prompt/builder.ts` | 构建器纯函数 |
+| 新建 | `src/system-prompt/enhanceToolDeclarations.ts` | 工具描述后处理 |
+| 新建 | `src/system-prompt/index.ts` | 桶文件 |
+| 新建 | `tests/unit/system-prompt/builder.test.ts` | 构建器测试 |
+| 新建 | `tests/unit/system-prompt/enhanceToolDeclarations.test.ts` | 工具增强测试 |
+| 新建 | `tests/unit/system-prompt/modules.test.ts` | 模块内容约束测试 |
+| 修改 | `src/providers/types.ts` | +system +UsageInfo +response.usage |
+| 修改 | `src/providers/openai/OpenAIProvider.ts` | system 前置 + stream_options + usage 解析 |
+| 修改 | `src/providers/anthropic/AnthropicProvider.ts` | system 映射 + cache_control + beta header + usage 解析 |
+| 修改 | `src/agent/types.ts` | AgentLoopDeps +system; AgentLoopInput +reminder |
+| 修改 | `src/agent/AgentLoop.ts` | 集成 system/reminder/enhanceToolDeclarations，移除 buildPlanContextMessage |
+| 修改 | `src/session/ChatSessionController.ts` | turnIndex、EnvContext、构建器调用 |
 
-## T1: Agent Loop 类型定义
+## T1: 类型定义与模块内容
 
-**文件：** `src/agent/types.ts`
+**文件：** `src/system-prompt/types.ts`、`src/system-prompt/modules/*.ts`
 **依赖：** 无
 **步骤：**
-1. 创建 `src/agent/` 目录
-2. 定义 `AgentLoopConfig` 接口（maxIterations、maxConsecutiveUnknownTools）
-3. 定义 `AgentLoopInput` 接口（contextMessages、userMessage、mode、plan、signal）
-4. 定义 `AgentLoopDeps` 接口（provider、toolRegistry、createToolContext、config）
-5. 定义 `PlanStep` 接口（title、description）
-6. 定义完整 `AgentLoopEvent` discriminated union（9 个 variant，每个有完整 payload）
-7. 定义 `AgentLoopStopReason` 类型
-8. 定义 `StopConditionContext` 和 `StopDecision` 类型
-9. 定义 `ToolBatch` 接口
-10. 导出全部类型
+1. 创建 `src/system-prompt/types.ts`，定义 `SystemPromptModule`、`EnvContext`、`SystemPromptBuildInput`、`SystemPromptBuildOutput`、`SystemPromptBuilder` 类型
+2. 创建 7 个模块文件（`modules/identity.ts` ~ `modules/output.ts`），每个导出 `export const content: string`
+3. 各模块内容按 spec F2 大纲表格覆盖对应要点，每模块控制在 400-500 tokens 以内
+4. 文件头加注释标注估算 token 数
 
 **验证：** `npm run typecheck` 通过
 
 **任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
 
-## T2: 停止条件纯函数
+## T2: 注册表与构建器
 
-**文件：** `src/agent/stopCondition.ts`、`tests/unit/agent/stopCondition.test.ts`
+**文件：** `src/system-prompt/registry.ts`、`src/system-prompt/builder.ts`、`src/system-prompt/index.ts`
 **依赖：** T1
 **步骤：**
-1. 实现 `checkStopCondition(ctx: StopConditionContext): StopDecision`
-2. 按优先级判断：cancelled > provider_error > natural > unknown_tool_limit > max_iterations > { stop: false }
-3. 编写测试覆盖：
-   - 每种停止原因的基本触发
-   - 边界值：iteration 恰好等于 maxIterations
-   - cancelled 优先级高于其他条件
-   - 空文本 + 无工具调用 = natural
-   - consecutiveUnknownTools 等于阈值时触发
-   - 所有条件都不满足时返回 { stop: false }
-
-**验证：** `npm test -- tests/unit/agent/stopCondition.test.ts` 全部通过
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T3: ToolRegistry 扩展 filterByRisk
-
-**文件：** `src/tools/registry.ts`
-**依赖：** 无
-**步骤：**
-1. 在 `ToolRegistry` 接口中新增 `filterByRisk(allowedRisks: ToolRisk[]): ToolRegistry`
-2. 在 `StaticToolRegistry` 中实现：过滤工具列表，返回新的 `StaticToolRegistry` 实例
-3. 确保 `getProviderDeclarations()` 和 `get()` 在新实例上仅返回过滤后的工具
-4. 补充单元测试验证过滤行为
-
-**验证：** `npm run typecheck` 通过 + 相关测试通过
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T4: Provider 多工具调用支持（独立 commit）
-
-**文件：** `src/providers/openai/OpenAIProvider.ts`、`src/providers/anthropic/AnthropicProvider.ts`
-**依赖：** 无
-**步骤：**
-1. 修改 OpenAI provider：当 `finish_reason === 'tool_calls'` 时，遍历 `toolCallAccumulator` 中的所有条目，为每个 tool call 都 yield 一个 `tool.call` 事件（当前只 yield index 0）
-2. 修改 Anthropic provider：移除 `emittedToolCall = false` 限制，为每个 `content_block_stop`（类型为 tool_use）都 yield 一个 `tool.call` 事件
-3. 更新现有 provider 单元测试验证多 tool call emit
-4. **此修改作为独立 commit 提交**
-
-**验证：** `npm run typecheck` + provider 相关单元测试通过
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T5: ToolScheduler 实现
-
-**文件：** `src/agent/ToolScheduler.ts`、`tests/unit/agent/ToolScheduler.test.ts`
-**依赖：** T1、T3
-**步骤：**
-1. 实现 `createBatches(calls, registry): ToolBatch[]`
-   - read 类工具归入一个 concurrent batch
-   - write/execute 类工具各占一个 sequential batch
-   - 未知工具不进 batch，直接生成 error 结果
-   - 返回顺序：concurrent batch 在前，sequential batch 按原始顺序
-2. 实现 `executeBatches(batches, registry, context): Promise<results[]>`
-   - concurrent batch 用 Promise.allSettled
-   - sequential batch 逐个 await
-   - abort 后后续 batch 不再开始
-   - 结果按原始调用顺序排列
-3. 编写测试覆盖：
-   - 纯 read 工具 → 一个 concurrent batch
-   - 纯 write/execute → 多个 sequential batch
-   - 混合 → read 先并发，write 后串行
-   - 未知工具 → 直接产出 error
-   - 单个工具超时不影响其余（allSettled）
-   - abort 传播：中途 abort 后后续 batch 不执行
-
-**验证：** `npm test -- tests/unit/agent/ToolScheduler.test.ts` 全部通过
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T6: submit_plan 工具定义
-
-**文件：** `src/tools/builtins/submitPlan.ts`、`src/tools/registry.ts`（注册）
-**依赖：** T3
-**步骤：**
-1. 创建 `submitPlan.ts`，定义 ToolDefinition：
-   - name: 'submit_plan'
-   - description: 描述其用途（Plan Mode 下输出结构化计划）
-   - inputSchema: steps 数组（每步有 title + description）
-   - risk: 'read'
-   - validate: 校验 steps 数组格式
-   - execute: 直接返回 parsed steps 数据
-2. 将 submit_plan 注册到 StaticToolRegistry（但默认不加入工具列表——只在 Plan Mode 时通过 filterByRisk + 手动注入方式提供）
-3. 编写单元测试验证 validate 和 execute 行为
-
-**验证：** `npm run typecheck` + 测试通过
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T7: FakeProvider 增强
-
-**文件：** `tests/helpers/FakeProvider.ts`
-**依赖：** T4
-**步骤：**
-1. 扩展 FakeProvider 支持动态多轮序列：
-   - 支持传入 `ProviderEvent[][]`（每个子数组对应一次 stream 调用）
-   - 支持 onRequest callback 模式：根据收到的 messages 动态决定返回事件
-2. 支持在一次 stream 调用中 emit 多个 `tool.call` 事件
-3. 新增辅助函数 `collectEvents(generator)` 收集 async generator 全部事件
-4. 确保现有使用 FakeProvider 的测试不被破坏
-
-**验证：** `npm test` 全部通过（现有测试不回归）
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T8: AgentLoop 主循环实现
-
-**文件：** `src/agent/AgentLoop.ts`、`tests/unit/agent/AgentLoop.test.ts`
-**依赖：** T1、T2、T4、T5、T6、T7
-**步骤：**
-1. 实现 `runAgentLoop(input, deps): AsyncGenerator<AgentLoopEvent>`：
-   - 根据 mode 过滤 registry（plan 模式注入 read + submit_plan）
-   - 构建初始消息（含 plan 注入为 system context）
-   - while 循环：yield iteration.start → stream provider → 双路收集（yield delta + 累积）→ 收集 tool calls → stopCondition 检查 → ToolScheduler 执行 → yield 结果 → 追加消息
-   - finally 块：无独立资源需释放
-2. submit_plan 特殊处理：识别后 yield plan.submitted，结束循环
-3. consecutiveUnknownTools 计数逻辑：全是未知则+1，有已知则重置为 0
-4. 编写测试覆盖：
-   - 正常完成：2 轮工具 + 最终文本
-   - 迭代上限：设 maxIterations=3，provider 永远返回工具
-   - 用户取消：abort signal 触发
-   - 连续未知工具：达到阈值终止
-   - Provider 错误：response.error 事件
-   - 多工具并发：一次返回 2 read + 1 write，验证执行顺序
-   - Plan Mode：只注入 read 工具 + submit_plan
-   - 事件流完整性：验证所有事件类型按正确顺序 yield
-   - 上下文正确性：验证每次 provider.stream 包含完整历史
-
-**验证：** `npm test -- tests/unit/agent/AgentLoop.test.ts` 全部通过
-
-**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
-
-## T9: Agent Loop barrel export
-
-**文件：** `src/agent/index.ts`
-**依赖：** T8
-**步骤：**
-1. 从 `types.ts` 导出所有公共类型
-2. 从 `AgentLoop.ts` 导出 `runAgentLoop`
-3. 从 `stopCondition.ts` 导出 `checkStopCondition`
-4. 从 `ToolScheduler.ts` 导出 `createBatches`、`executeBatches`
+1. 创建 `registry.ts`，导入 7 个模块 content，组装 `defaultRegistry` 数组（含 2 个空占位可选模块）
+2. 创建 `builder.ts`，实现 `buildSystemPrompt(input, registry?)` 纯函数：
+   - 接受可选 `registry` 参数，默认使用 `defaultRegistry`（支持测试注入自定义注册表）
+   - system 构建：`disabled` 用 `filter(Boolean)` 清除空值后过滤、过滤空 content、按 order 稳定排序、`\n\n` 连接
+   - reminder 构建：env 格式化、模式指令频率控制（full 模式跳过）、plan 标签包裹（`plan.length > 0` 时才生成）、`\n` 连接
+   - `reminderInterval` 内部 clamp：`Math.max(1, Math.floor(input.reminderInterval ?? 4))`
+3. 创建 `index.ts` 桶文件，导出 `buildSystemPrompt`、`defaultRegistry`、类型
 
 **验证：** `npm run typecheck` 通过
 
 **任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
 
-## T10: ChatSessionController 重构
+## T3: 构建器单元测试
 
-**文件：** `src/session/ChatSessionController.ts`、`src/session/types.ts`、`tests/unit/session/ChatSessionController.test.ts`
-**依赖：** T8、T9
+**文件：** `tests/unit/system-prompt/builder.test.ts`、`tests/unit/system-prompt/modules.test.ts`
+**依赖：** T2
 **步骤：**
-1. 扩展 `src/session/types.ts`：
-   - `ChatSessionDraftActivity` 新增 iteration 信息
-   - `ChatSessionState` 新增 `loopProgress?: { iteration, maxIterations }`、`storedPlan?: PlanStep[]`
-2. 重构 `ChatSessionController.submitUserText()`：
-   - 移除原有的 provider 调用和工具执行逻辑
-   - 创建 AgentLoopInput（根据命令前缀决定 mode）
-   - 创建 AgentLoopDeps（provider、registry、createToolContext 工厂、config）
-   - for await 遍历 runAgentLoop()
-   - 每个事件通过 `applyAgentLoopEvent()` 转为 draft 更新 → yield state.changed
-3. 实现 `applyAgentLoopEvent()` 映射：
-   - text.delta → draft.visibleText += delta
-   - thinking.delta → draft.thinkingText += delta
-   - tool_call.start → draft.activity = { type: 'tool', toolName }
-   - iteration.start → 重置 draft 文本，activity = thinking
-   - loop.completed → completeTurn()
-   - loop.failed → failTurn()
-   - plan.submitted → this.storedPlan = steps
-4. 新增 `/plan` 和 `/do` 命令识别（文本前缀检查）
-5. 新增 `currentMode` 和 `storedPlan` 字段
-6. 重写 Controller 单元测试适配新行为
+1. 创建 `builder.test.ts`，覆盖以下用例：
+   - AC1: 7 个固定模块按 order 升序；disabled 过滤
+   - AC1a: 相邻模块 `\n\n` 分隔
+   - AC1b: disabled 含不存在 ID 不报错
+   - AC7: push 新模块后拼装包含
+   - AC7a: 空可选模块不参与拼装
+   - AC6: plan mode turnIndex=0 完整版、turnIndex=1 精简版、turnIndex=4 完整版
+   - AC6a: reminderInterval=2 验证
+   - AC6b: full mode 无模式提醒
+   - AC11: 幂等性
+   - AC13: env 格式化
+2. 创建 `modules.test.ts`，覆盖：
+   - AC14a: 所有模块 content 不含 `${` 模板插值
+   - AC9: constraints 模块包含 `<system-reminder>` 和不回复指令
 
-**验证：** `npm run typecheck` + `npm test -- tests/unit/session/` 通过
+**验证：** `npm test -- tests/unit/system-prompt/` 全部通过
 
 **任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
 
-## T11: TUI 适配
+## T4: 工具描述增强
 
-**文件：** `src/tui/useChatController.ts`、`src/tui/components/TranscriptPane.tsx`
-**依赖：** T10
+**文件：** `src/system-prompt/enhanceToolDeclarations.ts`、`tests/unit/system-prompt/enhanceToolDeclarations.test.ts`
+**依赖：** T1（类型）
 **步骤：**
-1. `useChatController.ts`：
-   - 识别用户输入的 `/plan` 和 `/do` 前缀，传递给 controller
-   - 无需改变 for-await 消费模式（Controller 对外接口不变）
-2. `TranscriptPane.tsx`：
-   - 从 draft/state 中读取 loopProgress 显示迭代进度（如 "Step 2/50"）
-   - 显示存储的 plan steps（如果有）
-   - 确保多轮工具 activity 正确显示
+1. 创建 `enhanceToolDeclarations.ts`，实现映射逻辑：
+   - 浅拷贝 declarations 数组
+   - 对 edit_file/write_file/run_command 追加后缀
+   - 其余工具原样返回
+2. 创建测试文件，覆盖：
+   - AC5: 三个工具的关键词断言
+   - AC5a: 未增强工具 description 不变
+   - 原始 declarations 数组未被修改
 
-**验证：** `npm run typecheck` + `npm run build` 通过
+**验证：** `npm test -- tests/unit/system-prompt/enhanceToolDeclarations.test.ts` 通过
 
 **任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
 
-## T12: E2E 测试扩展
+## T5: ProviderRequest 扩展与 Provider 实现
 
-**文件：** E2E smoke test 相关文件
-**依赖：** T11
+**文件：** `src/providers/types.ts`、`src/providers/openai/OpenAIProvider.ts`、`src/providers/anthropic/AnthropicProvider.ts`
+**依赖：** 无（可与 T1-T4 并行）
 **步骤：**
-1. 改造 mock SSE server 支持多轮：同一 user turn 的多次 provider 请求按 messages 数组长度匹配不同响应
-2. 新增多步循环场景：mock 返回 read_file tool call → tool result → write_file tool call → tool result → 最终文本
-3. 验证 TUI 显示多个工具 activity 和最终回答
-4. 验证 API key 不泄露（现有 sentinel 检测复用）
-5. 确保现有单工具 smoke 场景仍然通过
+1. 在 `src/providers/types.ts` 中：
+   - `ProviderRequest` 新增 `system?: string`
+   - 新增 `UsageInfo` 接口
+   - `ProviderEvent` 联合类型新增 `| { type: 'response.usage'; usage: UsageInfo }`
+2. OpenAI Provider 修改 `createOpenAIRequestBody`：
+   - 若 `request.system` 非空，在 messages 前 prepend `{ role: 'system', content: request.system }`
+   - 请求体追加 `stream_options: { include_usage: true }`
+   - 流式解析：最后一个 chunk 若含 `usage` 字段，yield `response.usage` 事件
+3. Anthropic Provider 修改 `createAnthropicRequestBody`：
+   - 若 `request.system` 非空，设置 `body.system = [{ type: 'text', text, cache_control: { type: 'ephemeral' } }]`
+   - 请求头追加 `anthropic-beta: prompt-caching-2024-07-31`（若未存在）
+   - 流式解析 `message_start`/`message_delta` 中的 usage，yield `response.usage` 事件
 
-**验证：** `npm run e2e:tmux` 通过（如果 psmux/tmux 可用）
+**验证：** `npm run typecheck` 通过；`npm test` 现有 Provider 测试不破坏
 
 **任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
 
-## T13: 全量集成验证
+## T6: AgentLoop 集成
 
-**文件：** 无新文件
-**依赖：** T12
+**文件：** `src/agent/types.ts`、`src/agent/AgentLoop.ts`
+**依赖：** T4、T5
 **步骤：**
-1. 运行 `npm run typecheck` 确保零错误
-2. 运行 `npm test` 确保全部测试通过
-3. 运行 `npm run build` 确保构建成功
-4. 运行 `npm run e2e:tmux` 验证端到端行为
-5. 手动验证（如果可能）：`npm run dev` 启动 CLI，发送多步任务确认自主循环工作
+1. 在 `src/agent/types.ts` 中：
+   - `AgentLoopDeps` 新增 `system?: string`
+   - `AgentLoopInput` 新增 `reminder?: string`
+2. 在 `src/agent/AgentLoop.ts` 中：
+   - 构建 ProviderRequest 时用 spread 模式设置 system：`...(deps.system !== undefined ? { system: deps.system } : {})`
+   - 若 `input.reminder` 非空（`input.reminder && input.reminder.length > 0`），**创建 userMessage 的临时副本**并将 `<system-reminder>\n{reminder}\n</system-reminder>\n\n` 前置拼到副本的 content（不 mutate 原始 `input.userMessage`，避免 reminder 污染 providerContext 历史）
+   - 调用 `enhanceToolDeclarations()` 处理 `activeRegistry.getProviderDeclarations()` 结果
+   - 删除 `buildPlanContextMessage` 函数定义和调用点
+   - 收到 `response.usage` ProviderEvent 时，添加显式 `case 'response.usage'`，console.debug 日志，不转发为 AgentLoopEvent
+   - usage 解析做防御性类型守卫：`typeof x === 'number' ? x : undefined`
 
-**验证：** 全部通过，无回归
+**验证：** `npm run typecheck` 通过；`npm test` 现有 AgentLoop 测试通过
+
+**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
+
+## T7: ChatSessionController 集成
+
+**文件：** `src/session/ChatSessionController.ts`
+**依赖：** T2、T6
+**步骤：**
+1. 新增实例字段：`turnIndex: number`、`envContext: EnvContext`、`systemPrompt: string`、`buildSystemPromptFn: SystemPromptBuilder`
+2. 构造函数中：
+   - 接受可选的 `buildSystemPrompt` 参数（依赖注入，默认使用真实实现）
+   - 构建 EnvContext：`os = process.platform`、`shell = detectShell()`（简单判断 process.env.SHELL 或 'powershell'）、`cwd = process.cwd()`、`date = new Date().toISOString().slice(0,10)`
+   - 调用 `buildSystemPrompt({ mode, turnIndex: 0, env })` 缓存 system 字符串
+3. `submitUserText` 中：
+   - 每轮调用前计算 reminder：`buildSystemPromptFn({ mode, turnIndex, plan, env, reminderInterval })`
+   - turnIndex++
+   - 传入 `AgentLoopDeps.system` 和 `AgentLoopInput.reminder`
+4. 从配置中读取 `system_prompt.reminder_interval`（可选字段，config schema 加 optional 字段）
+
+**验证：** `npm run typecheck` 通过；`npm test` 现有 session 测试通过；手动 `npm run dev` 启动后确认 system prompt 被发送（debug log 可见）
+
+**任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
+
+## T8: 全量集成验证
+
+**文件：** 无新建文件
+**依赖：** T7
+**步骤：**
+1. 运行 `npm run typecheck` — 全量类型检查
+2. 运行 `npm test` — 全量测试（包括新增和现有）
+3. 运行 `npm run e2e:tmux`（如可用）— 端到端验证
+4. 手动验证 plan 模式：启动 CLI，输入 `/plan` 切换，确认 reminder 中有模式标识
+5. 确认 `buildPlanContextMessage` 相关代码已完全删除，grep 不到残留引用
+
+**验证：** typecheck + test + e2e 全部通过
 
 **任务后审查：** 验证通过后，启动至少 3 个子代理从不同角度审查本任务相关代码变更；若无法启动 3 个子代理，停止执行并告知用户，不得标记本任务完成。
 
 ## 执行顺序
 
 ```
-T1 (类型) ─────┐
-               ├── T2 (stopCondition)
-               ├── T5 (ToolScheduler) ←── T3 (filterByRisk)
-               │
-T4 (Provider) ─┤── T7 (FakeProvider)
-               │
-T3 ────────────┤── T6 (submit_plan)
-               │
-               └── T8 (AgentLoop 主循环) ←── T2, T5, T6, T7
-                        │
-                        T9 (barrel export)
-                        │
-                        T10 (Controller 重构)
-                        │
-                        T11 (TUI 适配)
-                        │
-                        T12 (E2E 测试)
-                        │
-                        T13 (全量验证)
-```
+T1（类型 + 模块内容）
+ │
+ ├─→ T2（注册表 + 构建器）→ T3（构建器测试）
+ │
+ └─→ T4（工具描述增强，可与 T2 并行）
 
-可并行任务：T2、T3、T4 无互相依赖可同时进行；T5 和 T6 在 T3 完成后可并行。
+T5（Provider 扩展，可与 T1-T4 并行）
+ │
+ └─→ T6（AgentLoop 集成，依赖 T4 + T5）
+      │
+      └─→ T7（Controller 集成，依赖 T2 + T6）
+           │
+           └─→ T8（全量验证）
+```

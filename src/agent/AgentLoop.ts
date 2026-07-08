@@ -12,6 +12,7 @@ import type { ToolRegistry } from '../tools/types.js';
 import { checkStopCondition } from './stopCondition.js';
 import { createBatches, executeBatches } from './ToolScheduler.js';
 import { toPublicError } from '../shared/errors.js';
+import { enhanceToolDeclarations } from '../system-prompt/enhanceToolDeclarations.js';
 
 const SUBMIT_PLAN_TOOL_NAME = 'submit_plan';
 
@@ -30,15 +31,22 @@ export async function* runAgentLoop(
   // 根据 mode 过滤工具集
   const activeRegistry = resolveRegistry(toolRegistry, input.mode);
 
+  // reminder 注入：创建临时副本，不 mutate 原始 input.userMessage
+  const effectiveUserMessage = (input.reminder && input.reminder.length > 0)
+    ? { ...input.userMessage, content: `<system-reminder>\n${input.reminder}\n</system-reminder>\n\n${input.userMessage.content}` }
+    : input.userMessage;
+
   // 构建初始消息数组
   const messages: ProviderMessage[] = [
     ...input.contextMessages,
-    ...(input.plan ? [buildPlanContextMessage(input.plan)] : []),
-    input.userMessage,
+    effectiveUserMessage,
   ];
 
   // 记录初始消息数量，后续新增的就是 turnMessages
   const initialMessageCount = messages.length;
+
+  // 工具声明在循环内不变，提前计算
+  const declarations = enhanceToolDeclarations(activeRegistry.getProviderDeclarations());
 
   let iteration = 0;
   let consecutiveUnknownTools = 0;
@@ -61,8 +69,9 @@ export async function* runAgentLoop(
       model,
       messages: [...messages],
       thinking,
-      tools: activeRegistry.getProviderDeclarations(),
+      tools: declarations,
       toolChoice: 'auto',
+      ...(deps.system !== undefined ? { system: deps.system } : {}),
       ...(signal !== undefined ? { signal } : {}),
     };
 
@@ -93,6 +102,21 @@ export async function* runAgentLoop(
           case 'response.complete':
             receivedComplete = true;
             break;
+
+          case 'response.usage': {
+            const promptTokens = typeof event.usage.inputTokens === 'number' ? event.usage.inputTokens : undefined;
+            const completionTokens = typeof event.usage.outputTokens === 'number' ? event.usage.outputTokens : undefined;
+            if (promptTokens !== undefined) totalPromptTokens += promptTokens;
+            if (completionTokens !== undefined) totalCompletionTokens += completionTokens;
+            yield {
+              type: 'token.usage',
+              ...(promptTokens !== undefined ? { promptTokens } : {}),
+              ...(completionTokens !== undefined ? { completionTokens } : {}),
+              totalPromptTokens,
+              totalCompletionTokens,
+            };
+            break;
+          }
 
           case 'response.error':
             hasError = true;
@@ -248,17 +272,6 @@ function resolveRegistry(registry: ToolRegistry, mode: 'full' | 'plan'): ToolReg
   }
   // Plan Mode：只注入 read 类工具（submit_plan 的 risk 是 read，自然包含在内）
   return registry.filterByRisk(['read']);
-}
-
-function buildPlanContextMessage(plan: PlanStep[]): ProviderMessage {
-  const planText = plan
-    .map((step, i) => `${i + 1}. **${step.title}**: ${step.description}`)
-    .join('\n');
-
-  return {
-    role: 'user',
-    content: `Here is the plan to follow (use as reference, adapt as needed):\n\n${planText}`,
-  };
 }
 
 function serializeToolResult(result: ToolExecutionResult): string {

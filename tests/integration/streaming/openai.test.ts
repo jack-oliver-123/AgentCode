@@ -58,7 +58,8 @@ describe('OpenAIProvider', () => {
           { role: 'assistant', content: 'Hi there' },
           { role: 'user', content: 'Continue' }
         ],
-        stream: true
+        stream: true,
+        stream_options: { include_usage: true }
       });
     } finally {
       await server.close();
@@ -67,7 +68,10 @@ describe('OpenAIProvider', () => {
 
   it('maps tool declarations and tool choice to OpenAI-compatible request bodies', async () => {
     const server = await createMockSseServer({
-      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n']
+      chunks: [
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n'
+      ]
     });
 
     try {
@@ -111,7 +115,10 @@ describe('OpenAIProvider', () => {
 
   it('maps tool continuation messages to OpenAI-compatible request bodies', async () => {
     const server = await createMockSseServer({
-      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n']
+      chunks: [
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n'
+      ]
     });
 
     try {
@@ -172,7 +179,10 @@ describe('OpenAIProvider', () => {
 
   it('omits tool declarations when tool choice disables tools', async () => {
     const server = await createMockSseServer({
-      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n']
+      chunks: [
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        'data: [DONE]\n\n'
+      ]
     });
 
     try {
@@ -196,6 +206,7 @@ describe('OpenAIProvider', () => {
         model: 'gpt-4.1',
         messages: [{ role: 'user', content: 'No tools' }],
         stream: true,
+        stream_options: { include_usage: true },
         tool_choice: 'none'
       });
     } finally {
@@ -208,7 +219,8 @@ describe('OpenAIProvider', () => {
       chunks: [
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read-file","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]},"finish_reason":null}]}\n\n',
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"README.md\\"}"}}]},"finish_reason":null}]}\n\n',
-        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        'data: [DONE]\n\n'
       ]
     });
 
@@ -250,7 +262,8 @@ describe('OpenAIProvider', () => {
     const server = await createMockSseServer({
       chunks: [
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}},{"index":1,"id":"call-search","function":{"name":"search_code","arguments":"{\\"query\\":\\"x\\"}"}}]},"finish_reason":null}]}\n\n',
-        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+        'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        'data: [DONE]\n\n'
       ]
     });
 

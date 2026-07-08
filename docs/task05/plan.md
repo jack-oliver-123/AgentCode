@@ -1,545 +1,341 @@
-# Agent Loop Plan
+# 结构化系统提示体系 Plan
 
 ## 方案选择摘要
 
-- 候选方案来源：3 个子代理分别从最小可行、架构一致性、测试与回滚角度提出。
-- 最终选择：架构一致性方案（Agent Loop 为独立纯函数 async generator 模块）
-- 选择理由：Controller 原地改造会膨胀为屎山；独立模块职责清晰、可测试、可扩展。吸收测试方案中 StopCondition 纯函数化和 Promise.allSettled 策略。
-- 丢弃说明：最小改动方案因 Controller 膨胀问题不采用；测试方案的分阶段回滚开关不采用（直接替换），其余有价值的测试策略已融入最终方案。
+- 候选方案来源：3 个子代理分别从架构一致性、最小可行、测试与回滚角度提出。
+- 最终选择：架构一致性方案，吸收最小可行方案的"全部可选字段"策略和测试与回滚方案的 4 层回滚设计。
+- 选择理由：三者核心设计高度一致（纯函数构建器 + 数据驱动注册表 + Provider 可选字段扩展），架构一致性方案在命名规范和模块交互描述上最贴合现有代码风格。
+- 丢弃说明：三方案无实质性冲突，差异仅在命名和强调点上；已合并各方的独特贡献（回滚层级、测试影响矩阵）。
 
 ## 架构概览
 
-Agent Loop 作为独立模块（`src/agent/`），是一个纯函数式 async generator。`ChatSessionController` 从"执行者"退化为"适配器"——接收用户输入、委托 AgentLoop 执行、将 AgentLoopEvent 翻译为 ChatSessionEvent（对外接口 `state.changed` 不变，TUI 改动最小）。
+新增 `src/system-prompt/` 模块，与 `src/agent/`、`src/providers/`、`src/session/` 平行。职责单一：生成系统提示文本和每轮 reminder。
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  TUI Layer (Ink)                                         │
-│  useChatController → TranscriptPane                      │
-│       ▲ 订阅 ChatSessionEvent { type: 'state.changed' } │
-└───────┼─────────────────────────────────────────────────┘
-        │
-┌───────┼─────────────────────────────────────────────────┐
-│  Session Layer                                           │
-│  ChatSessionController (瘦壳：状态投影 + 事件转换)        │
-│  applyAgentLoopEvent() → 更新 draft → yield state.changed│
-│       ▲ for await (event of runAgentLoop(...))           │
-└───────┼─────────────────────────────────────────────────┘
-        │ AsyncGenerator<AgentLoopEvent>
-┌───────┼─────────────────────────────────────────────────┐
-│  Agent Layer (新模块，纯逻辑，无 UI 依赖)                 │
-│  ┌──────────────┐ ┌──────────────┐ ┌────────────────┐   │
-│  │ runAgentLoop │ │ToolScheduler │ │ stopCondition  │   │
-│  │ (主循环)     │─│(并发调度)     │ │ (纯函数判断)   │   │
-│  └──────────────┘ └──────────────┘ └────────────────┘   │
-│       │                                                  │
-│       ▼                                                  │
-│  Provider.stream() + ToolRegistry + executeToolCall()    │
-└─────────────────────────────────────────────────────────┘
+src/
+├── system-prompt/              ← 全新模块
+│   ├── types.ts                ← 接口定义
+│   ├── builder.ts              ← buildSystemPrompt 纯函数
+│   ├── registry.ts             ← 模块注册表（数据数组）
+│   ├── enhanceToolDeclarations.ts  ← F6 工具描述后处理
+│   ├── index.ts                ← 桶文件导出
+│   └── modules/                ← 固定模块内容常量
+│       ├── identity.ts         ← order: 100
+│       ├── constraints.ts      ← order: 200
+│       ├── taskMode.ts         ← order: 250
+│       ├── actions.ts          ← order: 300
+│       ├── tools.ts            ← order: 400
+│       ├── tone.ts             ← order: 500
+│       └── output.ts           ← order: 600
+├── providers/
+│   └── types.ts                ← ProviderRequest +system; ProviderEvent +response.usage
+├── agent/
+│   ├── types.ts                ← AgentLoopDeps +system; AgentLoopInput +reminder
+│   └── AgentLoop.ts            ← 集成 system/reminder，移除 buildPlanContextMessage
+└── session/
+    └── ChatSessionController.ts ← 维护 turnIndex/EnvContext，调用构建器
 ```
 
-各组件职责：
-- **runAgentLoop** — 主循环 async generator，协调 LLM 调用、工具执行、停止判断，yield 事件流
-- **ToolScheduler** — 接收一组工具调用，按 risk 分批，read 并发 / write+execute 串行
-- **stopCondition** — 纯函数，输入当前循环状态，输出是否停止及原因
-- **ChatSessionController** — 薄壳，将 AgentLoopEvent 映射为 draft 状态更新，对外仍 yield state.changed
+命名规范：
+- 目录名 kebab-case（`system-prompt`），与 `providers/shared`、`tools/builtins` 一致
+- 文件名 camelCase（`taskMode.ts`），与项目 `.ts` 文件命名一致
+- 函数名 camelCase（`buildSystemPrompt`、`enhanceToolDeclarations`）
 
 ## 核心数据结构
 
-### AgentLoopConfig
+### SystemPromptModule（注册表条目）
 
 ```typescript
-/** Agent Loop 配置 */
-interface AgentLoopConfig {
-  /** 最大迭代次数，默认 50 */
-  maxIterations: number;
-  /** 连续调用不存在工具的容忍次数，默认 3 */
-  maxConsecutiveUnknownTools: number;
+export interface SystemPromptModule {
+  id: string;       // 唯一标识
+  order: number;    // 拼装顺序号
+  content: string;  // 模块文本（空字符串 = 占位不拼装）
 }
 ```
 
-### AgentLoopInput
+### EnvContext（环境上下文）
 
 ```typescript
-/** Agent Loop 输入 */
-interface AgentLoopInput {
-  /** 历史上下文消息（前序 turn） */
-  contextMessages: ProviderMessage[];
-  /** 当前用户消息 */
-  userMessage: ProviderMessage;
-  /** 运行模式 */
+export interface EnvContext {
+  os: string;     // process.platform
+  shell: string;  // 'bash' | 'powershell' | ...
+  cwd: string;    // process.cwd()
+  date: string;   // ISO 日期字符串
+}
+```
+
+### SystemPromptBuildInput / Output（构建器 I/O）
+
+```typescript
+export interface SystemPromptBuildInput {
   mode: 'full' | 'plan';
-  /** /do 时注入的已存储计划 */
+  turnIndex: number;
   plan?: PlanStep[];
-  /** 取消信号 */
-  signal?: AbortSignal;
+  env?: EnvContext;
+  disabled?: string[];
+  reminderInterval?: number;  // 默认 4，最小 1
+}
+
+export interface SystemPromptBuildOutput {
+  system: string;   // 会话内稳定
+  reminder: string; // 每轮计算，可能为空
+}
+
+export type SystemPromptBuilder = (input: SystemPromptBuildInput) => SystemPromptBuildOutput;
+```
+
+### ProviderRequest 扩展
+
+```typescript
+export interface ProviderRequest {
+  // ...现有字段不变...
+  system?: string;  // 新增：系统提示文本
 }
 ```
 
-### AgentLoopDeps
+### ProviderEvent 扩展
 
 ```typescript
-/** Agent Loop 依赖（注入） */
-interface AgentLoopDeps {
-  provider: ChatModelProvider;
-  toolRegistry: ToolRegistry;
-  /** 工厂函数，每次工具执行时创建新的 context（确保 signal 正确传播） */
-  createToolContext: (signal?: AbortSignal) => ToolExecutionContext;
-  config: AgentLoopConfig;
+// 新增到联合类型
+| { type: 'response.usage'; usage: UsageInfo }
+
+export interface UsageInfo {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens?: number;
+  cacheReadTokens?: number;
+  cachedTokens?: number;
 }
 ```
 
-### PlanStep
+### AgentLoop 接口扩展
 
 ```typescript
-/** 结构化计划步骤 */
-interface PlanStep {
-  title: string;
-  description: string;
-}
-```
-
-### AgentLoopEvent（完整 payload）
-
-```typescript
-/** Agent Loop 对外事件流（discriminated union） */
-type AgentLoopEvent =
-  | AgentLoopIterationStart
-  | AgentLoopTextDelta
-  | AgentLoopThinkingDelta
-  | AgentLoopToolCallStart
-  | AgentLoopToolCallResult
-  | AgentLoopPlanSubmitted
-  | AgentLoopTokenUsage
-  | AgentLoopCompleted
-  | AgentLoopFailed;
-
-interface AgentLoopIterationStart {
-  type: 'iteration.start';
-  /** 当前第几轮（从 1 开始） */
-  iteration: number;
-  /** 配置的最大迭代数 */
-  maxIterations: number;
+export interface AgentLoopDeps {
+  // ...现有字段不变...
+  system?: string;  // 新增
 }
 
-interface AgentLoopTextDelta {
-  type: 'text.delta';
-  /** 本次增量文本 */
-  delta: string;
-}
-
-interface AgentLoopThinkingDelta {
-  type: 'thinking.delta';
-  /** 本次增量 thinking 文本 */
-  delta: string;
-}
-
-interface AgentLoopToolCallStart {
-  type: 'tool_call.start';
-  /** 工具调用信息 */
-  call: ProviderToolCall;
-  /** 该工具是否在当前 registry 中注册 */
-  knownTool: boolean;
-  /** 所属迭代轮次 */
-  iteration: number;
-}
-
-interface AgentLoopToolCallResult {
-  type: 'tool_call.result';
-  /** 工具调用信息 */
-  call: ProviderToolCall;
-  /** 执行结果 */
-  result: ToolExecutionResult;
-  /** 执行耗时 ms */
-  durationMs: number;
-  /** 所属迭代轮次 */
-  iteration: number;
-}
-
-interface AgentLoopPlanSubmitted {
-  type: 'plan.submitted';
-  /** 结构化计划步骤列表 */
-  steps: PlanStep[];
-}
-
-interface AgentLoopTokenUsage {
-  type: 'token.usage';
-  /** 本轮 prompt tokens（增量） */
-  promptTokens?: number;
-  /** 本轮 completion tokens（增量） */
-  completionTokens?: number;
-  /** 累计 prompt tokens */
-  totalPromptTokens: number;
-  /** 累计 completion tokens */
-  totalCompletionTokens: number;
-}
-
-interface AgentLoopCompleted {
-  type: 'loop.completed';
-  /** 最终文本回答（最后一轮累积） */
-  finalText: string;
-  /** 总迭代次数 */
-  totalIterations: number;
-  /** 终止原因 */
-  reason: AgentLoopStopReason;
-}
-
-interface AgentLoopFailed {
-  type: 'loop.failed';
-  /** 错误信息 */
-  error: PublicError;
-  /** 出错时的迭代轮次 */
-  iteration: number;
-}
-
-type AgentLoopStopReason =
-  | 'natural'              // 模型返回纯文本
-  | 'max_iterations'       // 达到迭代上限
-  | 'cancelled'            // 用户取消
-  | 'unknown_tool_limit';  // 连续幻觉工具
-```
-
-### StopConditionContext
-
-```typescript
-/** 停止条件判断的输入（纯函数） */
-interface StopConditionContext {
-  iteration: number;
-  maxIterations: number;
-  consecutiveUnknownTools: number;
-  maxConsecutiveUnknownTools: number;
-  signal?: AbortSignal;
-  /** 本轮是否有工具调用 */
-  hasToolCalls: boolean;
-  /** 本轮是否有 provider 错误 */
-  hasError: boolean;
-}
-
-type StopDecision =
-  | { stop: false }
-  | { stop: true; reason: AgentLoopStopReason | 'provider_error' };
-```
-
-### ToolBatch
-
-```typescript
-/** 工具调度批次 */
-interface ToolBatch {
-  calls: ProviderToolCall[];
-  mode: 'concurrent' | 'sequential';
+export interface AgentLoopInput {
+  // ...现有字段不变...
+  reminder?: string;  // 新增
 }
 ```
 
 ## 模块设计
 
-### runAgentLoop（主循环）
+### system-prompt/builder.ts
 
-**职责：** 协调 ReAct 循环——调用 LLM、判断停止条件、分发工具执行、组装上下文、yield 事件流。
+**职责：** 纯函数，接收 BuildInput 返回 BuildOutput。
 
-**对外接口：**
+**函数签名：**
 ```typescript
-function runAgentLoop(
-  input: AgentLoopInput,
-  deps: AgentLoopDeps
-): AsyncGenerator<AgentLoopEvent, void, undefined>
+export function buildSystemPrompt(
+  input: SystemPromptBuildInput,
+  registry?: SystemPromptModule[]  // 默认使用 defaultRegistry，测试时可传入自定义数组
+): SystemPromptBuildOutput;
 ```
 
-**依赖：** ChatModelProvider、ToolRegistry、ToolScheduler、stopCondition、executeToolCall
+**system 构建逻辑：**
+1. 从 registry 参数（或 defaultRegistry）获取模块数组
+2. 过滤 disabled 中的模块 ID（不存在的 ID 静默忽略）
+3. 过滤空 content 模块
+4. 按 order 升序稳定排序（相同 order 按注册顺序）
+5. 以 `\n\n` 连接
 
-**内部流程：**
-1. 根据 mode 调用 registry.filterByRisk() 过滤工具集（plan 模式只保留 read 类 + submit_plan）
-2. 构建初始消息数组（contextMessages + userMessage，plan 时注入已有计划为 system context）
-3. 进入 while 循环：
-   - yield `iteration.start`
-   - 检查 signal.aborted → 提前退出
-   - 调用 provider.stream()，流式收集（双路：yield text.delta/thinking.delta + 累积完整响应）
-   - 流结束后检查：未收到 response.complete 视为 protocol error
-   - 判断：无工具调用 → yield `loop.completed` reason: natural
-   - 有工具调用 → 交给 ToolScheduler
-   - 更新 consecutiveUnknownTools 计数（遇到已注册工具则重置为 0）
-   - 调用 stopCondition 检查是否应该终止
-   - 将 assistant 消息 + tool results 追加到消息数组
-   - 继续下一轮
+**reminder 构建逻辑：**
+1. 环境上下文（env 非空时）：`OS: {os} | Shell: {shell} | CWD: {cwd} | Date: {date}`
+2. 模式指令（mode !== 'full' 时）：按频率控制 → 完整版或精简版
+3. plan 上下文（plan 非空且 `plan.length > 0` 时）：`<active-plan>...</active-plan>`（空数组不生成标签）
+4. 以 `\n` 连接非空部分
 
-**Generator cleanup 策略：**
-- `finally` 块中：如果循环未正常结束（消费者意外退出、throw 进 generator），不做额外清理——工具执行已经共享外部传入的 signal，消费者可通过 abort signal 取消所有 pending 操作
-- runAgentLoop 本身不持有任何需要释放的资源（无 file handle、无 timer、无 EventEmitter listener）
-- 如果正在执行 provider.stream()，for-await-of 的 break/return 会自动调用 provider stream 的 return()
+**防御性处理：**
+- `reminderInterval` 内部 clamp：`const interval = Math.max(1, Math.floor(input.reminderInterval ?? 4))`
+- `disabled` 过滤前用 `filter(Boolean)` 清除空字符串/非法值
 
-### ToolScheduler（并发调度）
+**依赖：** registry.ts（模块数组）。无外部 IO。
 
-**职责：** 接收一组工具调用，按 risk 分批，执行并返回全部结果。
+### system-prompt/registry.ts
 
-**对外接口：**
+**职责：** 导出默认模块注册表数组。
+
 ```typescript
-function createBatches(calls: ProviderToolCall[], registry: ToolRegistry): ToolBatch[];
+import { content as identityContent } from './modules/identity.js';
+import { content as constraintsContent } from './modules/constraints.js';
+// ... 其余模块 ...
 
-function executeBatches(
-  batches: ToolBatch[],
-  registry: ToolRegistry,
-  context: ToolExecutionContext
-): Promise<Array<{ call: ProviderToolCall; result: ToolExecutionResult; durationMs: number }>>;
+export const defaultRegistry: SystemPromptModule[] = [
+  { id: 'identity', order: 100, content: identityContent },
+  { id: 'constraints', order: 200, content: constraintsContent },
+  { id: 'task-mode', order: 250, content: taskModeContent },
+  { id: 'actions', order: 300, content: actionsContent },
+  { id: 'tools', order: 400, content: toolsContent },
+  { id: 'tone', order: 500, content: toneContent },
+  { id: 'output', order: 600, content: outputContent },
+  { id: 'custom-instructions', order: 700, content: '' },
+  { id: 'memory', order: 800, content: '' },
+];
 ```
 
-**依赖：** ToolRegistry（查询 risk）、executeToolCall（已有）
+### system-prompt/enhanceToolDeclarations.ts
 
-**调度规则：**
-- 所有 risk=read 的工具归入一个 concurrent batch
-- 每个 risk=write 或 risk=execute 的工具各占一个 sequential batch
-- 未知工具（registry 中不存在）：不进入任何 batch，直接产出 unknown_tool error 结果，不实际调用 executeToolCall
-- batch 执行顺序：concurrent batch 先执行，sequential batch 按原始调用顺序串行
-- concurrent batch 使用 Promise.allSettled（单个超时/失败不影响其余）
-- 结果按原始调用顺序排列（与 Provider 返回的 tool call 顺序一致）
+**职责：** 对工具声明数组做后处理，追加行为规则后缀。
 
-**abort 传播：**
-- 所有 batch 共享同一个 signal
-- abort 发生时，当前 batch 内正在执行的工具通过 signal 感知取消，后续 batch 不再开始执行
-
-### stopCondition（停止判断）
-
-**职责：** 纯函数，输入循环当前状态，输出是否停止以及原因。
-
-**对外接口：**
 ```typescript
-function checkStopCondition(ctx: StopConditionContext): StopDecision;
-```
+const SUFFIXES = new Map([
+  ['edit_file', '\n\nImportant: 调用前必须先用 read_file 读取目标文件。'],
+  ['write_file', '\n\nImportant: 仅用于创建新文件；修改已有文件请用 edit_file。'],
+  ['run_command', '\n\nImportant: 如果存在专用工具能完成任务，优先使用专用工具而非 run_command。'],
+]);
 
-**依赖：** 无（纯函数）
-
-**判断优先级：**
-1. signal.aborted → cancelled
-2. hasError → provider_error
-3. !hasToolCalls（模型返回纯文本）→ natural
-4. consecutiveUnknownTools >= max → unknown_tool_limit
-5. iteration >= maxIterations → max_iterations
-6. 以上都不满足 → { stop: false }
-
-**边界行为：**
-- consecutiveUnknownTools 计数在遇到至少一个已注册工具的调用时重置为 0
-- 空文本 + 无工具调用 = natural 完成（不是 error）
-- cancelled 优先级最高，即使同时满足其他条件也返回 cancelled
-
-### submit_plan 工具
-
-**职责：** Plan Mode 下模型通过此工具输出结构化计划。
-
-**risk:** `read`（不产生副作用）
-
-**inputSchema:**
-```json
-{
-  "type": "object",
-  "properties": {
-    "steps": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "title": { "type": "string" },
-          "description": { "type": "string" }
-        },
-        "required": ["title", "description"]
-      }
-    }
-  },
-  "required": ["steps"]
+export function enhanceToolDeclarations(
+  declarations: ProviderToolDeclaration[]
+): ProviderToolDeclaration[] {
+  return declarations.map((decl) => {
+    const suffix = SUFFIXES.get(decl.name);
+    if (suffix === undefined) return decl;
+    return { ...decl, description: `${decl.description}${suffix}` };
+  });
 }
 ```
 
-**execute:** 直接返回 steps 数据。AgentLoop 识别 submit_plan 调用后 yield `plan.submitted` 事件，然后结束循环（reason: natural）。
+浅拷贝声明后修改，不污染原始 registry 数据。
 
-### ChatSessionController（重构为适配器）
+### system-prompt/modules/*.ts
 
-**职责：** 管理会话状态（messages、draft、status），委托 AgentLoop 执行，将 AgentLoopEvent 映射为 draft 更新。
+**职责：** 每个文件导出 `export const content: string`，纯文本常量。
 
-**对外接口不变：** `submitUserText()` 返回 `AsyncIterable<ChatSessionEvent>`，事件仍为 `{ type: 'state.changed', state }`。TUI 无需感知内部变化。
+各模块内容要点（详见 spec F2 大纲表格）：
+- identity: 产品名、角色、能力概述
+- constraints: 安全边界、workspace 限制、system-reminder 标签处理指令
+- taskMode: full/plan 模式行为规则
+- actions: 先读后改、最小改动、改完验证
+- tools: 工具选择优先级、编辑前必读
+- tone: 简洁直接、中文为主
+- output: 代码块格式、聚焦结果
 
-**改造要点：**
-- `submitUserText()` 内部不再有 provider 调用和工具执行逻辑
-- 创建 AgentLoopInput/Deps，for await 遍历 runAgentLoop()
-- `applyAgentLoopEvent()` 方法将每个事件翻译为 draft 状态变更并 yield state.changed
-- 新增 `currentMode`（'full' | 'plan'）和 `storedPlan: PlanStep[]` 字段
-- 识别 `/plan` 和 `/do` 前缀命令切换模式
+### Providers 改动
 
-### ToolRegistry 扩展
+**Anthropic Provider：**
+- `createAnthropicRequestBody` 中：若 `request.system` 非空，设置 `body.system = [{ type: 'text', text, cache_control: { type: 'ephemeral' } }]`
+- 请求头追加 `anthropic-beta: prompt-caching-2024-07-31`（若未存在）
+- 流式解析 `message_start`/`message_delta` 中的 usage，yield `response.usage` 事件
 
-**新增接口：**
-```typescript
-interface ToolRegistry {
-  // 现有
-  list(): readonly ToolDefinition[];
-  get(name: string): ToolDefinition | undefined;
-  getProviderDeclarations(): ProviderToolDeclaration[];
-  // 新增
-  filterByRisk(allowedRisks: ToolRisk[]): ToolRegistry;
-}
-```
+**OpenAI Provider：**
+- `createOpenAIRequestBody` 中：若 `request.system` 非空，在 messages 前 prepend `{ role: 'system', content }`
+- 请求体追加 `stream_options: { include_usage: true }`
+- 流式解析最后一个 chunk 的 `usage` 字段，yield `response.usage` 事件
 
-`filterByRisk` 返回一个新的 ToolRegistry 实例，只包含指定 risk 级别的工具。Plan Mode 调用 `registry.filterByRisk(['read'])` 获得只读 registry。
+### AgentLoop 改动
+
+1. 从 `deps.system` 获取 system，设到 `ProviderRequest.system`（用 spread 模式规避 `exactOptionalPropertyTypes`）
+2. 从 `input.reminder` 获取 reminder，非空时**创建 userMessage 的临时副本**并前置拼到副本的 content（不 mutate 原始 `input.userMessage` 对象，避免 reminder 污染 providerContext 历史消息）
+3. 调用 `enhanceToolDeclarations()` 处理工具声明
+4. 删除 `buildPlanContextMessage` 调用及相关逻辑
+5. 收到 `response.usage` 事件时 debug 日志，不转发为 AgentLoopEvent
+6. usage 解析做防御性类型守卫：每个字段用 `typeof x === 'number' ? x : undefined` 确保非数字值不传播
+
+### ChatSessionController 改动
+
+1. 构造时构建 `EnvContext`：`{ os: process.platform, shell: detectShell(), cwd: process.cwd(), date: new Date().toISOString().slice(0,10) }`
+2. 构造时调用 `buildSystemPrompt({ mode, turnIndex: 0, env })` 缓存 system 字符串
+3. 新增 `turnIndex` 实例变量（从 0 开始，每次 submitUserText +1）
+4. 每轮调用前获取 reminder，传入 AgentLoopInput
+5. 构建器函数通过构造函数参数注入（便于测试 mock）
+6. `reminderInterval` 从配置读取后传入 buildInput
 
 ## 模块交互
 
-### 完整数据流（多步任务）
-
 ```
-用户输入 "读取 A 文件内容，写入 B 文件"
-         │
-         ▼
-ChatSessionController.submitUserText(text, { signal })
-  │ 1. 创建 userMessage，push 到 messages[]
-  │ 2. status = 'streaming'，创建 draft
-  │ 3. yield state.changed
-  │ 4. 构建 AgentLoopInput + AgentLoopDeps
-  │
-  │ for await (event of runAgentLoop(input, deps)):
-  │     │
-  │     ▼
-  │ runAgentLoop()
-  │  │
-  │  │ ── iteration 1 ──
-  │  │  yield iteration.start(1, 50)
-  │  │  provider.stream(messages + toolDeclarations)
-  │  │    → content.delta "让我先读取文件" → yield text.delta
-  │  │    → tool.call { read_file, path: "A" }
-  │  │    → response.complete
-  │  │  stopCondition({ hasToolCalls: true, ... }) → { stop: false }
-  │  │  yield tool_call.start { read_file, knownTool: true }
-  │  │  ToolScheduler.executeBatches([ { calls: [read_file], mode: 'concurrent' } ])
-  │  │    → executeToolCall(read_file) → 结果: 文件内容
-  │  │  yield tool_call.result { read_file, result, durationMs }
-  │  │  追加 assistant msg + tool result msg 到 messages
-  │  │
-  │  │ ── iteration 2 ──
-  │  │  yield iteration.start(2, 50)
-  │  │  provider.stream(messages 含第一轮工具结果)
-  │  │    → tool.call { write_file, path: "B", content: "..." }
-  │  │    → response.complete
-  │  │  stopCondition → { stop: false }
-  │  │  yield tool_call.start { write_file }
-  │  │  ToolScheduler.executeBatches([ { calls: [write_file], mode: 'sequential' } ])
-  │  │  yield tool_call.result { write_file, result, durationMs }
-  │  │  追加消息到 messages
-  │  │
-  │  │ ── iteration 3 ──
-  │  │  yield iteration.start(3, 50)
-  │  │  provider.stream(messages 含两轮工具结果)
-  │  │    → content.delta "已完成" → yield text.delta
-  │  │    → response.complete (无工具调用)
-  │  │  stopCondition({ hasToolCalls: false }) → { stop: true, reason: 'natural' }
-  │  │  yield loop.completed { finalText: "已完成", totalIterations: 3, reason: 'natural' }
-  │  │
-  │  └── generator return ──
-  │
-  │ 5. applyAgentLoopEvent 处理每个事件：
-  │    - text.delta → draft.visibleText += delta → yield state.changed
-  │    - thinking.delta → draft.thinkingText += delta → yield state.changed
-  │    - tool_call.start → draft.activity = { type: 'tool', toolName } → yield state.changed
-  │    - iteration.start → 重置 draft 文本，activity = 'thinking' → yield state.changed
-  │    - loop.completed → completeTurn(), status = 'idle' → yield state.changed
-  │    - loop.failed → failTurn(), status = 'idle' → yield state.changed
-  │
-  └── TUI 每收到 state.changed 就 re-render
-```
+初始化:
+  ChatSessionController
+    → buildSystemPrompt({ mode, turnIndex:0, env })
+    → system 缓存到实例
+    → system 传入 AgentLoopDeps
 
-### Plan Mode 数据流
-
-```
-用户输入 "/plan 帮我重构认证模块"
-         │
-         ▼
-ChatSessionController 识别 /plan 前缀
-  │ currentMode = 'plan'
-  │ 构建 AgentLoopInput { mode: 'plan' }
-  │
-  ▼
-runAgentLoop()
-  │ toolRegistry = registry.filterByRisk(['read'])  // + submit_plan
-  │ 循环执行，模型只能用 read 类工具调研
-  │ 最终调用 submit_plan { steps: [...] }
-  │ yield plan.submitted { steps }
-  │ yield loop.completed { reason: 'natural' }
-  │
-  ▼
-Controller 收到 plan.submitted → this.storedPlan = steps
-TUI 展示计划步骤列表
-
-─────
-
-用户输入 "/do"
-         │
-         ▼
-ChatSessionController 识别 /do 前缀
-  │ currentMode = 'full'
-  │ 构建 AgentLoopInput { mode: 'full', plan: this.storedPlan }
-  │
-  ▼
-runAgentLoop()
-  │ toolRegistry = 全部工具（6 个内置）
-  │ 初始消息中注入计划作为 context（system 消息附带 plan steps）
-  │ 模型参考计划自主执行
-  │ yield loop.completed
+每轮请求:
+  ChatSessionController
+    → buildSystemPrompt({ mode, turnIndex, plan, env, reminderInterval })
+    → reminder 传入 AgentLoopInput
+    → AgentLoop:
+        1. request.system = deps.system
+        2. userMsg.content = <system-reminder>{reminder}</system-reminder> + originalContent
+        3. request.tools = enhanceToolDeclarations(registry.getProviderDeclarations())
+        4. provider.stream(request)
+    → Provider:
+        Anthropic: system → [{text, cache_control}] + beta header
+        OpenAI: system → messages[0]{role:'system'} + stream_options
+    → response.usage 事件 → AgentLoop debug log
 ```
 
 ## 文件组织
 
 ```
-src/
-├── agent/                          # 新建目录
-│   ├── types.ts                    # AgentLoopEvent, AgentLoopConfig, StopDecision 等类型
-│   ├── AgentLoop.ts                # runAgentLoop() 主循环 async generator
-│   ├── stopCondition.ts            # checkStopCondition() 纯函数
-│   ├── ToolScheduler.ts            # createBatches() + executeBatches()
-│   └── index.ts                    # barrel export
-├── tools/
-│   ├── registry.ts                 # 修改：新增 filterByRisk() 方法
-│   └── builtins/
-│       └── submitPlan.ts           # 新增：submit_plan 工具定义
-├── providers/
-│   ├── openai/OpenAIProvider.ts    # 修改：emit 所有 tool call（不只 index 0）
-│   └── anthropic/AnthropicProvider.ts  # 修改：emit 所有 tool call
-├── session/
-│   ├── ChatSessionController.ts    # 重构：委托 AgentLoop，applyAgentLoopEvent 映射
-│   └── types.ts                    # 扩展：新增 loopProgress、plan 相关 session 状态
-├── tui/
-│   ├── useChatController.ts        # 小改：识别 /plan、/do 命令
-│   └── components/
-│       └── TranscriptPane.tsx      # 小改：显示迭代进度、计划步骤
-tests/
-├── unit/agent/
-│   ├── AgentLoop.test.ts           # 主循环全场景测试
-│   ├── stopCondition.test.ts       # 停止条件纯函数测试
-│   └── ToolScheduler.test.ts       # 调度策略测试
-├── helpers/
-│   └── FakeProvider.ts             # 修改：支持动态多轮序列（onRequest callback）
-└── e2e/
-    └── (现有 smoke test 扩展)      # 多步循环 + Plan Mode 场景
+src/system-prompt/
+├── types.ts                       # 接口定义
+├── builder.ts                     # buildSystemPrompt 纯函数
+├── registry.ts                    # 默认模块注册表
+├── enhanceToolDeclarations.ts     # 工具描述后处理
+├── index.ts                       # 桶文件
+└── modules/
+    ├── identity.ts
+    ├── constraints.ts
+    ├── taskMode.ts
+    ├── actions.ts
+    ├── tools.ts
+    ├── tone.ts
+    └── output.ts
+
+tests/unit/system-prompt/
+├── builder.test.ts                # 构建器纯函数测试
+├── enhanceToolDeclarations.test.ts # 工具增强测试
+└── modules.test.ts                # 模块内容约束测试
 ```
 
 ## 风险与回滚
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|----------|
-| Provider 多 tool.call 事件协议 | OpenAI provider 当前只 emit 第一个 tool call，多工具调用被丢弃 | 修改 Provider emit 所有 tool call。**此修改作为独立 commit**，与 Agent Loop 分离，可单独回滚验证 |
-| 上下文膨胀超出模型 token 限制 | 长循环时 provider 返回 token limit 错误 | spec 明确不做压缩；错误被 loop.failed 捕获终止循环 |
-| abort 在 Promise.allSettled 中的传播 | 并发执行的 read 工具可能在 abort 后继续片刻 | 所有工具共享 signal，executeToolCall 已支持 signal 检查；abort 后后续 batch 不再开始 |
-| ChatSessionController 重构幅度大 | 现有 Controller 单测需要重写 | 新 AgentLoop 模块先独立测试通过，再重构 Controller；Controller 对外接口(state.changed)不变，TUI 和 E2E 影响最小 |
-| E2E mock server 不支持多轮 | 当前 mock 按"一个 prompt 一个响应"映射 | 改造 mock 支持按请求中 messages 数组特征（长度或内容）返回不同响应序列 |
-| Generator 消费者意外退出 | 可能有 pending 工具执行 | runAgentLoop 不持有独立资源；工具执行共享外部 signal，消费者 abort signal 即可取消一切 |
-| submit_plan 被模型在非 plan mode 调用 | plan mode 外不注入该工具 | 即使模型幻觉调用也按 unknown_tool 处理 |
+### 回滚分层
 
-**回滚方式：** git revert。Agent Loop 是全新模块，Provider 修改独立 commit。出问题直接回退对应 commit。
+改动分为 4 个独立可回滚层级：
+
+| 层级 | 内容 | 回滚方式 |
+|------|------|---------|
+| L1 | `src/system-prompt/` 整个模块 | 删除目录 + Controller 不调用构建器 |
+| L2 | Provider system 字段映射 | system 为可选，不传时行为不变 |
+| L3 | `response.usage` 事件 | AgentLoop 中忽略即可 |
+| L4 | 工具描述增强 | 移除 enhanceToolDeclarations 调用 |
+
+每层独立可 revert，建议按层级分 commit。
+
+### 风险矩阵
+
+| 风险 | 影响 | 缓解 |
+|------|------|------|
+| `exactOptionalPropertyTypes` 赋值报错 | 编译失败 | 新字段用 spread 模式赋值 |
+| OpenAI `stream_options` 在兼容代理不支持 | 4xx 或静默忽略 | 必要时条件开启 |
+| 删除 `buildPlanContextMessage` 改变 plan 行为 | plan 效果退化 | E2E 验证 plan 模式 |
+| ProviderEvent 新增导致 exhaustive switch 报错 | 编译失败 | AgentLoop 内部消化，不转发为 AgentLoopEvent |
+| 现有测试 mock 缺少新字段 | 编译失败 | 所有新字段 optional，现有 mock 无需改动 |
+| 模块内容超 token 预算 | 缓存效率降低 | 文件头注释标注估算 token 数 |
+| Anthropic beta header 与用户自定义 headers 冲突 | header 被覆盖 | 框架 header 放前，用户 headers 在后可覆盖 |
+
+### 安全边界
+
+- 模块内容为编译时常量，不含 `${}`、不读环境变量、不含 API key
+- EnvContext 仅含 os/shell/cwd/date 公开信息
+- response.usage 为 debug 级别日志，不在 TUI 展示
+- constraints 模块包含 system-reminder 标签处理指令
 
 ## 技术决策
 
 | 决策点 | 选择 | 理由 |
 |--------|------|------|
-| Agent Loop 形态 | async generator 函数 | 比 class 更轻量，天然支持 for-await 消费，无状态易测试，与 Provider.stream() 风格一致 |
-| 事件流机制 | yield（generator 协议） | 不引入 EventEmitter/RxJS，和现有 AsyncIterable 模式一致，无 listener 泄漏风险 |
-| 多工具并发 | Promise.allSettled | 单个失败不影响其余，比 Promise.all 更健壮，结果全量返回 |
-| 停止条件 | 独立纯函数 | 零依赖、极易测试、判断逻辑集中一处 |
-| Plan Mode 工具过滤 | registry.filterByRisk() | 复用现有 registry 抽象，返回新实例，不污染原 registry |
-| submit_plan | 作为 ToolDefinition 注册 | 复用现有工具协议，模型通过 tool call 输出计划，不需要特殊解析 |
-| Provider 多 tool call | 修改 provider emit 所有 tool.call 事件 | 不改 ProviderEvent 类型定义，只改实现让它 emit 所有 index；独立 commit |
-| Controller 对外接口 | 保持 state.changed 不变 | TUI 无需感知内部重构，降低改动面 |
-| 未知工具处理 | ToolScheduler 直接产出 error 结果，不实际执行 | 效率更高，避免无意义的 executor 调用 |
-| toolExecutionContext | 改为工厂函数注入 | 每次工具执行可能需要不同的 signal，工厂函数确保正确传播 |
-| 两套 ChatMessage | 协议层统一使用 providers/types.ts 的类型，session 层的 ChatMessage 仅用于展示 | 避免同名类型混淆，AgentLoop 内部只操作 Provider 级消息 |
+| 构建器设计 | 纯函数 | 幂等、无副作用、易测试，与项目 `stopCondition.ts` 风格一致 |
+| 注册表形式 | 数据数组 | 与 StaticToolRegistry 数据驱动模式一致；新增模块 O(1) |
+| 新字段策略 | 全部 optional | 零回归风险，现有 mock/测试不改即通过 |
+| system 字段赋值 | spread 模式 | 规避 `exactOptionalPropertyTypes` 约束 |
+| reminder 注入位置 | userMessage.content 前置 | 不产生独立消息，不破坏角色交替 |
+| response.usage 处理 | AgentLoop 内 debug log，不转发 | 不影响 AgentLoopEvent 联合类型，不触发 controller exhaustive check |
+| 工具增强位置 | AgentLoop 辅助函数 | 工具注册表保持纯净，增强逻辑可独立测试 |
+| 模块文件命名 | camelCase（taskMode.ts） | 匹配项目现有 .ts 文件命名风格 |
+| 构建器注入方式 | ChatSessionController 构造函数参数 | 便于测试 mock，与现有 deps 注入模式一致 |

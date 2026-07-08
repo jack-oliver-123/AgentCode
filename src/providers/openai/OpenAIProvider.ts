@@ -1,6 +1,6 @@
 import type { AgentConfig } from '../../config/schema.js';
 import { AgentCodeError, toPublicError } from '../../shared/errors.js';
-import type { ChatModelProvider, ProviderEvent, ProviderRequest } from '../types.js';
+import type { ChatModelProvider, ProviderEvent, ProviderRequest, UsageInfo } from '../types.js';
 import { createCancellationError, createProtocolError } from '../shared/errors.js';
 import { joinEndpoint } from '../shared/endpoint.js';
 import { fetchJsonStream, type FetchJsonOptions, type FetchTransportOptions } from '../shared/fetchTransport.js';
@@ -14,6 +14,13 @@ interface OpenAIChatCompletionChunk {
     };
     finish_reason?: unknown;
   }>;
+  usage?: {
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    prompt_tokens_details?: {
+      cached_tokens?: unknown;
+    };
+  };
 }
 
 interface OpenAIToolCallDelta {
@@ -110,13 +117,19 @@ export class OpenAIProvider implements ChatModelProvider {
 
           collectToolCallDeltas(toolCalls, choice?.delta?.tool_calls);
 
-          if (typeof choice?.finish_reason === 'string') {
+          if (chunk.usage !== undefined) {
+            const usageEvent = createUsageEvent(chunk.usage);
+            if (usageEvent !== undefined) {
+              yield usageEvent;
+            }
+          }
+
+          if (typeof choice?.finish_reason === 'string' && choice.finish_reason.length > 0) {
             finishReason = choice.finish_reason;
             if (finishReason === 'tool_calls') {
               yield* emitToolCallEvents(toolCalls);
             }
-            yield createCompleteEvent(finishReason);
-            return;
+            // 不立即 return — 等待后续 usage chunk 和 [DONE] 信号
           }
         }
       } finally {
@@ -136,10 +149,19 @@ function isAbortError(error: unknown): boolean {
 }
 
 function createOpenAIRequestBody(request: ProviderRequest): Record<string, unknown> {
+  const messages: Record<string, unknown>[] = [];
+
+  if (request.system !== undefined && request.system.length > 0) {
+    messages.push({ role: 'system', content: request.system });
+  }
+
+  messages.push(...request.messages.map(toOpenAIMessage));
+
   const body: Record<string, unknown> = {
     model: request.model,
-    messages: request.messages.map(toOpenAIMessage),
-    stream: true
+    messages,
+    stream: true,
+    stream_options: { include_usage: true }
   };
 
   if (request.toolChoice !== 'none' && request.tools !== undefined && request.tools.length > 0) {
@@ -342,4 +364,25 @@ function createCompleteEvent(finishReason: string | undefined): ProviderEvent {
     type: 'response.complete',
     finishReason
   };
+}
+
+function createUsageEvent(usage: NonNullable<OpenAIChatCompletionChunk['usage']>): ProviderEvent | undefined {
+  const inputTokens = typeof usage.prompt_tokens === 'number' ? usage.prompt_tokens : undefined;
+  const outputTokens = typeof usage.completion_tokens === 'number' ? usage.completion_tokens : undefined;
+
+  if (inputTokens === undefined || outputTokens === undefined) {
+    return undefined;
+  }
+
+  const cachedTokens = typeof usage.prompt_tokens_details?.cached_tokens === 'number'
+    ? usage.prompt_tokens_details.cached_tokens
+    : undefined;
+
+  const usageInfo: UsageInfo = {
+    inputTokens,
+    outputTokens,
+    ...(cachedTokens !== undefined ? { cachedTokens } : {})
+  };
+
+  return { type: 'response.usage', usage: usageInfo };
 }
