@@ -9,17 +9,36 @@ import type { PublicError } from '../shared/errors.js';
 
 // ─── 配置 ─────────────────────────────────────────────────────────────
 
+/** Agent Loop 重试配置 */
+export interface RetryConfig {
+  /** 最大重试次数，默认 3 */
+  maxRetries: number;
+  /** 基础延迟 ms（指数退避），默认 1000 */
+  baseDelayMs: number;
+  /** 最大延迟 ms，默认 10000 */
+  maxDelayMs: number;
+}
+
+export const DEFAULT_RETRY_CONFIG: RetryConfig = {
+  maxRetries: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 10000,
+};
+
 /** Agent Loop 配置 */
 export interface AgentLoopConfig {
   /** 最大迭代次数，默认 50 */
   maxIterations: number;
   /** 连续调用不存在工具的容忍次数，默认 3 */
   maxConsecutiveUnknownTools: number;
+  /** 可重试错误的重试配置 */
+  retry: RetryConfig;
 }
 
 export const DEFAULT_AGENT_LOOP_CONFIG: AgentLoopConfig = {
   maxIterations: 50,
   maxConsecutiveUnknownTools: 3,
+  retry: DEFAULT_RETRY_CONFIG,
 };
 
 // ─── 输入 ─────────────────────────────────────────────────────────────
@@ -75,6 +94,7 @@ export type AgentLoopEvent =
   | AgentLoopToolCallResult
   | AgentLoopPlanSubmitted
   | AgentLoopTokenUsage
+  | AgentLoopRetrying
   | AgentLoopCompleted
   | AgentLoopFailed;
 
@@ -136,6 +156,20 @@ export interface AgentLoopTokenUsage {
   totalPromptTokens: number;
   /** 累计 completion tokens */
   totalCompletionTokens: number;
+}
+
+export interface AgentLoopRetrying {
+  type: 'loop.retrying';
+  /** 第几次重试（从 1 开始） */
+  attempt: number;
+  /** 最大重试次数 */
+  maxRetries: number;
+  /** 本次等待延迟 ms */
+  delayMs: number;
+  /** 触发重试的错误 */
+  error: PublicError;
+  /** 所属迭代轮次 */
+  iteration: number;
 }
 
 export interface AgentLoopCompleted {

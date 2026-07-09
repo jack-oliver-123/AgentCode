@@ -257,6 +257,10 @@ export class ChatSessionController {
       case 'token.usage':
         return undefined;
 
+      case 'loop.retrying':
+        // 重试中：更新 draft activity 提示用户
+        return undefined;
+
       case 'loop.completed':
         this.completeTurn(userMessage, event.finalText, event.turnMessages, event.reason === 'max_iterations' ? 'max_iterations' : undefined);
         return this.createStateChangedEvent();

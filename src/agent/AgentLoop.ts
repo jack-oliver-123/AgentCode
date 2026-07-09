@@ -5,10 +5,12 @@ import type {
   PlanStep,
   ProviderMessage,
   ProviderToolCall,
+  RetryConfig,
   ToolExecutionResult,
 } from './types.js';
 import type { ProviderEvent, ProviderRequest } from '../providers/types.js';
 import type { ToolRegistry } from '../tools/types.js';
+import type { PublicError } from '../shared/errors.js';
 import { checkStopCondition } from './stopCondition.js';
 import { createBatches, executeBatches } from './ToolScheduler.js';
 import { toPublicError } from '../shared/errors.js';
@@ -52,6 +54,7 @@ export async function* runAgentLoop(
   let consecutiveUnknownTools = 0;
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
+  const { retry } = config;
 
   while (iteration < config.maxIterations) {
     iteration++;
@@ -75,76 +78,29 @@ export async function* runAgentLoop(
       ...(signal !== undefined ? { signal } : {}),
     };
 
-    // 流式收集本轮 LLM 响应（双路：yield delta + 累积）
-    let turnText = '';
-    let turnThinkingText = '';
-    const turnToolCalls: ProviderToolCall[] = [];
-    let hasError = false;
-    let receivedComplete = false;
+    // 带重试的 provider 调用
+    const streamResult: ProviderStreamResult | undefined = yield* streamWithRetry(
+      provider, request, retry, iteration, signal
+    );
 
-    try {
-      for await (const event of provider.stream(request)) {
-        switch (event.type) {
-          case 'content.delta':
-            turnText += event.delta;
-            yield { type: 'text.delta', delta: event.delta };
-            break;
-
-          case 'thinking.delta':
-            turnThinkingText += event.delta;
-            yield { type: 'thinking.delta', delta: event.delta };
-            break;
-
-          case 'tool.call':
-            turnToolCalls.push(event.call);
-            break;
-
-          case 'response.complete':
-            receivedComplete = true;
-            break;
-
-          case 'response.usage': {
-            const promptTokens = typeof event.usage.inputTokens === 'number' ? event.usage.inputTokens : undefined;
-            const completionTokens = typeof event.usage.outputTokens === 'number' ? event.usage.outputTokens : undefined;
-            if (promptTokens !== undefined) totalPromptTokens += promptTokens;
-            if (completionTokens !== undefined) totalCompletionTokens += completionTokens;
-            yield {
-              type: 'token.usage',
-              ...(promptTokens !== undefined ? { promptTokens } : {}),
-              ...(completionTokens !== undefined ? { completionTokens } : {}),
-              totalPromptTokens,
-              totalCompletionTokens,
-            };
-            break;
-          }
-
-          case 'response.error':
-            hasError = true;
-            yield { type: 'loop.failed', error: event.error, iteration };
-            return;
-
-          // response.start 忽略
-          default:
-            break;
-        }
-      }
-    } catch (error) {
-      yield { type: 'loop.failed', error: toPublicError(error), iteration };
+    // streamWithRetry 返回 undefined 表示已 yield loop.failed 并需要终止
+    if (streamResult === undefined) {
       return;
     }
 
-    // 流结束后检查：未收到 response.complete 视为 protocol error
-    if (!receivedComplete && !hasError) {
+    const { turnText, turnToolCalls, promptTokensDelta, completionTokensDelta } = streamResult;
+
+    // 累积 token 计数并 yield
+    if (promptTokensDelta > 0) totalPromptTokens += promptTokensDelta;
+    if (completionTokensDelta > 0) totalCompletionTokens += completionTokensDelta;
+    if (promptTokensDelta > 0 || completionTokensDelta > 0) {
       yield {
-        type: 'loop.failed',
-        error: {
-          code: 'protocol_error',
-          message: 'Provider stream ended without response.complete event.',
-          retryable: false,
-        },
-        iteration,
+        type: 'token.usage',
+        ...(promptTokensDelta > 0 ? { promptTokens: promptTokensDelta } : {}),
+        ...(completionTokensDelta > 0 ? { completionTokens: completionTokensDelta } : {}),
+        totalPromptTokens,
+        totalCompletionTokens,
       };
-      return;
     }
 
     // 停止条件判断
@@ -262,6 +218,151 @@ export async function* runAgentLoop(
 
   // 达到迭代上限
   yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'max_iterations', turnMessages: messages.slice(initialMessageCount) };
+}
+
+// ─── 重试相关 ─────────────────────────────────────────────────────────
+
+/** provider 流成功消费后的结果 */
+interface ProviderStreamResult {
+  turnText: string;
+  turnToolCalls: ProviderToolCall[];
+  promptTokensDelta: number;
+  completionTokensDelta: number;
+}
+
+/**
+ * 带指数退避重试的 provider stream 消费。
+ * 成功时返回 ProviderStreamResult；不可恢复时 yield loop.failed 并返回 undefined。
+ */
+async function* streamWithRetry(
+  provider: { stream(req: ProviderRequest): AsyncIterable<ProviderEvent> },
+  request: ProviderRequest,
+  retry: RetryConfig,
+  iteration: number,
+  signal: AbortSignal | undefined
+): AsyncGenerator<AgentLoopEvent, ProviderStreamResult | undefined, undefined> {
+  let lastError: PublicError | undefined;
+
+  for (let attempt = 0; attempt <= retry.maxRetries; attempt++) {
+    // 重试前等待（首次 attempt=0 不等待）
+    if (attempt > 0) {
+      const delayMs = computeRetryDelay(attempt, retry);
+      yield {
+        type: 'loop.retrying',
+        attempt,
+        maxRetries: retry.maxRetries,
+        delayMs,
+        error: lastError!,
+        iteration,
+      };
+      await sleep(delayMs, signal);
+      // sleep 被 abort 打断时直接退出
+      if (signal?.aborted) {
+        yield { type: 'loop.failed', error: lastError!, iteration };
+        return undefined;
+      }
+    }
+
+    let turnText = '';
+    const turnToolCalls: ProviderToolCall[] = [];
+    let promptTokensDelta = 0;
+    let completionTokensDelta = 0;
+    let receivedComplete = false;
+    let streamError: PublicError | undefined;
+
+    try {
+      for await (const event of provider.stream(request)) {
+        switch (event.type) {
+          case 'content.delta':
+            turnText += event.delta;
+            yield { type: 'text.delta', delta: event.delta };
+            break;
+
+          case 'thinking.delta':
+            yield { type: 'thinking.delta', delta: event.delta };
+            break;
+
+          case 'tool.call':
+            turnToolCalls.push(event.call);
+            break;
+
+          case 'response.complete':
+            receivedComplete = true;
+            break;
+
+          case 'response.usage': {
+            const pt = typeof event.usage.inputTokens === 'number' ? event.usage.inputTokens : 0;
+            const ct = typeof event.usage.outputTokens === 'number' ? event.usage.outputTokens : 0;
+            promptTokensDelta += pt;
+            completionTokensDelta += ct;
+            break;
+          }
+
+          case 'response.error':
+            streamError = event.error;
+            break;
+
+          default:
+            break;
+        }
+      }
+    } catch (error) {
+      streamError = toPublicError(error);
+    }
+
+    // 成功路径
+    if (streamError === undefined && receivedComplete) {
+      return { turnText, turnToolCalls, promptTokensDelta, completionTokensDelta };
+    }
+
+    // 流结束但未收到 complete 且无显式错误 → protocol error（不可重试）
+    if (streamError === undefined && !receivedComplete) {
+      const protoErr: PublicError = {
+        code: 'protocol_error',
+        message: 'Provider stream ended without response.complete event.',
+        retryable: false,
+      };
+      yield { type: 'loop.failed', error: protoErr, iteration };
+      return undefined;
+    }
+
+    // 有错误 — 检查是否可重试
+    lastError = streamError!;
+    if (!lastError.retryable) {
+      yield { type: 'loop.failed', error: lastError, iteration };
+      return undefined;
+    }
+    // 可重试 → 继续循环
+  }
+
+  // 超过重试上限
+  yield { type: 'loop.failed', error: lastError!, iteration };
+  return undefined;
+}
+
+/** 指数退避延迟计算（含 jitter） */
+function computeRetryDelay(attempt: number, retry: RetryConfig): number {
+  const exponential = retry.baseDelayMs * Math.pow(2, attempt - 1);
+  const capped = Math.min(exponential, retry.maxDelayMs);
+  // 添加 ±25% 随机 jitter 避免 thundering herd
+  const jitter = capped * (0.75 + Math.random() * 0.5);
+  return Math.round(jitter);
+}
+
+/** 可被 AbortSignal 中断的 sleep */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────
