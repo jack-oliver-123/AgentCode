@@ -9,7 +9,8 @@ import type { AgentLoopConfig, AgentLoopDeps, AgentLoopEvent, AgentLoopInput, Ag
 import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
 import type { ChatMessage, ChatSessionDraft, ChatSessionEvent, ChatSessionState, MessagePart, MessageRole } from './types.js';
 import { buildSystemPrompt } from '../system-prompt/index.js';
-import type { SystemPromptBuilder, EnvContext } from '../system-prompt/types.js';
+import type { SystemPromptBuilder, SystemPromptModule, EnvContext } from '../system-prompt/types.js';
+import { getGitContext } from '../system-prompt/getGitContext.js';
 
 export interface ChatSessionControllerOptions {
   provider: ChatModelProvider;
@@ -24,6 +25,8 @@ export interface ChatSessionControllerOptions {
   agentLoopConfig?: Partial<AgentLoopConfig>;
   /** 依赖注入：系统提示构建器，便于测试 mock */
   buildSystemPrompt?: SystemPromptBuilder;
+  /** 自定义系统提示模块注册表（含动态加载内容） */
+  systemPromptRegistry?: SystemPromptModule[];
 }
 
 export interface SubmitUserTextOptions {
@@ -59,12 +62,14 @@ export class ChatSessionController {
   private notice: string | undefined;
   /** 当前 turn 索引（每轮 +1） */
   private turnIndex: number = 0;
-  /** 运行环境上下文 */
-  private readonly envContext: EnvContext;
+  /** 运行环境上下文（每轮刷新 git 信息） */
+  private envContext: EnvContext;
   /** 会话级系统提示（构造时计算一次） */
   private readonly systemPrompt: string;
   /** 系统提示构建器（可注入） */
   private readonly buildSystemPromptFn: SystemPromptBuilder;
+  /** 系统提示模块注册表（可注入） */
+  private readonly systemPromptRegistry: SystemPromptModule[] | undefined;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -83,6 +88,7 @@ export class ChatSessionController {
 
     // 系统提示初始化
     this.buildSystemPromptFn = options.buildSystemPrompt ?? buildSystemPrompt;
+    this.systemPromptRegistry = options.systemPromptRegistry;
     this.envContext = {
       os: process.platform,
       shell: process.env.SHELL ?? (process.platform === 'win32' ? 'powershell' : 'bash'),
@@ -93,7 +99,7 @@ export class ChatSessionController {
       mode: this.currentMode,
       turnIndex: 0,
       env: this.envContext,
-    });
+    }, this.systemPromptRegistry);
     this.systemPrompt = system;
   }
 
@@ -144,13 +150,26 @@ export class ChatSessionController {
     const registry = this.toolRegistry;
 
     try {
+      // 每轮刷新 git 上下文 + 日期
+      const gitCtx = await getGitContext(this.cwd);
+      const freshDate = new Date().toISOString().slice(0, 10);
+      if (gitCtx !== undefined) {
+        // 先移除旧 git 字段，再重新赋值（避免 dirty 超时时残留旧值）
+        const { gitBranch: _ob, gitDirty: _od, ...base } = this.envContext;
+        this.envContext = { ...base, date: freshDate, gitBranch: gitCtx.branch, ...(gitCtx.dirty !== undefined ? { gitDirty: gitCtx.dirty } : {}) };
+      } else {
+        // 不在 git 仓库中，清除旧的 git 字段
+        const { gitBranch: _b, gitDirty: _d, ...rest } = this.envContext;
+        this.envContext = { ...rest, date: freshDate };
+      }
+
       // 构建当前轮 reminder
       const { reminder } = this.buildSystemPromptFn({
         mode: this.currentMode,
         turnIndex: this.turnIndex,
         ...(this.storedPlan !== undefined ? { plan: this.storedPlan } : {}),
         env: this.envContext,
-      });
+      }, this.systemPromptRegistry);
       this.turnIndex++;
 
       const input: AgentLoopInput = {

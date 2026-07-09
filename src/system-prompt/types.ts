@@ -24,6 +24,10 @@ export interface EnvContext {
   cwd: string;
   /** ISO 日期字符串，如 '2026-07-08' */
   date: string;
+  /** 当前 git 分支名（不在 git 仓库中时为 undefined） */
+  gitBranch?: string;
+  /** 工作区是否有未提交变更 */
+  gitDirty?: boolean;
 }
 
 // ─── 构建器 I/O ─────────────────────────────────────────────────────────
