@@ -68,6 +68,7 @@ export interface ToolExecutionContext {
   secrets: readonly string[];
   maxOutputBytes: number;
   signal?: AbortSignal;
+  permissionChecker?: import('./permissions/types.js').PermissionChecker;
 }
 
 export type ToolExecutionResult<TData = unknown> =

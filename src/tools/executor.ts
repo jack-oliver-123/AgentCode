@@ -40,6 +40,22 @@ export async function executeToolCall(
     return redactResult(createErrorResult(tool.name, validation.error, startedAt, false), context);
   }
 
+  // ─── 权限检查层 ───────────────────────────────────────────
+  if (context.permissionChecker !== undefined) {
+    const permissionResult = await context.permissionChecker.check({
+      toolName: tool.name,
+      toolRisk: tool.risk,
+      parsedArguments: validation.value,
+      cwd: context.cwd,
+    });
+    if (!permissionResult.allowed) {
+      return redactResult(
+        createErrorResult(tool.name, permissionResult.error, startedAt, false),
+        context,
+      );
+    }
+  }
+
   if (context.signal?.aborted) {
     return redactResult(createErrorResult(tool.name, createCancelledError(), startedAt, false), context);
   }
