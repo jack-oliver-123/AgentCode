@@ -56,14 +56,14 @@ export async function listWorkspaceFiles(cwd: string): Promise<WorkspaceFileList
 
   return {
     ok: true,
-    files
+    files,
   };
 }
 
 export async function visitWorkspaceFiles(
   cwd: string,
   onFile: (file: WorkspaceFileEntry) => boolean | Promise<boolean>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<WorkspaceFileVisitResult> {
   let workspaceRoot: string;
   try {
@@ -74,8 +74,8 @@ export async function visitWorkspaceFiles(
       error: {
         code: 'tool_internal_error',
         message: error instanceof Error ? error.message : 'Failed to resolve workspace root.',
-        retryable: false
-      }
+        retryable: false,
+      },
     };
   }
 
@@ -88,8 +88,8 @@ export async function visitWorkspaceFiles(
       error: {
         code: 'tool_internal_error',
         message: error instanceof Error ? error.message : 'Failed to list workspace files.',
-        retryable: false
-      }
+        retryable: false,
+      },
     };
   }
 }
@@ -99,14 +99,14 @@ export function createGlobMatcher(pattern: string): GlobMatcherResult {
   if (normalizedPattern === undefined) {
     return {
       ok: false,
-      message: 'Glob pattern must be a non-empty workspace-relative pattern.'
+      message: 'Glob pattern must be a non-empty workspace-relative pattern.',
     };
   }
 
   if (isUnsafeGlobPattern(normalizedPattern)) {
     return {
       ok: false,
-      message: 'Glob pattern must stay inside the workspace.'
+      message: 'Glob pattern must stay inside the workspace.',
     };
   }
 
@@ -114,8 +114,8 @@ export function createGlobMatcher(pattern: string): GlobMatcherResult {
   return {
     ok: true,
     matcher: {
-      matches: (path: string) => regex.test(path)
-    }
+      matches: (path: string) => regex.test(path),
+    },
   };
 }
 
@@ -139,7 +139,7 @@ export function truncateUtf8(content: string, maxBytes: number): { content: stri
 
   return {
     content: truncatedContent,
-    bytes
+    bytes,
   };
 }
 
@@ -147,7 +147,7 @@ async function visitWorkspaceDirectory(
   root: string,
   directory: string,
   onFile: (file: WorkspaceFileEntry) => boolean | Promise<boolean>,
-  signal: AbortSignal | undefined
+  signal: AbortSignal | undefined,
 ): Promise<boolean> {
   if (signal?.aborted) {
     return false;
@@ -180,7 +180,7 @@ async function visitWorkspaceDirectory(
     if (entry.isFile()) {
       const shouldContinue = await onFile({
         absolutePath,
-        relativePath: toWorkspaceRelativePath(root, absolutePath)
+        relativePath: toWorkspaceRelativePath(root, absolutePath),
       });
       if (!shouldContinue) {
         return false;
@@ -196,7 +196,11 @@ function toWorkspaceRelativePath(root: string, absolutePath: string): string {
 }
 
 function normalizeGlobPattern(pattern: string): string | undefined {
-  const normalizedPattern = pattern.trim().split('\\').join('/').replace(/^\.\/+/, '');
+  const normalizedPattern = pattern
+    .trim()
+    .split('\\')
+    .join('/')
+    .replace(/^\.\/+/, '');
   return normalizedPattern.length === 0 ? undefined : normalizedPattern;
 }
 

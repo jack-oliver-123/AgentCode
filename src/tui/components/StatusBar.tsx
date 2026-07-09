@@ -15,7 +15,7 @@ export interface StatusBarProps {
 const STATUS_LABELS: Record<ChatSessionStatus, string> = {
   idle: 'ready',
   streaming: 'generating',
-  error: 'needs attention'
+  error: 'needs attention',
 };
 
 export function StatusBar({ cwd, resolvedConfig, status }: StatusBarProps): ReactElement {
@@ -25,7 +25,7 @@ export function StatusBar({ cwd, resolvedConfig, status }: StatusBarProps): Reac
   return (
     <Box flexDirection="column" marginBottom={1}>
       <Box>
-        <Text color="blue"> /\_/\   </Text>
+        <Text color="blue"> /\_/\ </Text>
         <Text color="white">AgentCode</Text>
         <Text color="gray"> · {statusLabel}</Text>
       </Box>
@@ -34,13 +34,16 @@ export function StatusBar({ cwd, resolvedConfig, status }: StatusBarProps): Reac
         <Text color="cyan">●</Text>
         <Text color="blue">.</Text>
         <Text color="cyan">●</Text>
-        <Text color="blue"> )  </Text>
+        <Text color="blue"> ) </Text>
         <Text color="gray">model: </Text>
         <Text color="cyan">{resolvedConfig.config.model}</Text>
-        <Text color="gray"> · provider: {resolvedConfig.config.protocol} · config: {resolvedConfig.source}</Text>
+        <Text color="gray">
+          {' '}
+          · provider: {resolvedConfig.config.protocol} · config: {resolvedConfig.source}
+        </Text>
       </Box>
       <Box>
-        <Text color="blue"> &gt; ^ &lt;   </Text>
+        <Text color="blue"> &gt; ^ &lt; </Text>
         <Text color="gray">cwd: {cwdLabel}</Text>
       </Box>
     </Box>

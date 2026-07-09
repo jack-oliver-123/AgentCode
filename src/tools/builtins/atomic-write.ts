@@ -21,7 +21,7 @@ interface AtomicWriteTextOptions {
 export async function atomicWriteTextFile(
   absolutePath: string,
   content: string,
-  options: AtomicWriteTextOptions
+  options: AtomicWriteTextOptions,
 ): Promise<AtomicWriteTextResult> {
   const tempPath = createTempPath(absolutePath);
 
@@ -40,7 +40,7 @@ export async function atomicWriteTextFile(
     await removeTemporaryFile(tempPath);
     return {
       ok: false,
-      error: createAtomicWriteError(error, options.operation)
+      error: createAtomicWriteError(error, options.operation),
     };
   }
 }
@@ -67,7 +67,7 @@ function createAtomicWriteError(error: unknown, operation: AtomicWriteTextOption
     return {
       code: 'permission_denied',
       message: `Permission denied while ${operation === 'edit' ? 'editing' : 'writing'} file.`,
-      retryable: true
+      retryable: true,
     };
   }
 
@@ -75,14 +75,14 @@ function createAtomicWriteError(error: unknown, operation: AtomicWriteTextOption
     return {
       code: 'file_not_text',
       message: 'Path points to a directory, not a text file.',
-      retryable: true
+      retryable: true,
     };
   }
 
   return {
     code: 'tool_internal_error',
     message: error instanceof Error ? error.message : `Failed to ${operation === 'edit' ? 'edit' : 'write'} file.`,
-    retryable: false
+    retryable: false,
   };
 }
 

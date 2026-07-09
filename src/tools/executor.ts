@@ -7,13 +7,13 @@ import type {
   ToolExecutionError,
   ToolExecutionResult,
   ToolRegistry,
-  ToolValidationResult
+  ToolValidationResult,
 } from './types.js';
 
 export async function executeToolCall(
   call: ProviderToolCall,
   registry: ToolRegistry,
-  context: ToolExecutionContext
+  context: ToolExecutionContext,
 ): Promise<ToolExecutionResult> {
   const startedAt = performance.now();
 
@@ -71,10 +71,10 @@ export async function executeToolCall(
     const result = await Promise.race([
       tool.execute(validation.value, {
         ...context,
-        signal: toolController.signal
+        signal: toolController.signal,
       }),
       timeoutPromise,
-      cancellationPromise
+      cancellationPromise,
     ]);
 
     return redactResult(
@@ -84,14 +84,17 @@ export async function executeToolCall(
         meta: {
           ...result.meta,
           durationMs: elapsedMs(startedAt),
-          timedOut: result.meta.timedOut || timedOut
-        }
+          timedOut: result.meta.timedOut || timedOut,
+        },
       },
-      context
+      context,
     );
   } catch (error) {
     if (timedOut) {
-      return redactResult(createErrorResult(tool.name, createTimeoutError(context.timeoutMs), startedAt, true), context);
+      return redactResult(
+        createErrorResult(tool.name, createTimeoutError(context.timeoutMs), startedAt, true),
+        context,
+      );
     }
 
     if (parentAborted) {
@@ -116,8 +119,8 @@ function createTimeoutResult(toolName: string, timeoutMs: number): ToolExecution
     error: createTimeoutError(timeoutMs),
     meta: {
       durationMs: timeoutMs,
-      timedOut: true
-    }
+      timedOut: true,
+    },
   };
 }
 
@@ -128,8 +131,8 @@ function createCancellationResult(toolName: string): ToolExecutionResult {
     error: createCancelledError(),
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
 
@@ -137,7 +140,7 @@ function createInvalidJsonError(): ToolExecutionError {
   return {
     code: 'invalid_arguments',
     message: 'Tool arguments must be valid JSON.',
-    retryable: true
+    retryable: true,
   };
 }
 
@@ -145,7 +148,7 @@ function createUnknownToolError(toolName: string): ToolExecutionError {
   return {
     code: 'unknown_tool',
     message: `Unknown tool: ${toolName}.`,
-    retryable: false
+    retryable: false,
   };
 }
 
@@ -153,7 +156,7 @@ function createTimeoutError(timeoutMs: number): ToolExecutionError {
   return {
     code: 'command_timeout',
     message: `Tool execution timed out after ${timeoutMs}ms.`,
-    retryable: true
+    retryable: true,
   };
 }
 
@@ -161,7 +164,7 @@ function createCancelledError(): ToolExecutionError {
   return {
     code: 'tool_internal_error',
     message: 'Tool execution was cancelled before completion.',
-    retryable: true
+    retryable: true,
   };
 }
 
@@ -169,7 +172,7 @@ function createInternalError(error: unknown): ToolExecutionError {
   return {
     code: 'tool_internal_error',
     message: error instanceof Error ? error.message : 'Tool execution failed with an unknown error.',
-    retryable: false
+    retryable: false,
   };
 }
 
@@ -177,7 +180,7 @@ function createErrorResult(
   toolName: string,
   error: ToolExecutionError,
   startedAt: number,
-  timedOut: boolean
+  timedOut: boolean,
 ): ToolExecutionResult {
   return {
     ok: false,
@@ -185,8 +188,8 @@ function createErrorResult(
     error,
     meta: {
       durationMs: elapsedMs(startedAt),
-      timedOut
-    }
+      timedOut,
+    },
   };
 }
 

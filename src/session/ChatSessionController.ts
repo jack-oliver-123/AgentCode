@@ -1,16 +1,30 @@
+import { runAgentLoop } from '../agent/AgentLoop.js';
+import type {
+  AgentLoopConfig,
+  AgentLoopDeps,
+  AgentLoopEvent,
+  AgentLoopInput,
+  AgentLoopMode,
+  PlanStep,
+} from '../agent/types.js';
+import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
 import type { AgentConfig } from '../config/schema.js';
 import type { ChatModelProvider, ChatMessage as ProviderChatMessage } from '../providers/types.js';
-import { createId, type IdGenerator } from '../shared/ids.js';
-import { toPublicError, type PublicError } from '../shared/errors.js';
-import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
-import { summarizeToolResult } from '../tools/summarize.js';
-import { runAgentLoop } from '../agent/AgentLoop.js';
-import type { AgentLoopConfig, AgentLoopDeps, AgentLoopEvent, AgentLoopInput, AgentLoopMode, PlanStep } from '../agent/types.js';
-import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
-import type { ChatMessage, ChatSessionDraft, ChatSessionEvent, ChatSessionState, MessagePart, MessageRole } from './types.js';
-import { buildSystemPrompt } from '../system-prompt/index.js';
-import type { SystemPromptBuilder, SystemPromptModule, EnvContext } from '../system-prompt/types.js';
+import { type PublicError, toPublicError } from '../shared/errors.js';
+import { type IdGenerator, createId } from '../shared/ids.js';
 import { getGitContext } from '../system-prompt/getGitContext.js';
+import { buildSystemPrompt } from '../system-prompt/index.js';
+import type { EnvContext, SystemPromptBuilder, SystemPromptModule } from '../system-prompt/types.js';
+import { summarizeToolResult } from '../tools/summarize.js';
+import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
+import type {
+  ChatMessage,
+  ChatSessionDraft,
+  ChatSessionEvent,
+  ChatSessionState,
+  MessagePart,
+  MessageRole,
+} from './types.js';
 
 export interface ChatSessionControllerOptions {
   provider: ChatModelProvider;
@@ -61,7 +75,7 @@ export class ChatSessionController {
   /** 瞬态系统提示，下次 state 事件后清除 */
   private notice: string | undefined;
   /** 当前 turn 索引（每轮 +1） */
-  private turnIndex: number = 0;
+  private turnIndex = 0;
   /** 运行环境上下文（每轮刷新 git 信息） */
   private envContext: EnvContext;
   /** 会话级系统提示（构造时计算一次） */
@@ -95,11 +109,14 @@ export class ChatSessionController {
       cwd: this.cwd,
       date: new Date().toISOString().slice(0, 10),
     };
-    const { system } = this.buildSystemPromptFn({
-      mode: this.currentMode,
-      turnIndex: 0,
-      env: this.envContext,
-    }, this.systemPromptRegistry);
+    const { system } = this.buildSystemPromptFn(
+      {
+        mode: this.currentMode,
+        turnIndex: 0,
+        env: this.envContext,
+      },
+      this.systemPromptRegistry,
+    );
     this.systemPrompt = system;
   }
 
@@ -120,7 +137,7 @@ export class ChatSessionController {
       this.lastError = {
         code: 'provider_error',
         message: 'Cannot submit a new message while the previous response is still streaming.',
-        retryable: false
+        retryable: false,
       };
       yield this.createStateChangedEvent();
       return;
@@ -139,7 +156,7 @@ export class ChatSessionController {
       id: this.createIdFn('draft'),
       visibleText: '',
       thinkingText: '',
-      activity: { type: 'thinking' }
+      activity: { type: 'thinking' },
     };
     this.status = 'streaming';
     this.lastError = undefined;
@@ -156,7 +173,12 @@ export class ChatSessionController {
       if (gitCtx !== undefined) {
         // 先移除旧 git 字段，再重新赋值（避免 dirty 超时时残留旧值）
         const { gitBranch: _ob, gitDirty: _od, ...base } = this.envContext;
-        this.envContext = { ...base, date: freshDate, gitBranch: gitCtx.branch, ...(gitCtx.dirty !== undefined ? { gitDirty: gitCtx.dirty } : {}) };
+        this.envContext = {
+          ...base,
+          date: freshDate,
+          gitBranch: gitCtx.branch,
+          ...(gitCtx.dirty !== undefined ? { gitDirty: gitCtx.dirty } : {}),
+        };
       } else {
         // 不在 git 仓库中，清除旧的 git 字段
         const { gitBranch: _b, gitDirty: _d, ...rest } = this.envContext;
@@ -164,12 +186,15 @@ export class ChatSessionController {
       }
 
       // 构建当前轮 reminder
-      const { reminder } = this.buildSystemPromptFn({
-        mode: this.currentMode,
-        turnIndex: this.turnIndex,
-        ...(this.storedPlan !== undefined ? { plan: this.storedPlan } : {}),
-        env: this.envContext,
-      }, this.systemPromptRegistry);
+      const { reminder } = this.buildSystemPromptFn(
+        {
+          mode: this.currentMode,
+          turnIndex: this.turnIndex,
+          ...(this.storedPlan !== undefined ? { plan: this.storedPlan } : {}),
+          env: this.envContext,
+        },
+        this.systemPromptRegistry,
+      );
       this.turnIndex++;
 
       const input: AgentLoopInput = {
@@ -262,7 +287,12 @@ export class ChatSessionController {
         return undefined;
 
       case 'loop.completed':
-        this.completeTurn(userMessage, event.finalText, event.turnMessages, event.reason === 'max_iterations' ? 'max_iterations' : undefined);
+        this.completeTurn(
+          userMessage,
+          event.finalText,
+          event.turnMessages,
+          event.reason === 'max_iterations' ? 'max_iterations' : undefined,
+        );
         return this.createStateChangedEvent();
 
       case 'loop.failed':
@@ -292,13 +322,10 @@ export class ChatSessionController {
     userMessage: ChatMessage,
     finalText: string,
     turnMessages: ProviderChatMessage[],
-    finishReason: string | undefined
+    finishReason: string | undefined,
   ): void {
     // 构建 assistant message，包含 tool_use parts + text part
-    const parts: MessagePart[] = [
-      ...this.toolActivities,
-      { type: 'text', text: finalText },
-    ];
+    const parts: MessagePart[] = [...this.toolActivities, { type: 'text', text: finalText }];
     const assistantMessage: ChatMessage = {
       id: this.createIdFn('assistant'),
       role: 'assistant',
@@ -307,17 +334,16 @@ export class ChatSessionController {
       meta: {
         model: this.config.model,
         provider: this.provider.protocol,
-        ...(finishReason !== undefined ? { finishReason } : {})
+        ...(finishReason !== undefined ? { finishReason } : {}),
       },
     };
     this.messages.push(assistantMessage);
     this.contextMessages.push(userMessage, assistantMessage);
     // 跨 turn 上下文：保留用户消息 + 完整工具调用历史 + 最终回答
-    this.providerContext.push(
-      toProviderMessage(userMessage),
-      ...turnMessages,
-      { role: 'assistant', content: finalText }
-    );
+    this.providerContext.push(toProviderMessage(userMessage), ...turnMessages, {
+      role: 'assistant',
+      content: finalText,
+    });
     this.toolActivities = [];
     this.draft = undefined;
     this.status = 'idle';
@@ -340,14 +366,14 @@ export class ChatSessionController {
       id: this.createIdFn(role),
       role,
       parts: [{ type: 'text', text }],
-      createdAt: this.now()
+      createdAt: this.now(),
     };
 
     if (role === 'assistant') {
       message.meta = {
         model: this.config.model,
         provider: this.provider.protocol,
-        ...(finishReason !== undefined ? { finishReason } : {})
+        ...(finishReason !== undefined ? { finishReason } : {}),
       };
     }
 
@@ -393,7 +419,10 @@ export class ChatSessionController {
 function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   return {
     role: message.role,
-    content: message.parts.filter((p) => p.type === 'text').map((p) => p.text).join('')
+    content: message.parts
+      .filter((p) => p.type === 'text')
+      .map((p) => p.text)
+      .join(''),
   };
 }
 
@@ -401,7 +430,7 @@ function cloneMessage(message: ChatMessage): ChatMessage {
   return {
     ...message,
     parts: message.parts.map((part) => ({ ...part })),
-    ...(message.meta !== undefined ? { meta: { ...message.meta } } : {})
+    ...(message.meta !== undefined ? { meta: { ...message.meta } } : {}),
   };
 }
 

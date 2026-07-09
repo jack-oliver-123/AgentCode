@@ -18,7 +18,7 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: true,
       absolutePath: filePath,
-      relativePath: join('src', 'index.ts')
+      relativePath: join('src', 'index.ts'),
     });
   });
 
@@ -30,8 +30,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -44,8 +44,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -62,8 +62,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -79,8 +79,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -95,8 +95,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -111,8 +111,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -128,8 +128,8 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -142,7 +142,7 @@ describe('resolveWorkspacePath', () => {
     expect(result).toMatchObject({
       ok: true,
       absolutePath: join(await realpath(workspace), 'src', 'new-file.ts'),
-      relativePath: join('src', 'new-file.ts')
+      relativePath: join('src', 'new-file.ts'),
     });
   });
 
@@ -156,7 +156,7 @@ describe('resolveWorkspacePath', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      relativePath: join('src', 'index.ts')
+      relativePath: join('src', 'index.ts'),
     });
   });
 
@@ -166,11 +166,14 @@ describe('resolveWorkspacePath', () => {
     await mkdir(srcDirectory);
     await writeFile(join(srcDirectory, 'index.ts'), 'hello', 'utf8');
 
-    const result = await resolveWorkspacePath(workspace.toUpperCase(), join(workspace.toLowerCase(), 'src', 'index.ts'));
+    const result = await resolveWorkspacePath(
+      workspace.toUpperCase(),
+      join(workspace.toLowerCase(), 'src', 'index.ts'),
+    );
 
     expect(result).toMatchObject({
       ok: true,
-      relativePath: join('src', 'index.ts')
+      relativePath: join('src', 'index.ts'),
     });
   });
 });

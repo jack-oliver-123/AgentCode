@@ -1,12 +1,12 @@
-import { render, type Instance } from 'ink';
-import React from 'react';
+import { type Instance, render } from 'ink';
+import type React from 'react';
 
-import { loadConfig, type LoadConfigOptions } from '../config/loadConfig.js';
+import { type LoadConfigOptions, loadConfig } from '../config/loadConfig.js';
 import { createProvider } from '../providers/createProvider.js';
 import { ChatSessionController } from '../session/ChatSessionController.js';
-import { App } from '../tui/App.js';
-import { createDefaultToolRegistry } from '../tools/registry.js';
 import { loadDynamicModules } from '../system-prompt/index.js';
+import { createDefaultToolRegistry } from '../tools/registry.js';
+import { App } from '../tui/App.js';
 
 export type RenderApp = (node: React.ReactNode) => Instance;
 
@@ -20,11 +20,11 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
   const runtimeCwd = cwd ?? process.cwd();
   const resolvedConfig = await loadConfig({
     cwd: runtimeCwd,
-    ...(homeDir !== undefined ? { homeDir } : {})
+    ...(homeDir !== undefined ? { homeDir } : {}),
   });
   const provider = createProvider({
     config: resolvedConfig.config,
-    ...(fetch !== undefined ? { fetch } : {})
+    ...(fetch !== undefined ? { fetch } : {}),
   });
 
   // 加载动态模块（project-context + custom-instructions + memory）

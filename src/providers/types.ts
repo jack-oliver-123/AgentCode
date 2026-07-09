@@ -4,10 +4,7 @@ import type { ProviderToolCall, ProviderToolDeclaration } from '../tools/types.j
 
 export type MessageRole = 'user' | 'assistant';
 
-export type ChatMessage =
-  | ProviderTextMessage
-  | ProviderAssistantToolCallMessage
-  | ProviderToolResultMessage;
+export type ChatMessage = ProviderTextMessage | ProviderAssistantToolCallMessage | ProviderToolResultMessage;
 
 export interface ProviderTextMessage {
   role: MessageRole;

@@ -1,8 +1,14 @@
-import { dirname } from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 
 import { writeFileInputSchema } from '../schemas.js';
-import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
+import type {
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionError,
+  ToolExecutionResult,
+  ToolValidationResult,
+} from '../types.js';
 import { resolveWorkspacePath } from '../workspace.js';
 import { atomicWriteTextFile } from './atomic-write.js';
 import { createInvalidArgumentsError, invalidArguments, isRecord } from './validation.js';
@@ -26,7 +32,7 @@ export function createWriteFileTool(): ToolDefinition<WriteFileInput, WriteFileO
     inputSchema: writeFileInputSchema,
     risk: 'write',
     validate: validateWriteFileInput,
-    execute: executeWriteFile
+    execute: executeWriteFile,
   };
 }
 
@@ -52,12 +58,15 @@ function validateWriteFileInput(input: unknown): ToolValidationResult<WriteFileI
     value: {
       path: input.path,
       content: input.content,
-      ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {})
-    }
+      ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}),
+    },
   };
 }
 
-async function executeWriteFile(input: WriteFileInput, context: ToolExecutionContext): Promise<ToolExecutionResult<WriteFileOutput>> {
+async function executeWriteFile(
+  input: WriteFileInput,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult<WriteFileOutput>> {
   const pathResult = await resolveWorkspacePath(context.cwd, input.path);
   if (!pathResult.ok) {
     return createWriteFileError(pathResult.error);
@@ -72,7 +81,7 @@ async function executeWriteFile(input: WriteFileInput, context: ToolExecutionCon
 
   const writeResult = await atomicWriteTextFile(pathResult.absolutePath, input.content, {
     overwrite: overwritten,
-    operation: 'write'
+    operation: 'write',
   });
   if (!writeResult.ok) {
     return createWriteFileError(writeResult.error);
@@ -84,23 +93,25 @@ async function executeWriteFile(input: WriteFileInput, context: ToolExecutionCon
     data: {
       path: pathResult.relativePath,
       bytes: Buffer.byteLength(input.content, 'utf8'),
-      overwritten
+      overwritten,
     },
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
 
-async function ensureParentDirectory(absolutePath: string): Promise<{ ok: true } | { ok: false; error: ToolExecutionError }> {
+async function ensureParentDirectory(
+  absolutePath: string,
+): Promise<{ ok: true } | { ok: false; error: ToolExecutionError }> {
   try {
     await mkdir(dirname(absolutePath), { recursive: true });
     return { ok: true };
   } catch (error) {
     return {
       ok: false,
-      error: createParentDirectoryError(error)
+      error: createParentDirectoryError(error),
     };
   }
 }
@@ -110,7 +121,7 @@ function createParentDirectoryError(error: unknown): ToolExecutionError {
     return {
       code: 'permission_denied',
       message: 'Permission denied while creating parent directory for write_file.',
-      retryable: true
+      retryable: true,
     };
   }
 
@@ -121,7 +132,7 @@ function createParentDirectoryError(error: unknown): ToolExecutionError {
   return {
     code: 'tool_internal_error',
     message: error instanceof Error ? error.message : 'Failed to create parent directory for write_file.',
-    retryable: false
+    retryable: false,
   };
 }
 
@@ -132,8 +143,8 @@ function createWriteFileError(error: ToolExecutionError): ToolExecutionResult<Wr
     error,
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
 

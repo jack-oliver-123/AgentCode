@@ -4,7 +4,7 @@ import {
   createReadFileTool,
   createRunCommandTool,
   createSearchCodeTool,
-  createWriteFileTool
+  createWriteFileTool,
 } from './builtins/index.js';
 import type { ProviderToolDeclaration, ToolDefinition, ToolRegistry, ToolRisk } from './types.js';
 
@@ -15,7 +15,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
     createEditFileTool(),
     createRunCommandTool(),
     createGlobFilesTool(),
-    createSearchCodeTool()
+    createSearchCodeTool(),
   ]);
 }
 
@@ -40,7 +40,7 @@ class StaticToolRegistry implements ToolRegistry {
     return this.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema
+      inputSchema: tool.inputSchema,
     }));
   }
 

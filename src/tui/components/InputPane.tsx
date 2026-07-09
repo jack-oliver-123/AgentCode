@@ -58,15 +58,13 @@ export function InputPane({ disabled, mode, onSubmit, onToggleMode }: InputPaneP
         setInput((currentInput) => `${currentInput}${text}`);
       }
     },
-    { isActive: !disabled }
+    { isActive: !disabled },
   );
 
   const accentColor = disabled ? 'blue' : 'cyan';
   const inputText = disabled ? 'Waiting for model response…' : input;
   const modePrefix = mode === 'plan' ? 'plan❯ ' : '❯ ';
-  const helperText = disabled
-    ? 'Composer paused while AgentCode is generating.'
-    : 'Enter to send · Tab to switch mode';
+  const helperText = disabled ? 'Composer paused while AgentCode is generating.' : 'Enter to send · Tab to switch mode';
 
   return (
     <Box flexDirection="column" aria-role="textbox" aria-state={{ disabled }}>
@@ -85,7 +83,10 @@ export function InputPane({ disabled, mode, onSubmit, onToggleMode }: InputPaneP
 export function removeLastGrapheme(text: string): string {
   const Segmenter = (Intl as unknown as { Segmenter?: SegmenterConstructorLike }).Segmenter;
   if (Segmenter !== undefined) {
-    const segments = Array.from(new Segmenter(undefined, { granularity: 'grapheme' }).segment(text), (segment) => segment.segment);
+    const segments = Array.from(
+      new Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+      (segment) => segment.segment,
+    );
     return segments.slice(0, -1).join('');
   }
 

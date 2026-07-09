@@ -47,17 +47,17 @@ describe('loadConfig', () => {
       apiKey: 'sk-test-project-secret',
       thinking: {
         enabled: true,
-        budgetTokens: 4096
+        budgetTokens: 4096,
       },
       request: {
         timeoutMs: 30000,
         headers: {
-          'x-extra-routing': 'project-a'
-        }
+          'x-extra-routing': 'project-a',
+        },
       },
       ui: {
-        showThinking: true
-      }
+        showThinking: true,
+      },
     });
   });
 
@@ -75,15 +75,15 @@ describe('loadConfig', () => {
       baseUrl: 'https://api.openai.com/v1',
       apiKey: 'sk-test-global-secret',
       thinking: {
-        enabled: false
+        enabled: false,
       },
       request: {
         timeoutMs: 120000,
-        headers: {}
+        headers: {},
       },
       ui: {
-        showThinking: false
-      }
+        showThinking: false,
+      },
     });
   });
 
@@ -108,15 +108,15 @@ protocol: anthropic
 model: claude-opus-4-8
 base_url: not-a-url
 api_key: ${sentinelKey}
-`
+`,
     );
     await writeAgentConfig(workspace.home, VALID_GLOBAL_CONFIG);
 
     await expect(loadConfig({ cwd: workspace.nestedProjectDirectory, homeDir: workspace.home })).rejects.toMatchObject({
       publicError: {
         code: 'config_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
 
     try {
@@ -133,7 +133,7 @@ api_key: ${sentinelKey}
     ['protocol', 'model: claude-opus-4-8\nbase_url: https://api.anthropic.com\napi_key: sk-test-required-secret'],
     ['model', 'protocol: anthropic\nbase_url: https://api.anthropic.com\napi_key: sk-test-required-secret'],
     ['base_url', 'protocol: anthropic\nmodel: claude-opus-4-8\napi_key: sk-test-required-secret'],
-    ['api_key', 'protocol: anthropic\nmodel: claude-opus-4-8\nbase_url: https://api.anthropic.com']
+    ['api_key', 'protocol: anthropic\nmodel: claude-opus-4-8\nbase_url: https://api.anthropic.com'],
   ])('rejects config missing required field %s', async (fieldName, configContent) => {
     const workspace = await createTempWorkspace();
     await writeAgentConfig(workspace.project, configContent);
@@ -141,8 +141,8 @@ api_key: ${sentinelKey}
     await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
       publicError: {
         code: 'config_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -155,14 +155,14 @@ protocol: local
 model: claude-opus-4-8
 base_url: https://api.anthropic.com
 api_key: sk-test-invalid-protocol-secret
-`
+`,
     );
 
     await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
       publicError: {
         code: 'config_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -177,16 +177,16 @@ protocol: anthropic
 model: claude-opus-4-8
 base_url: ${baseUrl}
 api_key: sk-test-invalid-url-secret
-`
+`,
       );
 
       await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
         publicError: {
           code: 'config_error',
-          retryable: false
-        }
+          retryable: false,
+        },
       });
-    }
+    },
   );
 
   it.each(['https://proxy.example.com/v1?tenant=a', 'https://proxy.example.com/v1#fragment'])(
@@ -200,16 +200,16 @@ protocol: anthropic
 model: claude-opus-4-8
 base_url: ${baseUrl}
 api_key: sk-test-query-hash-secret
-`
+`,
       );
 
       await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
         publicError: {
           code: 'config_error',
-          retryable: false
-        }
+          retryable: false,
+        },
       });
-    }
+    },
   );
 
   it('does not fall back to global config when a project config candidate cannot be accessed', async () => {
@@ -221,8 +221,8 @@ api_key: sk-test-query-hash-secret
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('Cannot access AgentCode config candidate'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -234,8 +234,8 @@ api_key: sk-test-query-hash-secret
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('Cannot access AgentCode config candidate'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -250,8 +250,8 @@ api_key: sk-test-query-hash-secret
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('Cannot access AgentCode config candidate'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -266,8 +266,8 @@ api_key: sk-test-query-hash-secret
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('Cannot access AgentCode config candidate'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -291,14 +291,12 @@ api_key: sk-test-query-hash-secret
     'session',
     'x-session-id',
     'credential',
-    'x-credential'
-  ])(
-    'rejects custom auth header %s because api_key is the only auth source',
-    async (headerName) => {
-      const workspace = await createTempWorkspace();
-      await writeAgentConfig(
-        workspace.project,
-        `
+    'x-credential',
+  ])('rejects custom auth header %s because api_key is the only auth source', async (headerName) => {
+    const workspace = await createTempWorkspace();
+    await writeAgentConfig(
+      workspace.project,
+      `
 protocol: openai
 model: gpt-4.1
 base_url: https://example.com/v1
@@ -306,17 +304,16 @@ api_key: sk-test-config-secret
 request:
   headers:
     ${headerName}: Bearer bypass
-`
-      );
+`,
+    );
 
-      await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
-        publicError: {
-          code: 'config_error',
-          retryable: false
-        }
-      });
-    }
-  );
+    await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
+      publicError: {
+        code: 'config_error',
+        retryable: false,
+      },
+    });
+  });
 
   it('rejects blank api_key at config load time', async () => {
     const workspace = await createTempWorkspace();
@@ -327,14 +324,14 @@ protocol: anthropic
 model: claude-opus-4-8
 base_url: https://api.anthropic.com
 api_key: '   '
-`
+`,
     );
 
     await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
       publicError: {
         code: 'config_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -351,7 +348,7 @@ api_key: ${sentinelKey}
 request:
   headers:
     invalid: [unterminated
-`
+`,
     );
 
     try {
@@ -372,8 +369,8 @@ request:
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('Add your API key'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
 
     const configTemplate = await readFile(expectedConfigPath, 'utf8');
@@ -392,15 +389,15 @@ protocol: anthropic
 model: claude-sonnet-4-6
 base_url: https://api.anthropic.com/v1
 api_key: replace-with-your-api-key
-`
+`,
     );
 
     await expect(loadConfig({ cwd: workspace.project, homeDir: workspace.home })).rejects.toMatchObject({
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('still contains the example api_key'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -415,8 +412,8 @@ api_key: replace-with-your-api-key
       publicError: {
         code: 'config_error',
         message: expect.stringContaining('Cannot access AgentCode config candidate'),
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 });

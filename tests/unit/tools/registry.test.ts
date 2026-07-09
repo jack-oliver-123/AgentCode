@@ -5,28 +5,28 @@ import { createDefaultToolRegistry } from '../../../src/tools/registry.js';
 const EXPECTED_TOOL_SCHEMAS = {
   read_file: {
     required: ['path'],
-    properties: ['path', 'maxBytes']
+    properties: ['path', 'maxBytes'],
   },
   write_file: {
     required: ['path', 'content'],
-    properties: ['path', 'content', 'overwrite']
+    properties: ['path', 'content', 'overwrite'],
   },
   edit_file: {
     required: ['path', 'oldText', 'newText'],
-    properties: ['path', 'oldText', 'newText']
+    properties: ['path', 'oldText', 'newText'],
   },
   run_command: {
     required: ['command'],
-    properties: ['command', 'timeoutMs']
+    properties: ['command', 'timeoutMs'],
   },
   glob_files: {
     required: ['pattern'],
-    properties: ['pattern', 'maxResults']
+    properties: ['pattern', 'maxResults'],
   },
   search_code: {
     required: ['query'],
-    properties: ['query', 'regex', 'include', 'maxResults']
-  }
+    properties: ['query', 'regex', 'include', 'maxResults'],
+  },
 } as const;
 
 const EXPECTED_TOOL_NAMES = Object.keys(EXPECTED_TOOL_SCHEMAS);
@@ -58,7 +58,7 @@ describe('createDefaultToolRegistry', () => {
       expect(declaration.description.length).toBeGreaterThan(0);
       expect(declaration.inputSchema).toMatchObject({
         type: 'object',
-        additionalProperties: false
+        additionalProperties: false,
       });
       expect(declaration).not.toHaveProperty('execute');
       expect(declaration).not.toHaveProperty('validate');

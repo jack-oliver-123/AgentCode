@@ -18,7 +18,9 @@ describe('TUI App', () => {
   it('renders model, config source, cwd, status, and empty input prompt', () => {
     const controller = createController(new FakeProvider([]));
 
-    const output = renderToString(<App controller={controller} cwd="/workspace/demo" resolvedConfig={createResolvedConfig()} />);
+    const output = renderToString(
+      <App controller={controller} cwd="/workspace/demo" resolvedConfig={createResolvedConfig()} />,
+    );
 
     expect(output).toContain('AgentCode');
     expect(output).toMatch(/model:\s*test-model/);
@@ -34,7 +36,7 @@ describe('TUI App', () => {
   it('renders completed transcript from ChatSessionController state', async () => {
     const provider = new FakeProvider([
       { type: 'content.delta', delta: 'Hello from model' },
-      { type: 'response.complete', finishReason: 'stop' }
+      { type: 'response.complete', finishReason: 'stop' },
     ]);
     const controller = createController(provider);
     await drain(controller.submitUserText('Hello'));
@@ -70,7 +72,12 @@ describe('TUI App', () => {
   });
 
   it('hides thinking text by default and shows it only when enabled', () => {
-    const draft: ChatSessionDraft = { id: 'draft-1', visibleText: 'visible answer', thinkingText: 'hidden reasoning', activity: { type: 'thinking' } };
+    const draft: ChatSessionDraft = {
+      id: 'draft-1',
+      visibleText: 'visible answer',
+      thinkingText: 'hidden reasoning',
+      activity: { type: 'thinking' },
+    };
     const hiddenOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
     const visibleOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={true} />);
 
@@ -80,7 +87,12 @@ describe('TUI App', () => {
   });
 
   it('does not mention thinking status when thinking text is hidden', () => {
-    const draft: ChatSessionDraft = { id: 'draft-1', visibleText: '', thinkingText: 'hidden reasoning', activity: { type: 'thinking' } };
+    const draft: ChatSessionDraft = {
+      id: 'draft-1',
+      visibleText: '',
+      thinkingText: 'hidden reasoning',
+      activity: { type: 'thinking' },
+    };
 
     const hiddenOutput = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
 
@@ -94,7 +106,7 @@ describe('TUI App', () => {
       id: 'draft-tool',
       visibleText: '',
       thinkingText: '',
-      activity: { type: 'tool', toolName: 'read_file' }
+      activity: { type: 'tool', toolName: 'read_file' },
     };
 
     const output = renderToString(<TranscriptPane messages={[]} draft={draft} showThinking={false} />);
@@ -119,7 +131,11 @@ describe('TUI App', () => {
     const messages = createTranscriptMessages(8);
 
     const output = renderToString(
-      <TranscriptPane messages={messages} draft={{ id: 'draft-1', visibleText: 'latest draft token', thinkingText: '', activity: { type: 'thinking' } }} showThinking={false} />
+      <TranscriptPane
+        messages={messages}
+        draft={{ id: 'draft-1', visibleText: 'latest draft token', thinkingText: '', activity: { type: 'thinking' } }}
+        showThinking={false}
+      />,
     );
 
     expect(output).toContain('3 earlier messages hidden');
@@ -130,7 +146,16 @@ describe('TUI App', () => {
 
   it('keeps the newest streaming draft text visible when truncating long output', () => {
     const output = renderToString(
-      <TranscriptPane messages={[]} draft={{ id: 'draft-1', visibleText: `${'older '.repeat(220)}latest-token`, thinkingText: '', activity: { type: 'thinking' } }} showThinking={false} />
+      <TranscriptPane
+        messages={[]}
+        draft={{
+          id: 'draft-1',
+          visibleText: `${'older '.repeat(220)}latest-token`,
+          thinkingText: '',
+          activity: { type: 'thinking' },
+        }}
+        showThinking={false}
+      />,
     );
 
     expect(output).toContain('latest-token');
@@ -148,9 +173,9 @@ describe('TUI App', () => {
         error: {
           code: 'provider_error',
           message: 'Provider failed safely',
-          retryable: false
-        }
-      }
+          retryable: false,
+        },
+      },
     ]);
     const controller = createController(provider);
     await drain(controller.submitUserText('Hello'));
@@ -172,7 +197,7 @@ protocol: ${protocol}
 model: ${protocol === 'openai' ? 'gpt-4.1' : 'claude-opus-4-8'}
 base_url: ${protocol === 'openai' ? 'https://api.openai.com/v1' : 'https://api.anthropic.com'}
 api_key: sk-test-bootstrap-secret
-`
+`,
     );
     let renderedNode: React.ReactNode | undefined;
 
@@ -182,7 +207,7 @@ api_key: sk-test-bootstrap-secret
       renderApp: (node) => {
         renderedNode = node;
         return createFakeInkInstance();
-      }
+      },
     });
 
     expect(app).toBeDefined();
@@ -202,10 +227,10 @@ describe('runCli', () => {
         throw new AgentCodeError({
           code: 'config_error',
           message: 'bad api_key=sk-test-cli-secret',
-          retryable: false
+          retryable: false,
         });
       },
-      stderr: createCapturingStderr(stderrChunks)
+      stderr: createCapturingStderr(stderrChunks),
     });
 
     const stderr = stderrChunks.join('');
@@ -221,7 +246,7 @@ describe('runCli', () => {
       bootstrap: async () => {
         throw new Error('{"api_key":"plain-secret-123","authorization":"Digest foo, response=secret-digest-value"}');
       },
-      stderr: createCapturingStderr(stderrChunks)
+      stderr: createCapturingStderr(stderrChunks),
     });
 
     const stderr = stderrChunks.join('');
@@ -237,7 +262,7 @@ function createCapturingStderr(chunks: string[]): Pick<NodeJS.WriteStream, 'writ
     write(chunk: string | Uint8Array): boolean {
       chunks.push(String(chunk));
       return true;
-    }
+    },
   };
 }
 
@@ -247,7 +272,7 @@ function createFakeInkInstance(): Instance {
     unmount: () => undefined,
     waitUntilExit: async () => undefined,
     cleanup: () => undefined,
-    clear: () => undefined
+    clear: () => undefined,
   };
 }
 
@@ -257,7 +282,7 @@ function createController(provider: FakeProvider, configOverrides: Partial<Agent
     provider,
     config: createConfig(configOverrides),
     createId: (prefix) => `${prefix}-${++idCounter}`,
-    now: () => 1234
+    now: () => 1234,
   });
 }
 
@@ -266,7 +291,7 @@ function createTranscriptMessages(length: number): ChatMessage[] {
     id: `message-${index}`,
     role: index % 2 === 0 ? 'user' : 'assistant',
     parts: [{ type: 'text', text: `message ${index}` }],
-    createdAt: index
+    createdAt: index,
   }));
 }
 
@@ -274,7 +299,7 @@ function createResolvedConfig(configOverrides: Partial<AgentConfig> = {}): Resol
   return {
     source: 'project',
     path: '/project/.agentcode/config.yaml',
-    config: createConfig(configOverrides)
+    config: createConfig(configOverrides),
   };
 }
 
@@ -285,16 +310,16 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
     baseUrl: 'https://example.com/v1',
     apiKey: 'sk-test-tui-secret',
     thinking: {
-      enabled: false
+      enabled: false,
     },
     request: {
       timeoutMs: 1000,
-      headers: {}
+      headers: {},
     },
     ui: {
-      showThinking: false
+      showThinking: false,
     },
-    ...overrides
+    ...overrides,
   };
 }
 

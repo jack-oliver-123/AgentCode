@@ -23,11 +23,11 @@ describe('read_file', () => {
         path: join('src', 'index.ts'),
         content: 'hello from file',
         bytes: 15,
-        truncated: false
+        truncated: false,
       },
       meta: {
-        truncated: false
-      }
+        truncated: false,
+      },
     });
   });
 
@@ -39,8 +39,8 @@ describe('read_file', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -53,8 +53,8 @@ describe('read_file', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'file_not_found'
-      }
+        code: 'file_not_found',
+      },
     });
   });
 
@@ -67,8 +67,8 @@ describe('read_file', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'file_not_text'
-      }
+        code: 'file_not_text',
+      },
     });
   });
 
@@ -78,7 +78,7 @@ describe('read_file', () => {
 
     const result = await executeFileTool(createReadFileTool(), '{"path":"large.txt","maxBytes":4}', {
       cwd: workspace,
-      maxOutputBytes: 10
+      maxOutputBytes: 10,
     });
 
     expect(result).toMatchObject({
@@ -86,11 +86,11 @@ describe('read_file', () => {
       data: {
         content: 'abcd',
         bytes: 6,
-        truncated: true
+        truncated: true,
       },
       meta: {
-        truncated: true
-      }
+        truncated: true,
+      },
     });
   });
 
@@ -100,15 +100,15 @@ describe('read_file', () => {
 
     const result = await executeFileTool(createReadFileTool(), '{"path":"unicode.txt"}', {
       cwd: workspace,
-      maxOutputBytes: 4
+      maxOutputBytes: 4,
     });
 
     expect(result).toMatchObject({
       ok: true,
       data: {
         content: '猫a',
-        truncated: true
-      }
+        truncated: true,
+      },
     });
   });
 
@@ -122,8 +122,8 @@ describe('read_file', () => {
     expect(result).toMatchObject({
       ok: true,
       data: {
-        content: formattedJson
-      }
+        content: formattedJson,
+      },
     });
   });
 
@@ -133,7 +133,7 @@ describe('read_file', () => {
 
     const result = await executeFileTool(createReadFileTool(), '{"path":"secret.txt"}', {
       cwd: workspace,
-      secrets: [SENTINEL_SECRET]
+      secrets: [SENTINEL_SECRET],
     });
 
     expect(JSON.stringify(result)).not.toContain(SENTINEL_SECRET);
@@ -145,15 +145,15 @@ describe('read_file', () => {
 
     const result = await executeFileTool(createReadFileTool(), '{"path":"secret.txt","maxBytes":12}', {
       cwd: workspace,
-      secrets: [SENTINEL_SECRET]
+      secrets: [SENTINEL_SECRET],
     });
 
     expect(result).toMatchObject({
       ok: true,
       data: {
         content: 'prefix <reda',
-        truncated: true
-      }
+        truncated: true,
+      },
     });
     expect(JSON.stringify(result)).not.toContain('sk-agentcode');
     expect(JSON.stringify(result)).not.toContain('should-not-appear');
@@ -165,13 +165,17 @@ describe('read_file', () => {
     await writeWorkspaceFile(outside, 'secret.txt', 'secret');
     await symlink(outside, join(workspace, 'linked-dir'), process.platform === 'win32' ? 'junction' : 'dir');
 
-    const result = await executeFileTool(createReadFileTool(), JSON.stringify({ path: join('linked-dir', 'secret.txt') }), { cwd: workspace });
+    const result = await executeFileTool(
+      createReadFileTool(),
+      JSON.stringify({ path: join('linked-dir', 'secret.txt') }),
+      { cwd: workspace },
+    );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
   });
 
@@ -183,8 +187,8 @@ describe('read_file', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'invalid_arguments'
-      }
+        code: 'invalid_arguments',
+      },
     });
   });
 });

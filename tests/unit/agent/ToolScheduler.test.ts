@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBatches, executeBatches } from '../../../src/agent/ToolScheduler.js';
-import type { ProviderToolCall, ToolDefinition, ToolExecutionContext, ToolRegistry, ToolRisk } from '../../../src/tools/types.js';
+import type {
+  ProviderToolCall,
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolRegistry,
+  ToolRisk,
+} from '../../../src/tools/types.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
@@ -33,7 +39,8 @@ function makeRegistry(tools: ToolDefinition[]): ToolRegistry {
   return {
     list: () => tools,
     get: (name) => map.get(name),
-    getProviderDeclarations: () => tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+    getProviderDeclarations: () =>
+      tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
     filterByRisk: (risks) => {
       const allowed = new Set(risks);
       return makeRegistry(tools.filter((t) => allowed.has(t.risk)));

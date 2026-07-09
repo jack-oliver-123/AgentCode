@@ -15,18 +15,18 @@ describe('provider tool protocol types', () => {
         messages: [{ role: 'user', content: 'use a tool' }],
         thinking: { enabled: false },
         tools,
-        toolChoice: 'auto'
-      })
+        toolChoice: 'auto',
+      }),
     );
 
     expect(provider.requests).toHaveLength(1);
     expect(provider.requests[0]).toMatchObject({
       tools: expect.arrayContaining([
         expect.objectContaining({
-          name: 'read_file'
-        })
+          name: 'read_file',
+        }),
       ]),
-      toolChoice: 'auto'
+      toolChoice: 'auto',
     });
   });
 
@@ -37,18 +37,18 @@ describe('provider tool protocol types', () => {
         call: {
           id: 'call-read-file',
           name: 'read_file',
-          argumentsText: '{"path":"README.md"}'
-        }
+          argumentsText: '{"path":"README.md"}',
+        },
       },
-      { type: 'response.complete', finishReason: 'tool_calls' }
+      { type: 'response.complete', finishReason: 'tool_calls' },
     ]);
 
     const events = await drain(
       provider.stream({
         model: 'test-model',
         messages: [{ role: 'user', content: 'read README' }],
-        thinking: { enabled: false }
-      })
+        thinking: { enabled: false },
+      }),
     );
 
     expect(events).toEqual([
@@ -57,10 +57,10 @@ describe('provider tool protocol types', () => {
         call: {
           id: 'call-read-file',
           name: 'read_file',
-          argumentsText: '{"path":"README.md"}'
-        }
+          argumentsText: '{"path":"README.md"}',
+        },
       },
-      { type: 'response.complete', finishReason: 'tool_calls' }
+      { type: 'response.complete', finishReason: 'tool_calls' },
     ]);
   });
 
@@ -72,19 +72,19 @@ describe('provider tool protocol types', () => {
           call: {
             id: 'call-read-file',
             name: 'read_file',
-            argumentsText: '{"path":"README.md"}'
-          }
-        }
+            argumentsText: '{"path":"README.md"}',
+          },
+        },
       ],
       [
         { type: 'content.delta', delta: 'final answer' },
-        { type: 'response.complete', finishReason: 'stop' }
-      ]
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const request = {
       model: 'test-model',
       messages: [{ role: 'user' as const, content: 'read README' }],
-      thinking: { enabled: false }
+      thinking: { enabled: false },
     };
 
     await expect(drain(provider.stream(request))).resolves.toEqual([
@@ -93,13 +93,13 @@ describe('provider tool protocol types', () => {
         call: {
           id: 'call-read-file',
           name: 'read_file',
-          argumentsText: '{"path":"README.md"}'
-        }
-      }
+          argumentsText: '{"path":"README.md"}',
+        },
+      },
     ]);
     await expect(drain(provider.stream(request))).resolves.toEqual([
       { type: 'content.delta', delta: 'final answer' },
-      { type: 'response.complete', finishReason: 'stop' }
+      { type: 'response.complete', finishReason: 'stop' },
     ]);
     expect(provider.requests).toHaveLength(2);
   });
@@ -112,7 +112,7 @@ describe('provider tool protocol types', () => {
       messages: [{ role: 'user', content: 'first' }],
       thinking: { enabled: false },
       tools,
-      toolChoice: 'auto'
+      toolChoice: 'auto',
     };
 
     await drain(provider.stream(request));
@@ -123,7 +123,7 @@ describe('provider tool protocol types', () => {
     expect(provider.requests[0]).toMatchObject({
       messages: [{ role: 'user', content: 'first' }],
       thinking: { enabled: false },
-      toolChoice: 'auto'
+      toolChoice: 'auto',
     });
     expect(provider.requests[0]?.tools?.[0]?.inputSchema.required).not.toEqual(['mutated']);
   });
