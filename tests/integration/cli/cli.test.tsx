@@ -148,7 +148,7 @@ describe('TUI App', () => {
         error: {
           code: 'provider_error',
           message: 'Provider failed safely',
-          retryable: true
+          retryable: false
         }
       }
     ]);
@@ -158,7 +158,7 @@ describe('TUI App', () => {
     const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
 
     expect(output).toContain('Error (provider_error): Provider failed safely');
-    expect(output).toContain('You can retry by sending another message');
+    expect(output).toContain('Fix the issue, then send another message');
   });
 });
 

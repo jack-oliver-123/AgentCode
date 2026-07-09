@@ -258,12 +258,12 @@ describe('runAgentLoop - 连续未知工具', () => {
 // ─── Provider 错误 ────────────────────────────────────────────────────
 
 describe('runAgentLoop - Provider 错误', () => {
-  it('response.error 事件导致 loop.failed', async () => {
+  it('不可重试的 response.error 立即导致 loop.failed', async () => {
     const provider = new FakeProvider([
       [
         { type: 'response.start' },
         delta('partial'),
-        { type: 'response.error', error: { code: 'provider_error', message: 'rate limit', retryable: true } },
+        { type: 'response.error', error: { code: 'auth_error', message: 'invalid key', retryable: false } },
       ],
     ]);
 
@@ -272,8 +272,71 @@ describe('runAgentLoop - Provider 错误', () => {
     const failed = events.find((e) => e.type === 'loop.failed');
     expect(failed).toBeDefined();
     if (failed && failed.type === 'loop.failed') {
-      expect(failed.error.message).toBe('rate limit');
+      expect(failed.error.message).toBe('invalid key');
       expect(failed.iteration).toBe(1);
+    }
+    // 不可重试错误不应有 retrying 事件
+    const retrying = events.find((e) => e.type === 'loop.retrying');
+    expect(retrying).toBeUndefined();
+  });
+
+  it('可重试错误在达到重试上限后 yield loop.failed', async () => {
+    // 提供 4 轮（1 初始 + 3 重试）全部失败的 response
+    const errorEvent: ProviderEvent = {
+      type: 'response.error',
+      error: { code: 'rate_limit', message: 'rate limit', retryable: true },
+    };
+    const provider = new FakeProvider([
+      [{ type: 'response.start' }, errorEvent],
+      [{ type: 'response.start' }, errorEvent],
+      [{ type: 'response.start' }, errorEvent],
+      [{ type: 'response.start' }, errorEvent],
+    ]);
+
+    const events = await collectEvents(runAgentLoop(
+      makeInput(),
+      makeDeps(provider, undefined, { retry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 5 } })
+    ));
+
+    // 应有 3 次 retrying 事件
+    const retryingEvents = events.filter((e) => e.type === 'loop.retrying');
+    expect(retryingEvents.length).toBe(3);
+
+    // 最终仍然 fail
+    const failed = events.find((e) => e.type === 'loop.failed');
+    expect(failed).toBeDefined();
+    if (failed && failed.type === 'loop.failed') {
+      expect(failed.error.message).toBe('rate limit');
+    }
+  });
+
+  it('可重试错误在第二次尝试成功时正常完成', async () => {
+    const errorEvent: ProviderEvent = {
+      type: 'response.error',
+      error: { code: 'rate_limit', message: 'rate limit', retryable: true },
+    };
+    const provider = new FakeProvider([
+      // 第 1 次失败
+      [{ type: 'response.start' }, errorEvent],
+      // 第 2 次成功
+      [{ type: 'response.start' }, delta('Hello!'), { type: 'response.complete' }],
+    ]);
+
+    const events = await collectEvents(runAgentLoop(
+      makeInput(),
+      makeDeps(provider, undefined, { retry: { maxRetries: 3, baseDelayMs: 1, maxDelayMs: 5 } })
+    ));
+
+    // 应有 1 次 retrying 事件
+    const retryingEvents = events.filter((e) => e.type === 'loop.retrying');
+    expect(retryingEvents.length).toBe(1);
+
+    // 最终成功完成
+    const completed = events.find((e) => e.type === 'loop.completed');
+    expect(completed).toBeDefined();
+    if (completed && completed.type === 'loop.completed') {
+      expect(completed.finalText).toBe('Hello!');
+      expect(completed.reason).toBe('natural');
     }
   });
 
