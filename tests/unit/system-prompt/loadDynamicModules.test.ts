@@ -76,7 +76,7 @@ describe('loadDynamicModules', () => {
       const orders = registry.map(m => m.order);
       // 验证 order 值序列保持递增
       for (let i = 1; i < orders.length; i++) {
-        expect(orders[i]).toBeGreaterThanOrEqual(orders[i - 1]);
+        expect(orders[i]!).toBeGreaterThanOrEqual(orders[i - 1]!);
       }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
