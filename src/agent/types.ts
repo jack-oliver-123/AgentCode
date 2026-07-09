@@ -1,11 +1,6 @@
 import type { ChatModelProvider, ChatMessage as ProviderMessage } from '../providers/types.js';
-import type {
-  ProviderToolCall,
-  ToolExecutionContext,
-  ToolExecutionResult,
-  ToolRegistry,
-} from '../tools/types.js';
 import type { PublicError } from '../shared/errors.js';
+import type { ProviderToolCall, ToolExecutionContext, ToolExecutionResult, ToolRegistry } from '../tools/types.js';
 
 // ─── 配置 ─────────────────────────────────────────────────────────────
 
@@ -195,9 +190,9 @@ export interface AgentLoopFailed {
 // ─── 停止条件 ─────────────────────────────────────────────────────────
 
 export type AgentLoopStopReason =
-  | 'natural'            // 模型返回纯文本，不再请求工具
-  | 'max_iterations'     // 达到迭代上限
-  | 'cancelled'          // 用户取消
+  | 'natural' // 模型返回纯文本，不再请求工具
+  | 'max_iterations' // 达到迭代上限
+  | 'cancelled' // 用户取消
   | 'unknown_tool_limit'; // 连续幻觉工具
 
 /** 停止条件判断的输入（纯函数） */
@@ -213,9 +208,7 @@ export interface StopConditionContext {
   hasError: boolean;
 }
 
-export type StopDecision =
-  | { stop: false }
-  | { stop: true; reason: AgentLoopStopReason | 'provider_error' };
+export type StopDecision = { stop: false } | { stop: true; reason: AgentLoopStopReason | 'provider_error' };
 
 // ─── 工具调度 ─────────────────────────────────────────────────────────
 

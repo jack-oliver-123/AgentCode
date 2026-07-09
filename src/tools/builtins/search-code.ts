@@ -1,9 +1,21 @@
 import { stat } from 'node:fs/promises';
 
-import { searchCodeInputSchema } from '../schemas.js';
-import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
 import { redactToolValue } from '../redaction.js';
-import { createGlobMatcher, type GlobMatcher, isPositiveInteger, truncateUtf8, visitWorkspaceFiles } from './file-discovery.js';
+import { searchCodeInputSchema } from '../schemas.js';
+import type {
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionError,
+  ToolExecutionResult,
+  ToolValidationResult,
+} from '../types.js';
+import {
+  type GlobMatcher,
+  createGlobMatcher,
+  isPositiveInteger,
+  truncateUtf8,
+  visitWorkspaceFiles,
+} from './file-discovery.js';
 import { readTextFile } from './text-file.js';
 import { invalidArguments, isRecord } from './validation.js';
 
@@ -45,7 +57,7 @@ export function createSearchCodeTool(): ToolDefinition<SearchCodeInput, SearchCo
     inputSchema: searchCodeInputSchema,
     risk: 'read',
     validate: validateSearchCodeInput,
-    execute: executeSearchCode
+    execute: executeSearchCode,
   };
 }
 
@@ -76,12 +88,15 @@ function validateSearchCodeInput(input: unknown): ToolValidationResult<SearchCod
       query: input.query,
       ...(input.regex !== undefined ? { regex: input.regex } : {}),
       ...(input.include !== undefined ? { include: input.include } : {}),
-      ...(input.maxResults !== undefined ? { maxResults: input.maxResults } : {})
-    }
+      ...(input.maxResults !== undefined ? { maxResults: input.maxResults } : {}),
+    },
   };
 }
 
-async function executeSearchCode(input: SearchCodeInput, context: ToolExecutionContext): Promise<ToolExecutionResult<SearchCodeOutput>> {
+async function executeSearchCode(
+  input: SearchCodeInput,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult<SearchCodeOutput>> {
   const predicateResult = createSearchPredicate(input);
   if (!predicateResult.ok) {
     return createSearchCodeError(predicateResult.error);
@@ -94,7 +109,7 @@ async function executeSearchCode(input: SearchCodeInput, context: ToolExecutionC
       return createSearchCodeError({
         code: 'invalid_arguments',
         message: matcherResult.message,
-        retryable: true
+        retryable: true,
       });
     }
 
@@ -104,32 +119,42 @@ async function executeSearchCode(input: SearchCodeInput, context: ToolExecutionC
   const maxResults = getEffectiveMaxResults(input.maxResults);
   const matches: SearchCodeMatch[] = [];
   let truncated = false;
-  const visitResult = await visitWorkspaceFiles(context.cwd, async (file) => {
-    if (context.signal?.aborted) {
-      return false;
-    }
+  const visitResult = await visitWorkspaceFiles(
+    context.cwd,
+    async (file) => {
+      if (context.signal?.aborted) {
+        return false;
+      }
 
-    if (includeMatcher !== undefined && !includeMatcher.matches(file.relativePath)) {
-      return true;
-    }
+      if (includeMatcher !== undefined && !includeMatcher.matches(file.relativePath)) {
+        return true;
+      }
 
-    const searchableStatus = await getSearchableFileStatus(file.absolutePath);
-    if (searchableStatus !== 'searchable' || context.signal?.aborted) {
-      truncated = truncated || searchableStatus === 'too_large';
-      return !context.signal?.aborted;
-    }
+      const searchableStatus = await getSearchableFileStatus(file.absolutePath);
+      if (searchableStatus !== 'searchable' || context.signal?.aborted) {
+        truncated = truncated || searchableStatus === 'too_large';
+        return !context.signal?.aborted;
+      }
 
-    const fileResult = await readTextFile(file.absolutePath);
-    if (!fileResult.ok || context.signal?.aborted) {
-      return !context.signal?.aborted;
-    }
+      const fileResult = await readTextFile(file.absolutePath);
+      if (!fileResult.ok || context.signal?.aborted) {
+        return !context.signal?.aborted;
+      }
 
-    const remainingResults = maxResults + 1 - matches.length;
-    const lineMatchResult = findLineMatches(file.relativePath, fileResult.file.content, predicateResult.predicate, context, remainingResults);
-    matches.push(...lineMatchResult.matches);
-    truncated = truncated || lineMatchResult.truncated;
-    return !lineMatchResult.limitReached;
-  }, context.signal);
+      const remainingResults = maxResults + 1 - matches.length;
+      const lineMatchResult = findLineMatches(
+        file.relativePath,
+        fileResult.file.content,
+        predicateResult.predicate,
+        context,
+        remainingResults,
+      );
+      matches.push(...lineMatchResult.matches);
+      truncated = truncated || lineMatchResult.truncated;
+      return !lineMatchResult.limitReached;
+    },
+    context.signal,
+  );
   if (!visitResult.ok) {
     return createSearchCodeError(visitResult.error);
   }
@@ -139,13 +164,13 @@ async function executeSearchCode(input: SearchCodeInput, context: ToolExecutionC
     toolName: 'search_code',
     data: {
       matches: matches.slice(0, maxResults),
-      truncated
+      truncated,
     },
     meta: {
       durationMs: 0,
       timedOut: false,
-      truncated
-    }
+      truncated,
+    },
   };
 }
 
@@ -163,8 +188,8 @@ function createSearchPredicate(input: SearchCodeInput):
       ok: true,
       predicate: {
         regex: false,
-        findMatchIndex: (line: string) => line.indexOf(input.query)
-      }
+        findMatchIndex: (line: string) => line.indexOf(input.query),
+      },
     };
   }
 
@@ -175,8 +200,8 @@ function createSearchPredicate(input: SearchCodeInput):
       error: {
         code: 'invalid_arguments',
         message: safetyError,
-        retryable: true
-      }
+        retryable: true,
+      },
     };
   }
 
@@ -189,17 +214,18 @@ function createSearchPredicate(input: SearchCodeInput):
         findMatchIndex: (line: string) => {
           regex.lastIndex = 0;
           return regex.exec(line)?.index ?? -1;
-        }
-      }
+        },
+      },
     };
   } catch (error) {
     return {
       ok: false,
       error: {
         code: 'invalid_arguments',
-        message: error instanceof Error ? `Invalid regular expression: ${error.message}` : 'Invalid regular expression.',
-        retryable: true
-      }
+        message:
+          error instanceof Error ? `Invalid regular expression: ${error.message}` : 'Invalid regular expression.',
+        retryable: true,
+      },
     };
   }
 }
@@ -354,7 +380,7 @@ function hasRepeatedRiskyGroup(pattern: string): boolean {
       groups.push({
         hasAlternation: false,
         hasNestedGroup: false,
-        hasQuantifier: false
+        hasQuantifier: false,
       });
       index = skipOpeningGroupPrefix(pattern, index);
       continue;
@@ -449,7 +475,7 @@ function findLineMatches(
   content: string,
   predicate: SearchPredicate,
   context: ToolExecutionContext,
-  maxMatches: number
+  maxMatches: number,
 ): { matches: SearchCodeMatch[]; truncated: boolean; limitReached: boolean } {
   const matches: SearchCodeMatch[] = [];
   const lines = content.split(/\r?\n/);
@@ -461,7 +487,7 @@ function findLineMatches(
       return {
         matches,
         truncated: true,
-        limitReached: true
+        limitReached: true,
       };
     }
 
@@ -479,21 +505,21 @@ function findLineMatches(
       return {
         matches,
         truncated: true,
-        limitReached: true
+        limitReached: true,
       };
     }
 
     matches.push({
       path,
       line: index + 1,
-      preview: createPreview(line, matchIndex, context)
+      preview: createPreview(line, matchIndex, context),
     });
 
     if (matches.length >= maxMatches) {
       return {
         matches,
         truncated: true,
-        limitReached: true
+        limitReached: true,
       };
     }
   }
@@ -501,7 +527,7 @@ function findLineMatches(
   return {
     matches,
     truncated,
-    limitReached: false
+    limitReached: false,
   };
 }
 
@@ -548,7 +574,7 @@ function createSearchCodeError(error: ToolExecutionError): ToolExecutionResult<S
     error,
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }

@@ -21,11 +21,11 @@ describe('glob_files', () => {
       toolName: 'glob_files',
       data: {
         matches: ['src/app.test.ts', 'src/app.ts', 'src/index.ts'],
-        truncated: false
+        truncated: false,
       },
       meta: {
-        truncated: false
-      }
+        truncated: false,
+      },
     });
   });
 
@@ -42,8 +42,8 @@ describe('glob_files', () => {
       ok: true,
       data: {
         matches: ['src/a.test.ts', 'src/nested/b.test.ts'],
-        truncated: false
-      }
+        truncated: false,
+      },
     });
   });
 
@@ -60,8 +60,8 @@ describe('glob_files', () => {
       ok: true,
       data: {
         matches: ['src/index.ts'],
-        truncated: false
-      }
+        truncated: false,
+      },
     });
   });
 
@@ -77,11 +77,11 @@ describe('glob_files', () => {
       ok: true,
       data: {
         matches: ['a.txt', 'b.txt'],
-        truncated: true
+        truncated: true,
       },
       meta: {
-        truncated: true
-      }
+        truncated: true,
+      },
     });
   });
 
@@ -98,8 +98,8 @@ describe('glob_files', () => {
       ok: true,
       data: {
         matches: ['src/index.ts'],
-        truncated: false
-      }
+        truncated: false,
+      },
     });
   });
 
@@ -112,8 +112,8 @@ describe('glob_files', () => {
       ok: false,
       toolName: 'glob_files',
       error: {
-        code: 'invalid_arguments'
-      }
+        code: 'invalid_arguments',
+      },
     });
   });
 
@@ -125,8 +125,8 @@ describe('glob_files', () => {
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'invalid_arguments'
-      }
+        code: 'invalid_arguments',
+      },
     });
   });
 });
@@ -134,6 +134,6 @@ describe('glob_files', () => {
 function executeGlobFiles(argumentsText: string, cwd: string) {
   return executeFileTool(createGlobFilesTool(), argumentsText, {
     cwd,
-    timeoutMs: 5000
+    timeoutMs: 5000,
   });
 }

@@ -1,10 +1,16 @@
-import { readFileInputSchema } from '../schemas.js';
-import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
 import { redactToolValue } from '../redaction.js';
+import { readFileInputSchema } from '../schemas.js';
+import type {
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionError,
+  ToolExecutionResult,
+  ToolValidationResult,
+} from '../types.js';
 import { resolveWorkspacePath } from '../workspace.js';
+import { isPositiveInteger, truncateUtf8 } from './file-discovery.js';
 import { readTextFile } from './text-file.js';
 import { invalidArguments, isRecord } from './validation.js';
-import { isPositiveInteger, truncateUtf8 } from './file-discovery.js';
 
 interface ReadFileInput {
   path: string;
@@ -25,7 +31,7 @@ export function createReadFileTool(): ToolDefinition<ReadFileInput, ReadFileOutp
     inputSchema: readFileInputSchema,
     risk: 'read',
     validate: validateReadFileInput,
-    execute: executeReadFile
+    execute: executeReadFile,
   };
 }
 
@@ -46,12 +52,15 @@ function validateReadFileInput(input: unknown): ToolValidationResult<ReadFileInp
     ok: true,
     value: {
       path: input.path,
-      ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {})
-    }
+      ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}),
+    },
   };
 }
 
-async function executeReadFile(input: ReadFileInput, context: ToolExecutionContext): Promise<ToolExecutionResult<ReadFileOutput>> {
+async function executeReadFile(
+  input: ReadFileInput,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult<ReadFileOutput>> {
   const pathResult = await resolveWorkspacePath(context.cwd, input.path);
   if (!pathResult.ok) {
     return createReadFileError(pathResult.error);
@@ -75,13 +84,13 @@ async function executeReadFile(input: ReadFileInput, context: ToolExecutionConte
       path: pathResult.relativePath,
       content: truncatedContent.content,
       bytes: fileResult.file.bytes,
-      truncated
+      truncated,
     },
     meta: {
       durationMs: 0,
       timedOut: false,
-      truncated
-    }
+      truncated,
+    },
   };
 }
 
@@ -92,8 +101,8 @@ function createReadFileError(error: ToolExecutionError): ToolExecutionResult<Rea
     error,
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
 

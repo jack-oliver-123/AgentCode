@@ -1,8 +1,8 @@
 import { access, readFile } from 'node:fs/promises';
 import { dirname, join, parse, resolve } from 'node:path';
 
-import type { SystemPromptModule } from './types.js';
 import { defaultRegistry } from './registry.js';
+import type { SystemPromptModule } from './types.js';
 
 const CONFIG_DIRECTORY = '.agentcode';
 
@@ -120,7 +120,7 @@ async function loadFileContent(path: string, maxBytes: number): Promise<string> 
 function truncateAtUtf8Boundary(buffer: Buffer, maxBytes: number): string {
   let end = maxBytes;
   // 回退最多 4 字节（UTF-8 最长编码单位）
-  while (end > 0 && (buffer[end]! & 0xC0) === 0x80) {
+  while (end > 0 && (buffer[end]! & 0xc0) === 0x80) {
     end--;
   }
   return buffer.subarray(0, end).toString('utf8');

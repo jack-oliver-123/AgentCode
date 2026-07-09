@@ -10,7 +10,7 @@ export function mapProviderStatus(status: number): PublicError {
       code: 'auth_error',
       message: `Provider rejected authentication with HTTP ${status}. Check api_key and provider access.`,
       retryable: false,
-      status
+      status,
     };
   }
 
@@ -19,7 +19,7 @@ export function mapProviderStatus(status: number): PublicError {
       code: 'rate_limit',
       message: 'Provider rate limit reached. Retry after a short delay.',
       retryable: true,
-      status
+      status,
     };
   }
 
@@ -28,7 +28,7 @@ export function mapProviderStatus(status: number): PublicError {
       code: 'provider_error',
       message: `Provider returned HTTP ${status}.`,
       retryable: true,
-      status
+      status,
     };
   }
 
@@ -36,7 +36,7 @@ export function mapProviderStatus(status: number): PublicError {
     code: 'provider_error',
     message: `Provider request failed with HTTP ${status}.`,
     retryable: false,
-    status
+    status,
   };
 }
 
@@ -44,7 +44,7 @@ export function createNetworkError(message: string): AgentCodeError {
   return new AgentCodeError({
     code: 'network_error',
     message,
-    retryable: true
+    retryable: true,
   });
 }
 
@@ -52,7 +52,7 @@ export function createCancellationError(): AgentCodeError {
   return new AgentCodeError({
     code: 'network_error',
     message: 'Provider request was cancelled.',
-    retryable: false
+    retryable: false,
   });
 }
 
@@ -60,6 +60,6 @@ export function createProtocolError(message: string): AgentCodeError {
   return new AgentCodeError({
     code: 'protocol_error',
     message,
-    retryable: false
+    retryable: false,
   });
 }

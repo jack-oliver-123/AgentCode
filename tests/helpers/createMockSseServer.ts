@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { type IncomingMessage, type ServerResponse, createServer } from 'node:http';
 
 export interface CapturedRequest {
   method: string | undefined;
@@ -28,7 +28,7 @@ export async function createMockSseServer(response: MockSseResponse): Promise<Mo
       method: request.method,
       url: request.url,
       headers: request.headers,
-      body
+      body,
     });
 
     writeSseResponse(serverResponse, response);
@@ -61,7 +61,7 @@ export async function createMockSseServer(response: MockSseResponse): Promise<Mo
 
           resolve();
         });
-      })
+      }),
   };
 }
 
@@ -80,7 +80,7 @@ function writeSseResponse(serverResponse: ServerResponse, response: MockSseRespo
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
     connection: 'keep-alive',
-    ...response.headers
+    ...response.headers,
   });
 
   for (const chunk of response.chunks) {

@@ -82,7 +82,7 @@ function validateSubmitPlanInput(input: unknown): ToolValidationResult<SubmitPla
 
 async function executeSubmitPlan(
   input: SubmitPlanInput,
-  _context: ToolExecutionContext
+  _context: ToolExecutionContext,
 ): Promise<ToolExecutionResult<SubmitPlanOutput>> {
   return {
     ok: true,

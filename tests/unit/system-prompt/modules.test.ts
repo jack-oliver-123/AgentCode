@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
-import { defaultRegistry } from '../../../src/system-prompt/registry.js';
-import { content as identityContent } from '../../../src/system-prompt/modules/identity.js';
+import { content as actionsContent } from '../../../src/system-prompt/modules/actions.js';
 import { content as constraintsContent } from '../../../src/system-prompt/modules/constraints.js';
 import { content as gitSafetyContent } from '../../../src/system-prompt/modules/git-safety.js';
-import { content as taskModeContent } from '../../../src/system-prompt/modules/taskMode.js';
-import { content as actionsContent } from '../../../src/system-prompt/modules/actions.js';
-import { content as toolsContent } from '../../../src/system-prompt/modules/tools.js';
-import { content as toneContent } from '../../../src/system-prompt/modules/tone.js';
+import { content as identityContent } from '../../../src/system-prompt/modules/identity.js';
 import { content as outputContent } from '../../../src/system-prompt/modules/output.js';
+import { content as taskModeContent } from '../../../src/system-prompt/modules/taskMode.js';
+import { content as toneContent } from '../../../src/system-prompt/modules/tone.js';
+import { content as toolsContent } from '../../../src/system-prompt/modules/tools.js';
+import { defaultRegistry } from '../../../src/system-prompt/registry.js';
 
 // ─── AC14a: 模块 content 不含模板插值 ─────────────────────────────────────
 

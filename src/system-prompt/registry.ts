@@ -1,12 +1,12 @@
-import type { SystemPromptModule } from './types.js';
-import { content as identityContent } from './modules/identity.js';
+import { content as actionsContent } from './modules/actions.js';
 import { content as constraintsContent } from './modules/constraints.js';
 import { content as gitSafetyContent } from './modules/git-safety.js';
-import { content as taskModeContent } from './modules/taskMode.js';
-import { content as actionsContent } from './modules/actions.js';
-import { content as toolsContent } from './modules/tools.js';
-import { content as toneContent } from './modules/tone.js';
+import { content as identityContent } from './modules/identity.js';
 import { content as outputContent } from './modules/output.js';
+import { content as taskModeContent } from './modules/taskMode.js';
+import { content as toneContent } from './modules/tone.js';
+import { content as toolsContent } from './modules/tools.js';
+import type { SystemPromptModule } from './types.js';
 
 export const defaultRegistry: SystemPromptModule[] = [
   { id: 'identity', order: 100, content: identityContent },

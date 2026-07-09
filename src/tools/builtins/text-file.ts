@@ -33,13 +33,13 @@ export async function readTextFile(absolutePath: string): Promise<ReadTextFileRe
           code: 'file_too_large',
           message: `File is ${Math.round(fileStat.size / 1024 / 1024)}MB, exceeding the ${MAX_FILE_SIZE_BYTES / 1024 / 1024}MB limit. Use a smaller maxBytes or read specific sections.`,
           retryable: true,
-        }
+        },
       };
     }
   } catch (error) {
     return {
       ok: false,
-      error: createReadFileError(error)
+      error: createReadFileError(error),
     };
   }
 
@@ -49,14 +49,14 @@ export async function readTextFile(absolutePath: string): Promise<ReadTextFileRe
   } catch (error) {
     return {
       ok: false,
-      error: createReadFileError(error)
+      error: createReadFileError(error),
     };
   }
 
   if (fileBuffer.includes(0)) {
     return {
       ok: false,
-      error: createFileNotTextError()
+      error: createFileNotTextError(),
     };
   }
 
@@ -65,13 +65,13 @@ export async function readTextFile(absolutePath: string): Promise<ReadTextFileRe
       ok: true,
       file: {
         content: TEXT_DECODER.decode(fileBuffer),
-        bytes: fileBuffer.byteLength
-      }
+        bytes: fileBuffer.byteLength,
+      },
     };
   } catch {
     return {
       ok: false,
-      error: createFileNotTextError()
+      error: createFileNotTextError(),
     };
   }
 }
@@ -81,7 +81,7 @@ function createReadFileError(error: unknown): ToolExecutionError {
     return {
       code: 'file_not_found',
       message: 'File does not exist.',
-      retryable: true
+      retryable: true,
     };
   }
 
@@ -89,7 +89,7 @@ function createReadFileError(error: unknown): ToolExecutionError {
     return {
       code: 'file_not_text',
       message: 'Path points to a directory, not a text file.',
-      retryable: true
+      retryable: true,
     };
   }
 
@@ -97,14 +97,14 @@ function createReadFileError(error: unknown): ToolExecutionError {
     return {
       code: 'permission_denied',
       message: 'Permission denied while reading file.',
-      retryable: true
+      retryable: true,
     };
   }
 
   return {
     code: 'tool_internal_error',
     message: error instanceof Error ? error.message : 'Failed to read file.',
-    retryable: false
+    retryable: false,
   };
 }
 
@@ -112,7 +112,7 @@ function createFileNotTextError(): ToolExecutionError {
   return {
     code: 'file_not_text',
     message: 'File is not valid UTF-8 text.',
-    retryable: true
+    retryable: true,
   };
 }
 

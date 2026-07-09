@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildSystemPrompt } from '../../../src/system-prompt/builder.js';
-import type { SystemPromptModule, SystemPromptBuildInput } from '../../../src/system-prompt/types.js';
 import { defaultRegistry } from '../../../src/system-prompt/registry.js';
+import type { SystemPromptBuildInput, SystemPromptModule } from '../../../src/system-prompt/types.js';
 
 // ─── Helpers ───────────────────────────────────────────────────────────
 
@@ -16,9 +16,7 @@ describe('buildSystemPrompt - 模块拼装顺序与 disabled', () => {
   it('AC1: 8 个有内容的固定模块按 order 升序拼装', () => {
     const result = buildSystemPrompt(baseInput());
     // defaultRegistry 中 custom-instructions 和 memory 的 content 为空，不参与拼装
-    const enabledModules = defaultRegistry
-      .filter(m => m.content.length > 0)
-      .sort((a, b) => a.order - b.order);
+    const enabledModules = defaultRegistry.filter((m) => m.content.length > 0).sort((a, b) => a.order - b.order);
 
     // 每个启用模块的 content 都出现在 system 中
     for (const mod of enabledModules) {
@@ -36,7 +34,7 @@ describe('buildSystemPrompt - 模块拼装顺序与 disabled', () => {
 
   it('AC1: disabled identity 时输出不含 identity 内容', () => {
     const result = buildSystemPrompt(baseInput({ disabled: ['identity'] }));
-    const identityModule = defaultRegistry.find(m => m.id === 'identity')!;
+    const identityModule = defaultRegistry.find((m) => m.id === 'identity')!;
     expect(result.system).not.toContain(identityModule.content);
   });
 });
@@ -46,7 +44,7 @@ describe('buildSystemPrompt - 模块拼装顺序与 disabled', () => {
 describe('buildSystemPrompt - 模块分隔符', () => {
   it('AC1a: split by \\n\\n 后长度 = 启用模块数', () => {
     const result = buildSystemPrompt(baseInput());
-    const enabledCount = defaultRegistry.filter(m => m.content.length > 0).length;
+    const enabledCount = defaultRegistry.filter((m) => m.content.length > 0).length;
     const segments = result.system.split('\n\n');
     // 注意：某些模块 content 内部也可能包含 \n\n，所以用自定义 registry 更精确
     // 这里用自定义 registry 验证
@@ -164,31 +162,46 @@ describe('buildSystemPrompt - 幂等性', () => {
 
 describe('buildSystemPrompt - env 上下文', () => {
   it('AC13: 传入 env 时 reminder 包含完整环境信息', () => {
-    const result = buildSystemPrompt(baseInput({
-      env: { os: 'win32', shell: 'powershell', cwd: '/tmp/project', date: '2026-07-08' },
-    }));
+    const result = buildSystemPrompt(
+      baseInput({
+        env: { os: 'win32', shell: 'powershell', cwd: '/tmp/project', date: '2026-07-08' },
+      }),
+    );
     expect(result.reminder).toContain('OS: win32 | Shell: powershell | CWD: /tmp/project | Date: 2026-07-08');
   });
 
   it('AC13: env 含 gitBranch 时 reminder 包含 Git 分支信息', () => {
-    const result = buildSystemPrompt(baseInput({
-      env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09', gitBranch: 'feat/test', gitDirty: false },
-    }));
+    const result = buildSystemPrompt(
+      baseInput({
+        env: {
+          os: 'linux',
+          shell: 'bash',
+          cwd: '/project',
+          date: '2026-07-09',
+          gitBranch: 'feat/test',
+          gitDirty: false,
+        },
+      }),
+    );
     expect(result.reminder).toContain('Git: feat/test');
     expect(result.reminder).not.toContain('[dirty]');
   });
 
   it('AC13: env 含 gitDirty=true 时 reminder 显示 [dirty] 标记', () => {
-    const result = buildSystemPrompt(baseInput({
-      env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09', gitBranch: 'main', gitDirty: true },
-    }));
+    const result = buildSystemPrompt(
+      baseInput({
+        env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09', gitBranch: 'main', gitDirty: true },
+      }),
+    );
     expect(result.reminder).toContain('Git: main [dirty]');
   });
 
   it('AC13: env 不含 gitBranch 时 reminder 不含 Git 信息', () => {
-    const result = buildSystemPrompt(baseInput({
-      env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09' },
-    }));
+    const result = buildSystemPrompt(
+      baseInput({
+        env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09' },
+      }),
+    );
     expect(result.reminder).not.toContain('Git:');
   });
 });

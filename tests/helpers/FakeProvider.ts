@@ -19,7 +19,7 @@ export class FakeProvider implements ChatModelProvider {
       protocol?: ProviderProtocol;
       supportsExtendedThinking?: boolean;
       holdBeforeEvents?: boolean;
-    } = {}
+    } = {},
   ) {
     if (typeof events === 'function') {
       this.onRequest = events;
@@ -45,9 +45,7 @@ export class FakeProvider implements ChatModelProvider {
     }
 
     const callIndex = this.requests.length - 1;
-    const events = this.onRequest
-      ? this.onRequest(request, callIndex)
-      : (this.eventSequences[callIndex] ?? []);
+    const events = this.onRequest ? this.onRequest(request, callIndex) : (this.eventSequences[callIndex] ?? []);
 
     for (const event of events) {
       yield event;
@@ -84,10 +82,10 @@ function cloneProviderRequest(request: ProviderRequest): ProviderRequest {
             inputSchema: {
               ...tool.inputSchema,
               properties: { ...tool.inputSchema.properties },
-              ...(tool.inputSchema.required !== undefined ? { required: [...tool.inputSchema.required] } : {})
-            }
-          }))
+              ...(tool.inputSchema.required !== undefined ? { required: [...tool.inputSchema.required] } : {}),
+            },
+          })),
         }
-      : {})
+      : {}),
   };
 }

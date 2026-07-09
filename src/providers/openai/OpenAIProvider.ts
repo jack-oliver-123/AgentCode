@@ -1,10 +1,10 @@
 import type { AgentConfig } from '../../config/schema.js';
 import { AgentCodeError, toPublicError } from '../../shared/errors.js';
-import type { ChatModelProvider, ProviderEvent, ProviderRequest, UsageInfo } from '../types.js';
-import { createCancellationError, createProtocolError } from '../shared/errors.js';
 import { joinEndpoint } from '../shared/endpoint.js';
-import { fetchJsonStream, type FetchJsonOptions, type FetchTransportOptions } from '../shared/fetchTransport.js';
+import { createCancellationError, createProtocolError } from '../shared/errors.js';
+import { type FetchJsonOptions, type FetchTransportOptions, fetchJsonStream } from '../shared/fetchTransport.js';
 import { readNextSseEvent, readSseStream } from '../shared/sse.js';
+import type { ChatModelProvider, ProviderEvent, ProviderRequest, UsageInfo } from '../types.js';
 
 interface OpenAIChatCompletionChunk {
   choices?: Array<{
@@ -63,15 +63,15 @@ export class OpenAIProvider implements ChatModelProvider {
         url: joinEndpoint(this.config.baseUrl, '/chat/completions'),
         headers: {
           authorization: `Bearer ${this.config.apiKey}`,
-          ...this.config.request.headers
+          ...this.config.request.headers,
         },
         body: createOpenAIRequestBody(request),
-        ...(request.signal !== undefined ? { signal: request.signal } : {})
+        ...(request.signal !== undefined ? { signal: request.signal } : {}),
       };
 
       const transportOptions: FetchTransportOptions = {
         timeoutMs: this.config.request.timeoutMs,
-        ...(this.fetchImpl !== undefined ? { fetch: this.fetchImpl } : {})
+        ...(this.fetchImpl !== undefined ? { fetch: this.fetchImpl } : {}),
       };
 
       const stream = await fetchJsonStream(requestOptions, transportOptions);
@@ -99,7 +99,7 @@ export class OpenAIProvider implements ChatModelProvider {
           if (sseEvent.event === 'error') {
             yield {
               type: 'response.error',
-              error: toPublicError(parseOpenAIStreamError(sseEvent.data))
+              error: toPublicError(parseOpenAIStreamError(sseEvent.data)),
             };
             return;
           }
@@ -111,7 +111,7 @@ export class OpenAIProvider implements ChatModelProvider {
           if (typeof content === 'string' && content.length > 0) {
             yield {
               type: 'content.delta',
-              delta: content
+              delta: content,
             };
           }
 
@@ -138,7 +138,7 @@ export class OpenAIProvider implements ChatModelProvider {
     } catch (error) {
       yield {
         type: 'response.error',
-        error: toPublicError(isAbortError(error) ? createCancellationError() : error)
+        error: toPublicError(isAbortError(error) ? createCancellationError() : error),
       };
     }
   }
@@ -161,7 +161,7 @@ function createOpenAIRequestBody(request: ProviderRequest): Record<string, unkno
     model: request.model,
     messages,
     stream: true,
-    stream_options: { include_usage: true }
+    stream_options: { include_usage: true },
   };
 
   if (request.toolChoice !== 'none' && request.tools !== undefined && request.tools.length > 0) {
@@ -170,8 +170,8 @@ function createOpenAIRequestBody(request: ProviderRequest): Record<string, unkno
       function: {
         name: tool.name,
         description: tool.description,
-        parameters: tool.inputSchema
-      }
+        parameters: tool.inputSchema,
+      },
     }));
   }
 
@@ -187,7 +187,7 @@ function toOpenAIMessage(message: ProviderRequest['messages'][number]): Record<s
     return {
       role: 'tool',
       tool_call_id: message.toolCallId,
-      content: message.content
+      content: message.content,
     };
   }
 
@@ -200,19 +200,22 @@ function toOpenAIMessage(message: ProviderRequest['messages'][number]): Record<s
         type: 'function',
         function: {
           name: call.name,
-          arguments: call.argumentsText
-        }
-      }))
+          arguments: call.argumentsText,
+        },
+      })),
     };
   }
 
   return {
     role: message.role,
-    content: message.content
+    content: message.content,
   };
 }
 
-function collectToolCallDeltas(toolCalls: Map<number, OpenAIToolCallAccumulator>, deltas: OpenAIToolCallDelta[] | undefined): void {
+function collectToolCallDeltas(
+  toolCalls: Map<number, OpenAIToolCallAccumulator>,
+  deltas: OpenAIToolCallDelta[] | undefined,
+): void {
   if (deltas === undefined) {
     return;
   }
@@ -260,7 +263,9 @@ function* emitToolCallEvents(toolCalls: Map<number, OpenAIToolCallAccumulator>):
 
   for (const [, toolCall] of sorted) {
     if (toolCall.id === undefined || toolCall.name === undefined) {
-      throw createProtocolError('OpenAI-compatible provider finished with tool_calls but did not provide a complete tool call.');
+      throw createProtocolError(
+        'OpenAI-compatible provider finished with tool_calls but did not provide a complete tool call.',
+      );
     }
 
     yield {
@@ -268,8 +273,8 @@ function* emitToolCallEvents(toolCalls: Map<number, OpenAIToolCallAccumulator>):
       call: {
         id: toolCall.id,
         name: toolCall.name,
-        argumentsText: toolCall.argumentsText
-      }
+        argumentsText: toolCall.argumentsText,
+      },
     };
   }
 }
@@ -293,7 +298,11 @@ function parseOpenAIStreamError(data: string): AgentCodeError {
 
     const type = (error as { type?: unknown }).type;
     const code = (error as { code?: unknown }).code;
-    return createOpenAIError(typeof type === 'string' ? type : undefined, typeof code === 'string' ? code : undefined, message);
+    return createOpenAIError(
+      typeof type === 'string' ? type : undefined,
+      typeof code === 'string' ? code : undefined,
+      message,
+    );
   } catch {
     return createProtocolError('OpenAI-compatible provider returned invalid JSON in an SSE error event.');
   }
@@ -306,7 +315,7 @@ function createOpenAIError(type: string | undefined, code: string | undefined, m
     return new AgentCodeError({
       code: 'auth_error',
       message,
-      retryable: false
+      retryable: false,
     });
   }
 
@@ -314,14 +323,14 @@ function createOpenAIError(type: string | undefined, code: string | undefined, m
     return new AgentCodeError({
       code: 'rate_limit',
       message,
-      retryable: true
+      retryable: true,
     });
   }
 
   return new AgentCodeError({
     code: 'provider_error',
     message,
-    retryable: isRetryableOpenAIError(errorName)
+    retryable: isRetryableOpenAIError(errorName),
   });
 }
 
@@ -362,7 +371,7 @@ function createCompleteEvent(finishReason: string | undefined): ProviderEvent {
 
   return {
     type: 'response.complete',
-    finishReason
+    finishReason,
   };
 }
 
@@ -374,14 +383,15 @@ function createUsageEvent(usage: NonNullable<OpenAIChatCompletionChunk['usage']>
     return undefined;
   }
 
-  const cachedTokens = typeof usage.prompt_tokens_details?.cached_tokens === 'number'
-    ? usage.prompt_tokens_details.cached_tokens
-    : undefined;
+  const cachedTokens =
+    typeof usage.prompt_tokens_details?.cached_tokens === 'number'
+      ? usage.prompt_tokens_details.cached_tokens
+      : undefined;
 
   const usageInfo: UsageInfo = {
     inputTokens,
     outputTokens,
-    ...(cachedTokens !== undefined ? { cachedTokens } : {})
+    ...(cachedTokens !== undefined ? { cachedTokens } : {}),
   };
 
   return { type: 'response.usage', usage: usageInfo };

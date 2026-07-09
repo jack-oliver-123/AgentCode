@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { executeToolCall } from '../../../src/tools/executor.js';
-import type { ProviderToolCall, ToolDefinition, ToolExecutionContext, ToolExecutionResult, ToolRegistry } from '../../../src/tools/types.js';
+import type {
+  ProviderToolCall,
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionResult,
+  ToolRegistry,
+} from '../../../src/tools/types.js';
 
 export async function createWorkspace(): Promise<string> {
   return realpath(await mkdtemp(join(tmpdir(), 'agentcode-file-tools-')));
@@ -23,13 +29,13 @@ export async function readWorkspaceFile(workspace: string, path: string): Promis
 export async function executeFileTool(
   tool: ToolDefinition,
   argumentsText: string,
-  context: Partial<ToolExecutionContext> & { cwd: string }
+  context: Partial<ToolExecutionContext> & { cwd: string },
 ): Promise<ToolExecutionResult> {
   return executeToolCall(createCall(tool.name, argumentsText), createRegistry([tool]), {
     timeoutMs: 100,
     secrets: [],
     maxOutputBytes: 1024,
-    ...context
+    ...context,
   });
 }
 
@@ -37,7 +43,7 @@ function createCall(name: string, argumentsText: string): ProviderToolCall {
   return {
     id: `call-${name}`,
     name,
-    argumentsText
+    argumentsText,
   };
 }
 
@@ -51,11 +57,11 @@ function createRegistry(tools: ToolDefinition[]): ToolRegistry {
       tools.map((tool) => ({
         name: tool.name,
         description: tool.description,
-        inputSchema: tool.inputSchema
+        inputSchema: tool.inputSchema,
       })),
     filterByRisk: (allowedRisks) => {
       const allowed = new Set(allowedRisks);
       return createRegistry(tools.filter((t) => allowed.has(t.risk)));
-    }
+    },
   };
 }

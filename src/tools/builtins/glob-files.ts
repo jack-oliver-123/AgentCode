@@ -1,5 +1,11 @@
 import { globFilesInputSchema } from '../schemas.js';
-import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
+import type {
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionError,
+  ToolExecutionResult,
+  ToolValidationResult,
+} from '../types.js';
 import { createGlobMatcher, isPositiveInteger, visitWorkspaceFiles } from './file-discovery.js';
 import { invalidArguments, isRecord } from './validation.js';
 
@@ -23,7 +29,7 @@ export function createGlobFilesTool(): ToolDefinition<GlobFilesInput, GlobFilesO
     inputSchema: globFilesInputSchema,
     risk: 'read',
     validate: validateGlobFilesInput,
-    execute: executeGlobFiles
+    execute: executeGlobFiles,
   };
 }
 
@@ -44,37 +50,44 @@ function validateGlobFilesInput(input: unknown): ToolValidationResult<GlobFilesI
     ok: true,
     value: {
       pattern: input.pattern,
-      ...(input.maxResults !== undefined ? { maxResults: input.maxResults } : {})
-    }
+      ...(input.maxResults !== undefined ? { maxResults: input.maxResults } : {}),
+    },
   };
 }
 
-async function executeGlobFiles(input: GlobFilesInput, context: ToolExecutionContext): Promise<ToolExecutionResult<GlobFilesOutput>> {
+async function executeGlobFiles(
+  input: GlobFilesInput,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult<GlobFilesOutput>> {
   const matcherResult = createGlobMatcher(input.pattern);
   if (!matcherResult.ok) {
     return createGlobFilesError({
       code: 'invalid_arguments',
       message: matcherResult.message,
-      retryable: true
+      retryable: true,
     });
   }
 
   const maxResults = getEffectiveMaxResults(input.maxResults);
   const matches: string[] = [];
   let truncated = false;
-  const visitResult = await visitWorkspaceFiles(context.cwd, (file) => {
-    if (!matcherResult.matcher.matches(file.relativePath)) {
+  const visitResult = await visitWorkspaceFiles(
+    context.cwd,
+    (file) => {
+      if (!matcherResult.matcher.matches(file.relativePath)) {
+        return true;
+      }
+
+      matches.push(file.relativePath);
+      if (matches.length > maxResults) {
+        truncated = true;
+        return false;
+      }
+
       return true;
-    }
-
-    matches.push(file.relativePath);
-    if (matches.length > maxResults) {
-      truncated = true;
-      return false;
-    }
-
-    return true;
-  }, context.signal);
+    },
+    context.signal,
+  );
   if (!visitResult.ok) {
     return createGlobFilesError(visitResult.error);
   }
@@ -84,13 +97,13 @@ async function executeGlobFiles(input: GlobFilesInput, context: ToolExecutionCon
     toolName: 'glob_files',
     data: {
       matches: matches.slice(0, maxResults),
-      truncated
+      truncated,
     },
     meta: {
       durationMs: 0,
       timedOut: false,
-      truncated
-    }
+      truncated,
+    },
   };
 }
 
@@ -105,7 +118,7 @@ function createGlobFilesError(error: ToolExecutionError): ToolExecutionResult<Gl
     error,
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }

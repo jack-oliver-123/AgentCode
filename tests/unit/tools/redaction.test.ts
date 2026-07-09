@@ -12,8 +12,8 @@ describe('redactToolValue', () => {
       content: `api_key=${SENTINEL_SECRET}`,
       stdout: [`Authorization: Bearer ${SENTINEL_SECRET}`, `jwt: ${JWT_SECRET}`],
       nested: {
-        stderr: `token=${SENTINEL_SECRET}`
-      }
+        stderr: `token=${SENTINEL_SECRET}`,
+      },
     };
 
     const redacted = redactToolValue(value, [SENTINEL_SECRET]);
@@ -30,7 +30,7 @@ describe('redactToolValue', () => {
     const value = {
       content: `{"token":"new-token-should-disappear","api_key":"${apiKey}","access_token":"${accessToken}"}`,
       authorization: 'Basic newly-generated-secret',
-      client_secret: 'object-client-secret-should-disappear'
+      client_secret: 'object-client-secret-should-disappear',
     };
 
     const redacted = redactToolValue(value, []);
@@ -48,12 +48,13 @@ describe('redactToolValue', () => {
       token: ['array-secret-should-disappear'],
       accessToken: ['camel-access-token-should-disappear'],
       clientSecret: {
-        value: 'camel-client-secret-should-disappear'
+        value: 'camel-client-secret-should-disappear',
       },
       authorization: {
-        raw: 'Bearer nested-secret-should-disappear'
+        raw: 'Bearer nested-secret-should-disappear',
       },
-      content: '{"tok\\u0065n":"escaped-token-should-disappear","client_\\u0073ecret":"escaped-client-secret-should-disappear"}'
+      content:
+        '{"tok\\u0065n":"escaped-token-should-disappear","client_\\u0073ecret":"escaped-client-secret-should-disappear"}',
     };
 
     const redacted = redactToolValue(value, []);
@@ -70,7 +71,7 @@ describe('redactToolValue', () => {
   it('redacts secrets from object keys and free text authorization patterns without known secrets', () => {
     const value = {
       [SENTINEL_SECRET]: 'value',
-      logs: ['Authorization: Bearer transient-token-should-disappear', 'Bearer other-token-should-disappear']
+      logs: ['Authorization: Bearer transient-token-should-disappear', 'Bearer other-token-should-disappear'],
     };
 
     const redacted = redactToolValue(value, []);
@@ -86,8 +87,8 @@ describe('redactToolValue', () => {
     const value = {
       logs: [
         'response={"authorization":{"session":"embedded-session-secret"}}',
-        'stdout: {"token":{"value":"embedded-token-secret"}} done'
-      ]
+        'stdout: {"token":{"value":"embedded-token-secret"}} done',
+      ],
     };
 
     const redacted = redactToolValue(value, []);
@@ -111,12 +112,12 @@ describe('redactToolResult', () => {
       ok: true,
       toolName: 'read_file',
       data: {
-        content: `secret=${SENTINEL_SECRET}`
+        content: `secret=${SENTINEL_SECRET}`,
       },
       meta: {
         durationMs: 1,
-        timedOut: false
-      }
+        timedOut: false,
+      },
     };
 
     const redacted = redactToolResult(result, [SENTINEL_SECRET]);
@@ -133,13 +134,13 @@ describe('redactToolResult', () => {
         message: `Bearer ${SENTINEL_SECRET}`,
         retryable: false,
         details: {
-          stderr: `authorization=${SENTINEL_SECRET}`
-        }
+          stderr: `authorization=${SENTINEL_SECRET}`,
+        },
       },
       meta: {
         durationMs: 1,
-        timedOut: false
-      }
+        timedOut: false,
+      },
     };
 
     const redacted = redactToolResult(result, [SENTINEL_SECRET]);

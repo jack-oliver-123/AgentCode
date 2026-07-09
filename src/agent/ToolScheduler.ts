@@ -1,6 +1,6 @@
-import type { ProviderToolCall, ToolExecutionContext, ToolExecutionResult, ToolRegistry } from '../tools/types.js';
-import { executeToolCall } from '../tools/executor.js';
 import { toPublicError } from '../shared/errors.js';
+import { executeToolCall } from '../tools/executor.js';
+import type { ProviderToolCall, ToolExecutionContext, ToolExecutionResult, ToolRegistry } from '../tools/types.js';
 import type { ToolBatch } from './types.js';
 
 /**
@@ -8,7 +8,7 @@ import type { ToolBatch } from './types.js';
  */
 export function createBatches(
   calls: ProviderToolCall[],
-  registry: ToolRegistry
+  registry: ToolRegistry,
 ): { batches: ToolBatch[]; unknownResults: Array<{ call: ProviderToolCall; result: ToolExecutionResult }> } {
   if (calls.length === 0) {
     return { batches: [], unknownResults: [] };
@@ -63,7 +63,7 @@ export function createBatches(
 export async function executeBatches(
   batches: ToolBatch[],
   registry: ToolRegistry,
-  context: ToolExecutionContext
+  context: ToolExecutionContext,
 ): Promise<Array<{ call: ProviderToolCall; result: ToolExecutionResult; durationMs: number }>> {
   const results: Array<{ call: ProviderToolCall; result: ToolExecutionResult; durationMs: number }> = [];
 
@@ -95,7 +95,7 @@ export async function executeBatches(
           const start = Date.now();
           const result = await executeToolCall(call, registry, context);
           return { call, result, durationMs: Date.now() - start };
-        })
+        }),
       );
 
       for (let i = 0; i < settled.length; i++) {

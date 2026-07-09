@@ -64,9 +64,7 @@ async function fetchGitContext(cwd: string): Promise<GitContext | undefined> {
   }
 
   // git status 可能超时（大仓库），此时 dirty 状态未知
-  const dirty = statusSettled.status === 'fulfilled'
-    ? statusSettled.value.stdout.trim().length > 0
-    : undefined;
+  const dirty = statusSettled.status === 'fulfilled' ? statusSettled.value.stdout.trim().length > 0 : undefined;
 
   return { branch, dirty };
 }
