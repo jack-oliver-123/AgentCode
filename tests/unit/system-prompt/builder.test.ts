@@ -169,4 +169,26 @@ describe('buildSystemPrompt - env 上下文', () => {
     }));
     expect(result.reminder).toContain('OS: win32 | Shell: powershell | CWD: /tmp/project | Date: 2026-07-08');
   });
+
+  it('AC13: env 含 gitBranch 时 reminder 包含 Git 分支信息', () => {
+    const result = buildSystemPrompt(baseInput({
+      env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09', gitBranch: 'feat/test', gitDirty: false },
+    }));
+    expect(result.reminder).toContain('Git: feat/test');
+    expect(result.reminder).not.toContain('[dirty]');
+  });
+
+  it('AC13: env 含 gitDirty=true 时 reminder 显示 [dirty] 标记', () => {
+    const result = buildSystemPrompt(baseInput({
+      env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09', gitBranch: 'main', gitDirty: true },
+    }));
+    expect(result.reminder).toContain('Git: main [dirty]');
+  });
+
+  it('AC13: env 不含 gitBranch 时 reminder 不含 Git 信息', () => {
+    const result = buildSystemPrompt(baseInput({
+      env: { os: 'linux', shell: 'bash', cwd: '/project', date: '2026-07-09' },
+    }));
+    expect(result.reminder).not.toContain('Git:');
+  });
 });

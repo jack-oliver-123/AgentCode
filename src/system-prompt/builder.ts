@@ -1,6 +1,13 @@
 import type { SystemPromptBuildInput, SystemPromptBuildOutput, SystemPromptModule } from './types.js';
 import { defaultRegistry } from './registry.js';
 
+/**
+ * 构建系统提示（system + reminder）。
+ *
+ * @param registry 完整的模块注册表。注意：传入时会**完全替代** defaultRegistry，
+ *   而非合并。调用方应确保传入完整模块集合（如 loadDynamicModules 的返回值）。
+ *   省略或传 undefined 时使用内置 defaultRegistry。
+ */
 export function buildSystemPrompt(
   input: SystemPromptBuildInput,
   registry?: SystemPromptModule[],
@@ -19,7 +26,12 @@ export function buildSystemPrompt(
 
   // 1. 环境上下文
   if (input.env) {
-    parts.push(`OS: ${input.env.os} | Shell: ${input.env.shell} | CWD: ${input.env.cwd} | Date: ${input.env.date}`);
+    let envLine = `OS: ${input.env.os} | Shell: ${input.env.shell} | CWD: ${input.env.cwd} | Date: ${input.env.date}`;
+    if (input.env.gitBranch !== undefined) {
+      const dirtyFlag = input.env.gitDirty === true ? ' [dirty]' : input.env.gitDirty === undefined ? ' [status unknown]' : '';
+      envLine += ` | Git: ${input.env.gitBranch}${dirtyFlag}`;
+    }
+    parts.push(envLine);
   }
 
   // 2. 模式指令（full 模式跳过）

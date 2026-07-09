@@ -6,6 +6,7 @@ import { createProvider } from '../providers/createProvider.js';
 import { ChatSessionController } from '../session/ChatSessionController.js';
 import { App } from '../tui/App.js';
 import { createDefaultToolRegistry } from '../tools/registry.js';
+import { loadDynamicModules } from '../system-prompt/index.js';
 
 export type RenderApp = (node: React.ReactNode) => Instance;
 
@@ -25,12 +26,17 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
     config: resolvedConfig.config,
     ...(fetch !== undefined ? { fetch } : {})
   });
+
+  // 加载动态模块（custom-instructions + memory）
+  const systemPromptRegistry = await loadDynamicModules(runtimeCwd);
+
   const controller = new ChatSessionController({
     provider,
     config: resolvedConfig.config,
     toolRegistry: createDefaultToolRegistry(),
     cwd: runtimeCwd,
-    toolTimeoutMs: resolvedConfig.config.request.timeoutMs
+    toolTimeoutMs: resolvedConfig.config.request.timeoutMs,
+    systemPromptRegistry,
   });
 
   return renderApp(<App controller={controller} resolvedConfig={resolvedConfig} cwd={runtimeCwd} />);
