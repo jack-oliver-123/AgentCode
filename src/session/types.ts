@@ -20,9 +20,7 @@ export interface ChatMessage {
   };
 }
 
-export type ChatSessionDraftActivity =
-  | { type: 'thinking' }
-  | { type: 'tool'; toolName: string };
+export type ChatSessionDraftActivity = { type: 'thinking' } | { type: 'tool'; toolName: string };
 
 export interface ChatSessionDraft {
   id: string;

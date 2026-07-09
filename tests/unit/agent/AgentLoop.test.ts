@@ -51,7 +51,7 @@ function makeInput(overrides: Partial<AgentLoopInput> = {}): AgentLoopInput {
 function makeDeps(
   provider: FakeProvider,
   registry?: ToolRegistry,
-  configOverrides: Partial<AgentLoopConfig> = {}
+  configOverrides: Partial<AgentLoopConfig> = {},
 ): AgentLoopDeps {
   return {
     provider,
@@ -86,14 +86,17 @@ function delta(text: string): ProviderEvent {
 
 describe('runAgentLoop - 正常完成', () => {
   it('单轮纯文本回答直接完成', async () => {
-    const provider = new FakeProvider([
-      [{ type: 'response.start' }, delta('Hello world'), complete('stop')],
-    ]);
+    const provider = new FakeProvider([[{ type: 'response.start' }, delta('Hello world'), complete('stop')]]);
 
     const events = await collectEvents(runAgentLoop(makeInput(), makeDeps(provider)));
 
     const completed = events.find((e) => e.type === 'loop.completed');
-    expect(completed).toMatchObject({ type: 'loop.completed', finalText: 'Hello world', reason: 'natural', totalIterations: 1 });
+    expect(completed).toMatchObject({
+      type: 'loop.completed',
+      finalText: 'Hello world',
+      reason: 'natural',
+      totalIterations: 1,
+    });
     expect(events.filter((e) => e.type === 'text.delta')).toHaveLength(1);
   });
 
@@ -149,9 +152,7 @@ describe('runAgentLoop - 迭代上限', () => {
       return [{ type: 'response.start' }, toolCall('read_file'), complete('tool_calls')];
     });
 
-    const events = await collectEvents(
-      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxIterations: 3 }))
-    );
+    const events = await collectEvents(runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxIterations: 3 })));
 
     const completed = events.find((e) => e.type === 'loop.completed');
     expect(completed).toMatchObject({ reason: 'max_iterations', totalIterations: 3 });
@@ -165,13 +166,9 @@ describe('runAgentLoop - 取消', () => {
     const controller = new AbortController();
     controller.abort();
 
-    const provider = new FakeProvider([
-      [{ type: 'response.start' }, delta('Never seen'), complete('stop')],
-    ]);
+    const provider = new FakeProvider([[{ type: 'response.start' }, delta('Never seen'), complete('stop')]]);
 
-    const events = await collectEvents(
-      runAgentLoop(makeInput({ signal: controller.signal }), makeDeps(provider))
-    );
+    const events = await collectEvents(runAgentLoop(makeInput({ signal: controller.signal }), makeDeps(provider)));
 
     const completed = events.find((e) => e.type === 'loop.completed');
     expect(completed).toMatchObject({ reason: 'cancelled' });
@@ -200,9 +197,7 @@ describe('runAgentLoop - 取消', () => {
       return originalCreateToolContext(signal);
     };
 
-    const events = await collectEvents(
-      runAgentLoop(makeInput({ signal: controller.signal }), deps)
-    );
+    const events = await collectEvents(runAgentLoop(makeInput({ signal: controller.signal }), deps));
 
     const completed = events.find((e) => e.type === 'loop.completed');
     expect(completed).toMatchObject({ reason: 'cancelled' });
@@ -220,7 +215,7 @@ describe('runAgentLoop - 连续未知工具', () => {
     });
 
     const events = await collectEvents(
-      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxConsecutiveUnknownTools: 3 }))
+      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxConsecutiveUnknownTools: 3 })),
     );
 
     const completed = events.find((e) => e.type === 'loop.completed');
@@ -246,7 +241,7 @@ describe('runAgentLoop - 连续未知工具', () => {
     });
 
     const events = await collectEvents(
-      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxConsecutiveUnknownTools: 2 }))
+      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxConsecutiveUnknownTools: 2 })),
     );
 
     const completed = events.find((e) => e.type === 'loop.completed');
@@ -342,9 +337,7 @@ describe('runAgentLoop - Provider 错误', () => {
 
   it('stream 无 response.complete 时 yield loop.failed', async () => {
     // provider stream 直接结束，不发 response.complete
-    const provider = new FakeProvider([
-      [{ type: 'response.start' }, delta('partial')],
-    ]);
+    const provider = new FakeProvider([[{ type: 'response.start' }, delta('partial')]]);
 
     const events = await collectEvents(runAgentLoop(makeInput(), makeDeps(provider)));
 
@@ -416,9 +409,7 @@ describe('runAgentLoop - 多工具并发', () => {
 
 describe('runAgentLoop - Plan Mode', () => {
   it('/plan 模式只注入 read 类工具', async () => {
-    const provider = new FakeProvider([
-      [{ type: 'response.start' }, delta('Here is my plan'), complete('stop')],
-    ]);
+    const provider = new FakeProvider([[{ type: 'response.start' }, delta('Here is my plan'), complete('stop')]]);
 
     const registry = makeRegistry([makeTool('read_file', 'read'), makeTool('write_file', 'write')]);
     const deps = makeDeps(provider, registry);
@@ -471,9 +462,7 @@ describe('runAgentLoop - Plan Mode', () => {
 
   it('Plan Mode 中模型不调用 submit_plan 而返回纯文本时正常完成', async () => {
     const registry = makeRegistry([makeTool('read_file', 'read'), makeTool('submit_plan', 'read')]);
-    const provider = new FakeProvider([
-      [{ type: 'response.start' }, delta('No plan, just text.'), complete('stop')],
-    ]);
+    const provider = new FakeProvider([[{ type: 'response.start' }, delta('No plan, just text.'), complete('stop')]]);
 
     const events = await collectEvents(runAgentLoop(makeInput({ mode: 'plan' }), makeDeps(provider, registry)));
 
@@ -542,7 +531,7 @@ describe('runAgentLoop - 边界情况', () => {
     ]);
 
     const events = await collectEvents(
-      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxConsecutiveUnknownTools: 1 }))
+      runAgentLoop(makeInput(), makeDeps(provider, undefined, { maxConsecutiveUnknownTools: 1 })),
     );
 
     // 应该正常完成而非因 unknown_tool_limit 终止

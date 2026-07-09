@@ -25,7 +25,7 @@ const SUBMIT_PLAN_TOOL_NAME = 'submit_plan';
  */
 export async function* runAgentLoop(
   input: AgentLoopInput,
-  deps: AgentLoopDeps
+  deps: AgentLoopDeps,
 ): AsyncGenerator<AgentLoopEvent, void, undefined> {
   const { provider, toolRegistry, createToolContext, config, model, thinking } = deps;
   const { signal } = input;
@@ -34,15 +34,16 @@ export async function* runAgentLoop(
   const activeRegistry = resolveRegistry(toolRegistry, input.mode);
 
   // reminder 注入：创建临时副本，不 mutate 原始 input.userMessage
-  const effectiveUserMessage = (input.reminder && input.reminder.length > 0)
-    ? { ...input.userMessage, content: `<system-reminder>\n${input.reminder}\n</system-reminder>\n\n${input.userMessage.content}` }
-    : input.userMessage;
+  const effectiveUserMessage =
+    input.reminder && input.reminder.length > 0
+      ? {
+          ...input.userMessage,
+          content: `<system-reminder>\n${input.reminder}\n</system-reminder>\n\n${input.userMessage.content}`,
+        }
+      : input.userMessage;
 
   // 构建初始消息数组
-  const messages: ProviderMessage[] = [
-    ...input.contextMessages,
-    effectiveUserMessage,
-  ];
+  const messages: ProviderMessage[] = [...input.contextMessages, effectiveUserMessage];
 
   // 记录初始消息数量，后续新增的就是 turnMessages
   const initialMessageCount = messages.length;
@@ -63,7 +64,13 @@ export async function* runAgentLoop(
 
     // 检查 signal — 可能在迭代之间被取消
     if (signal?.aborted) {
-      yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'cancelled', turnMessages: messages.slice(initialMessageCount) };
+      yield {
+        type: 'loop.completed',
+        finalText: '',
+        totalIterations: iteration,
+        reason: 'cancelled',
+        turnMessages: messages.slice(initialMessageCount),
+      };
       return;
     }
 
@@ -80,7 +87,11 @@ export async function* runAgentLoop(
 
     // 带重试的 provider 调用
     const streamResult: ProviderStreamResult | undefined = yield* streamWithRetry(
-      provider, request, retry, iteration, signal
+      provider,
+      request,
+      retry,
+      iteration,
+      signal,
     );
 
     // streamWithRetry 返回 undefined 表示已 yield loop.failed 并需要终止
@@ -118,7 +129,13 @@ export async function* runAgentLoop(
     // 任何停止条件满足时直接退出（natural, cancelled, max_iterations, unknown_tool_limit）
     if (decision.stop) {
       const reason = decision.reason === 'provider_error' ? 'unknown_tool_limit' : decision.reason;
-      yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason, turnMessages: messages.slice(initialMessageCount) };
+      yield {
+        type: 'loop.completed',
+        finalText: turnText,
+        totalIterations: iteration,
+        reason,
+        turnMessages: messages.slice(initialMessageCount),
+      };
       return;
     }
 
@@ -148,7 +165,13 @@ export async function* runAgentLoop(
 
       if (postCountDecision.stop) {
         const reason = postCountDecision.reason === 'provider_error' ? 'unknown_tool_limit' : postCountDecision.reason;
-        yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason, turnMessages: messages.slice(initialMessageCount) };
+        yield {
+          type: 'loop.completed',
+          finalText: turnText,
+          totalIterations: iteration,
+          reason,
+          turnMessages: messages.slice(initialMessageCount),
+        };
         return;
       }
 
@@ -178,13 +201,17 @@ export async function* runAgentLoop(
       }
 
       // 检查 submit_plan
-      const planResult = allResults.find(
-        (r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok
-      );
+      const planResult = allResults.find((r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok);
       if (planResult && planResult.result.ok) {
         const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
         yield { type: 'plan.submitted', steps };
-        yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: 'natural', turnMessages: messages.slice(initialMessageCount) };
+        yield {
+          type: 'loop.completed',
+          finalText: turnText,
+          totalIterations: iteration,
+          reason: 'natural',
+          turnMessages: messages.slice(initialMessageCount),
+        };
         return;
       }
 
@@ -212,12 +239,24 @@ export async function* runAgentLoop(
     }
 
     // 兜底：无工具调用已在上面 decision 处理，此处不应到达
-    yield { type: 'loop.completed', finalText: turnText, totalIterations: iteration, reason: 'natural', turnMessages: messages.slice(initialMessageCount) };
+    yield {
+      type: 'loop.completed',
+      finalText: turnText,
+      totalIterations: iteration,
+      reason: 'natural',
+      turnMessages: messages.slice(initialMessageCount),
+    };
     return;
   }
 
   // 达到迭代上限
-  yield { type: 'loop.completed', finalText: '', totalIterations: iteration, reason: 'max_iterations', turnMessages: messages.slice(initialMessageCount) };
+  yield {
+    type: 'loop.completed',
+    finalText: '',
+    totalIterations: iteration,
+    reason: 'max_iterations',
+    turnMessages: messages.slice(initialMessageCount),
+  };
 }
 
 // ─── 重试相关 ─────────────────────────────────────────────────────────
@@ -239,7 +278,7 @@ async function* streamWithRetry(
   request: ProviderRequest,
   retry: RetryConfig,
   iteration: number,
-  signal: AbortSignal | undefined
+  signal: AbortSignal | undefined,
 ): AsyncGenerator<AgentLoopEvent, ProviderStreamResult | undefined, undefined> {
   let lastError: PublicError | undefined;
 

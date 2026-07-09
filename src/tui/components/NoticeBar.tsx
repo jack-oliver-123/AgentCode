@@ -18,8 +18,14 @@ export function NoticeBar({ error, notice }: NoticeBarProps): ReactElement | nul
       {notice !== undefined ? <Text color="cyan">ℹ {notice}</Text> : null}
       {error !== undefined ? (
         <>
-          <Text color="red">⚠ Error ({error.code}): {error.message}</Text>
-          <Text color="gray">{error.retryable ? 'You can retry by sending another message.' : 'Fix the issue, then send another message.'}</Text>
+          <Text color="red">
+            ⚠ Error ({error.code}): {error.message}
+          </Text>
+          <Text color="gray">
+            {error.retryable
+              ? 'You can retry by sending another message.'
+              : 'Fix the issue, then send another message.'}
+          </Text>
         </>
       ) : null}
     </Box>

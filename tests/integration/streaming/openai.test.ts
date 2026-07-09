@@ -15,15 +15,15 @@ describe('OpenAIProvider', () => {
         'data: {"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}\n\n',
         'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":null}]}\n\n',
         'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
-        'data: [DONE]\n\n'
-      ]
+        'data: [DONE]\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/custom/openai/v1`
-        })
+          baseUrl: `${server.url}/custom/openai/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
@@ -32,19 +32,19 @@ describe('OpenAIProvider', () => {
           messages: [
             { role: 'user', content: 'Hello' },
             { role: 'assistant', content: 'Hi there' },
-            { role: 'user', content: 'Continue' }
+            { role: 'user', content: 'Continue' },
           ],
           thinking: {
-            enabled: false
-          }
-        })
+            enabled: false,
+          },
+        }),
       );
 
       expect(events).toEqual([
         { type: 'response.start' },
         { type: 'content.delta', delta: 'Hel' },
         { type: 'content.delta', delta: 'lo' },
-        { type: 'response.complete', finishReason: 'stop' }
+        { type: 'response.complete', finishReason: 'stop' },
       ]);
       expect(server.requests).toHaveLength(1);
       expect(server.requests[0]?.method).toBe('POST');
@@ -56,10 +56,10 @@ describe('OpenAIProvider', () => {
         messages: [
           { role: 'user', content: 'Hello' },
           { role: 'assistant', content: 'Hi there' },
-          { role: 'user', content: 'Continue' }
+          { role: 'user', content: 'Continue' },
         ],
         stream: true,
-        stream_options: { include_usage: true }
+        stream_options: { include_usage: true },
       });
     } finally {
       await server.close();
@@ -68,17 +68,14 @@ describe('OpenAIProvider', () => {
 
   it('maps tool declarations and tool choice to OpenAI-compatible request bodies', async () => {
     const server = await createMockSseServer({
-      chunks: [
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
-        'data: [DONE]\n\n'
-      ]
+      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: [DONE]\n\n'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
       const tools = createDefaultToolRegistry().getProviderDeclarations();
 
@@ -88,8 +85,8 @@ describe('OpenAIProvider', () => {
           messages: [{ role: 'user', content: 'Read a file' }],
           thinking: { enabled: false },
           tools,
-          toolChoice: 'auto'
-        })
+          toolChoice: 'auto',
+        }),
       );
 
       expect(JSON.parse(server.requests[0]?.body ?? '{}')).toMatchObject({
@@ -102,11 +99,11 @@ describe('OpenAIProvider', () => {
             function: expect.objectContaining({
               name: 'read_file',
               parameters: expect.objectContaining({
-                type: 'object'
-              })
-            })
-          })
-        ])
+                type: 'object',
+              }),
+            }),
+          }),
+        ]),
       });
     } finally {
       await server.close();
@@ -115,17 +112,14 @@ describe('OpenAIProvider', () => {
 
   it('maps tool continuation messages to OpenAI-compatible request bodies', async () => {
     const server = await createMockSseServer({
-      chunks: [
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
-        'data: [DONE]\n\n'
-      ]
+      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: [DONE]\n\n'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       await collectProviderEvents(
@@ -136,19 +130,19 @@ describe('OpenAIProvider', () => {
             {
               role: 'assistant',
               content: '',
-              toolCalls: [{ id: 'call-read', name: 'read_file', argumentsText: '{"path":"README.md"}' }]
+              toolCalls: [{ id: 'call-read', name: 'read_file', argumentsText: '{"path":"README.md"}' }],
             },
             {
               role: 'tool',
               toolCallId: 'call-read',
               toolName: 'read_file',
               content: '{"ok":true}',
-              isError: false
-            }
+              isError: false,
+            },
           ],
           thinking: { enabled: false },
-          toolChoice: 'none'
-        })
+          toolChoice: 'none',
+        }),
       );
 
       expect(JSON.parse(server.requests[0]?.body ?? '{}')).toMatchObject({
@@ -163,14 +157,14 @@ describe('OpenAIProvider', () => {
                 type: 'function',
                 function: {
                   name: 'read_file',
-                  arguments: '{"path":"README.md"}'
-                }
-              }
-            ]
+                  arguments: '{"path":"README.md"}',
+                },
+              },
+            ],
           },
-          { role: 'tool', tool_call_id: 'call-read', content: '{"ok":true}' }
+          { role: 'tool', tool_call_id: 'call-read', content: '{"ok":true}' },
         ],
-        tool_choice: 'none'
+        tool_choice: 'none',
       });
     } finally {
       await server.close();
@@ -179,17 +173,14 @@ describe('OpenAIProvider', () => {
 
   it('omits tool declarations when tool choice disables tools', async () => {
     const server = await createMockSseServer({
-      chunks: [
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
-        'data: [DONE]\n\n'
-      ]
+      chunks: ['data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n', 'data: [DONE]\n\n'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       await collectProviderEvents(
@@ -198,8 +189,8 @@ describe('OpenAIProvider', () => {
           messages: [{ role: 'user', content: 'No tools' }],
           thinking: { enabled: false },
           tools: createDefaultToolRegistry().getProviderDeclarations(),
-          toolChoice: 'none'
-        })
+          toolChoice: 'none',
+        }),
       );
 
       expect(JSON.parse(server.requests[0]?.body ?? '{}')).toEqual({
@@ -207,7 +198,7 @@ describe('OpenAIProvider', () => {
         messages: [{ role: 'user', content: 'No tools' }],
         stream: true,
         stream_options: { include_usage: true },
-        tool_choice: 'none'
+        tool_choice: 'none',
       });
     } finally {
       await server.close();
@@ -220,15 +211,15 @@ describe('OpenAIProvider', () => {
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read-file","type":"function","function":{"name":"read_file","arguments":"{\\"path\\":"}}]},"finish_reason":null}]}\n\n',
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"README.md\\"}"}}]},"finish_reason":null}]}\n\n',
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
-        'data: [DONE]\n\n'
-      ]
+        'data: [DONE]\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
@@ -237,8 +228,8 @@ describe('OpenAIProvider', () => {
           messages: [{ role: 'user', content: 'Read README' }],
           thinking: { enabled: false },
           tools: createDefaultToolRegistry().getProviderDeclarations(),
-          toolChoice: 'auto'
-        })
+          toolChoice: 'auto',
+        }),
       );
 
       expect(events).toEqual([
@@ -248,10 +239,10 @@ describe('OpenAIProvider', () => {
           call: {
             id: 'call-read-file',
             name: 'read_file',
-            argumentsText: '{"path":"README.md"}'
-          }
+            argumentsText: '{"path":"README.md"}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ]);
     } finally {
       await server.close();
@@ -263,23 +254,23 @@ describe('OpenAIProvider', () => {
       chunks: [
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read_file","arguments":"{\\"path\\":\\"README.md\\"}"}},{"index":1,"id":"call-search","function":{"name":"search_code","arguments":"{\\"query\\":\\"x\\"}"}}]},"finish_reason":null}]}\n\n',
         'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
-        'data: [DONE]\n\n'
-      ]
+        'data: [DONE]\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Use tools' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toEqual([
@@ -289,18 +280,18 @@ describe('OpenAIProvider', () => {
           call: {
             id: 'call-read',
             name: 'read_file',
-            argumentsText: '{"path":"README.md"}'
-          }
+            argumentsText: '{"path":"README.md"}',
+          },
         },
         {
           type: 'tool.call',
           call: {
             id: 'call-search',
             name: 'search_code',
-            argumentsText: '{"query":"x"}'
-          }
+            argumentsText: '{"query":"x"}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ]);
       expect(events.filter((event) => event.type === 'tool.call')).toHaveLength(2);
     } finally {
@@ -312,23 +303,23 @@ describe('OpenAIProvider', () => {
     const server = await createMockSseServer({
       chunks: [
         'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-read","function":{"name":"read_file","arguments":{}}}]},"finish_reason":null}]}\n\n',
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
-      ]
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Use a tool' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -338,9 +329,9 @@ describe('OpenAIProvider', () => {
           error: {
             code: 'protocol_error',
             message: 'OpenAI-compatible provider returned invalid tool call arguments.',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -351,23 +342,23 @@ describe('OpenAIProvider', () => {
     const server = await createMockSseServer({
       chunks: [
         'data: {"choices":[{"delta":{"tool_calls":[{"index":"0","id":"call-read","function":{"name":"read_file","arguments":"{}"}}]},"finish_reason":null}]}\n\n',
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
-      ]
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Use a tool' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -377,9 +368,9 @@ describe('OpenAIProvider', () => {
           error: {
             code: 'protocol_error',
             message: 'OpenAI-compatible provider returned an invalid tool call index.',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -388,14 +379,14 @@ describe('OpenAIProvider', () => {
 
   it('treats [DONE] as completion when no finish_reason chunk arrives', async () => {
     const server = await createMockSseServer({
-      chunks: ['data: {"choices":[{"delta":{"content":"Done"},"finish_reason":null}]}\n\n', 'data: [DONE]\n\n']
+      chunks: ['data: {"choices":[{"delta":{"content":"Done"},"finish_reason":null}]}\n\n', 'data: [DONE]\n\n'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       await expect(
@@ -403,10 +394,14 @@ describe('OpenAIProvider', () => {
           provider.stream({
             model: 'gpt-4.1',
             messages: [{ role: 'user', content: 'Hello' }],
-            thinking: { enabled: false }
-          })
-        )
-      ).resolves.toEqual([{ type: 'response.start' }, { type: 'content.delta', delta: 'Done' }, { type: 'response.complete' }]);
+            thinking: { enabled: false },
+          }),
+        ),
+      ).resolves.toEqual([
+        { type: 'response.start' },
+        { type: 'content.delta', delta: 'Done' },
+        { type: 'response.complete' },
+      ]);
     } finally {
       await server.close();
     }
@@ -414,22 +409,22 @@ describe('OpenAIProvider', () => {
 
   it('emits a public error event for invalid JSON stream chunks', async () => {
     const server = await createMockSseServer({
-      chunks: ['data: {not-json}\n\n']
+      chunks: ['data: {not-json}\n\n'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -438,9 +433,9 @@ describe('OpenAIProvider', () => {
           type: 'response.error',
           error: {
             code: 'protocol_error',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -450,22 +445,22 @@ describe('OpenAIProvider', () => {
   it('emits a public error event for non-2xx provider responses', async () => {
     const server = await createMockSseServer({
       status: 401,
-      chunks: ['bad auth']
+      chunks: ['bad auth'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -475,9 +470,9 @@ describe('OpenAIProvider', () => {
           error: {
             code: 'auth_error',
             retryable: false,
-            status: 401
-          }
-        }
+            status: 401,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -488,23 +483,23 @@ describe('OpenAIProvider', () => {
     const server = await createMockSseServer({
       chunks: [
         'event: error\n' +
-          'data: {"error":{"message":"quota exhausted","type":"rate_limit_error","code":"insufficient_quota"}}\n\n'
-      ]
+          'data: {"error":{"message":"quota exhausted","type":"rate_limit_error","code":"insufficient_quota"}}\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -514,9 +509,9 @@ describe('OpenAIProvider', () => {
           error: {
             code: 'rate_limit',
             message: 'quota exhausted',
-            retryable: true
-          }
-        }
+            retryable: true,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -527,23 +522,23 @@ describe('OpenAIProvider', () => {
     const server = await createMockSseServer({
       chunks: [
         'event: error\n' +
-          'data: {"error":{"message":"invalid tools schema","type":"invalid_request_error","code":null}}\n\n'
-      ]
+          'data: {"error":{"message":"invalid tools schema","type":"invalid_request_error","code":null}}\n\n',
+      ],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -553,9 +548,9 @@ describe('OpenAIProvider', () => {
           error: {
             code: 'provider_error',
             message: 'invalid tools schema',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -565,24 +560,24 @@ describe('OpenAIProvider', () => {
   it('emits a protocol error when a 200 response is not an event stream', async () => {
     const server = await createMockSseServer({
       headers: {
-        'content-type': 'application/json'
+        'content-type': 'application/json',
       },
-      chunks: ['{"error":"not a stream"}']
+      chunks: ['{"error":"not a stream"}'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -591,9 +586,9 @@ describe('OpenAIProvider', () => {
           type: 'response.error',
           error: {
             code: 'protocol_error',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -602,22 +597,22 @@ describe('OpenAIProvider', () => {
 
   it('emits a protocol error when the stream ends before a completion signal', async () => {
     const server = await createMockSseServer({
-      chunks: ['data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n']
+      chunks: ['data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'],
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -627,9 +622,9 @@ describe('OpenAIProvider', () => {
           type: 'response.error',
           error: {
             code: 'protocol_error',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -640,21 +635,21 @@ describe('OpenAIProvider', () => {
     const abortController = new AbortController();
     const server = await createMockSseServer({
       chunks: ['data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'],
-      end: false
+      end: false,
     });
 
     try {
       const provider = new OpenAIProvider({
         config: createOpenAIConfig({
-          baseUrl: `${server.url}/v1`
-        })
+          baseUrl: `${server.url}/v1`,
+        }),
       });
       const iterator = provider
         .stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
           thinking: { enabled: false },
-          signal: abortController.signal
+          signal: abortController.signal,
         })
         [Symbol.asyncIterator]();
 
@@ -668,9 +663,9 @@ describe('OpenAIProvider', () => {
           type: 'response.error',
           error: {
             code: 'network_error',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       });
     } finally {
       await server.close();
@@ -680,7 +675,7 @@ describe('OpenAIProvider', () => {
   it('emits a retryable network error when the event stream stalls', async () => {
     const server = await createMockSseServer({
       chunks: [],
-      end: false
+      end: false,
     });
 
     try {
@@ -689,17 +684,17 @@ describe('OpenAIProvider', () => {
           baseUrl: `${server.url}/v1`,
           request: {
             timeoutMs: 20,
-            headers: {}
-          }
-        })
+            headers: {},
+          },
+        }),
       });
 
       const events = await collectProviderEvents(
         provider.stream({
           model: 'gpt-4.1',
           messages: [{ role: 'user', content: 'Hello' }],
-          thinking: { enabled: false }
-        })
+          thinking: { enabled: false },
+        }),
       );
 
       expect(events).toMatchObject([
@@ -708,9 +703,9 @@ describe('OpenAIProvider', () => {
           type: 'response.error',
           error: {
             code: 'network_error',
-            retryable: true
-          }
-        }
+            retryable: true,
+          },
+        },
       ]);
     } finally {
       await server.close();
@@ -721,7 +716,7 @@ describe('OpenAIProvider', () => {
 describe('createProvider', () => {
   it('creates an OpenAI provider for openai protocol config', () => {
     const provider = createProvider({
-      config: createOpenAIConfig()
+      config: createOpenAIConfig(),
     });
 
     expect(provider).toBeInstanceOf(OpenAIProvider);
@@ -737,16 +732,16 @@ function createOpenAIConfig(overrides: Partial<AgentConfig> = {}): AgentConfig {
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test-openai-secret',
     thinking: {
-      enabled: false
+      enabled: false,
     },
     request: {
       timeoutMs: 1000,
-      headers: {}
+      headers: {},
     },
     ui: {
-      showThinking: false
+      showThinking: false,
     },
-    ...overrides
+    ...overrides,
   };
 }
 

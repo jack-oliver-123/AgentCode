@@ -39,7 +39,9 @@ export function TranscriptPane({ messages, draft, showThinking }: TranscriptPane
           <Text color="gray">Ask a question about your project or describe what you want to explore.</Text>
         </Box>
       ) : null}
-      {hiddenMessageCount > 0 ? <Text color="gray">… {hiddenMessageCount} earlier messages hidden; latest context is shown below</Text> : null}
+      {hiddenMessageCount > 0 ? (
+        <Text color="gray">… {hiddenMessageCount} earlier messages hidden; latest context is shown below</Text>
+      ) : null}
       {visibleMessages.map((message) => (
         <TranscriptMessage key={message.id} message={message} />
       ))}
@@ -60,7 +62,9 @@ function TranscriptMessage({ message }: TranscriptMessageProps): ReactElement {
           <Text color="blue">▌</Text>
         </Box>
         <Box flexDirection="column" flexShrink={1}>
-          <Text color="cyan" wrap="wrap">{text}</Text>
+          <Text color="cyan" wrap="wrap">
+            {text}
+          </Text>
         </Box>
       </Box>
     );
@@ -85,7 +89,9 @@ function DraftMessage({ draft, showThinking }: DraftMessageProps): ReactElement 
 
   return (
     <Box flexDirection="column" marginBottom={1} paddingLeft={2}>
-      <Text color="blue">{frame} {statusText}</Text>
+      <Text color="blue">
+        {frame} {statusText}
+      </Text>
       {draft.activity.type === 'tool' ? null : <Text wrap="wrap">{visibleText}</Text>}
       {showThinking && draft.thinkingText.length > 0 ? (
         <Text color="gray" wrap="wrap">

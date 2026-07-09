@@ -2,11 +2,17 @@ import { spawn } from 'node:child_process';
 import type { ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
 
-import { runCommandInputSchema } from '../schemas.js';
-import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
 import { redactToolValue } from '../redaction.js';
-import { invalidArguments, isRecord } from './validation.js';
+import { runCommandInputSchema } from '../schemas.js';
+import type {
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionError,
+  ToolExecutionResult,
+  ToolValidationResult,
+} from '../types.js';
 import { isPositiveInteger, truncateUtf8 } from './file-discovery.js';
+import { invalidArguments, isRecord } from './validation.js';
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 10_000;
 const MAX_COMMAND_TIMEOUT_MS = 30_000;
@@ -46,7 +52,7 @@ export function createRunCommandTool(): ToolDefinition<RunCommandInput, RunComma
     inputSchema: runCommandInputSchema,
     risk: 'execute',
     validate: validateRunCommandInput,
-    execute: executeRunCommand
+    execute: executeRunCommand,
   };
 }
 
@@ -71,12 +77,15 @@ function validateRunCommandInput(input: unknown): ToolValidationResult<RunComman
     ok: true,
     value: {
       command: input.command,
-      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {})
-    }
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    },
   };
 }
 
-async function executeRunCommand(input: RunCommandInput, context: ToolExecutionContext): Promise<ToolExecutionResult<RunCommandOutput>> {
+async function executeRunCommand(
+  input: RunCommandInput,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult<RunCommandOutput>> {
   return new Promise<ToolExecutionResult<RunCommandOutput>>((resolve) => {
     const capture = new OutputCapture(getCaptureByteLimit(context));
     const timeoutMs = getEffectiveTimeoutMs(input.timeoutMs, context.timeoutMs);
@@ -92,7 +101,7 @@ async function executeRunCommand(input: RunCommandInput, context: ToolExecutionC
       env: createSanitizedEnvironment(),
       detached: process.platform !== 'win32',
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     const settle = (result: ToolExecutionResult<RunCommandOutput>): void => {
@@ -171,7 +180,7 @@ class OutputCapture {
     return {
       stdout: stdout.content,
       stderr: stderr.content,
-      truncated: this.truncated || stdout.truncated || stderr.truncated
+      truncated: this.truncated || stdout.truncated || stderr.truncated,
     };
   }
 
@@ -200,25 +209,29 @@ function redactAndTruncate(content: string, context: ToolExecutionContext): { co
 
   return {
     content: truncatedContent.content,
-    truncated: truncatedContent.bytes < Buffer.byteLength(safeContent, 'utf8')
+    truncated: truncatedContent.bytes < Buffer.byteLength(safeContent, 'utf8'),
   };
 }
 
-
 function getCaptureByteLimit(context: ToolExecutionContext): number {
-  const longestSecretBytes = context.secrets.reduce((maxBytes, secret) => Math.max(maxBytes, Buffer.byteLength(secret, 'utf8')), 0);
+  const longestSecretBytes = context.secrets.reduce(
+    (maxBytes, secret) => Math.max(maxBytes, Buffer.byteLength(secret, 'utf8')),
+    0,
+  );
   return Math.max(0, context.maxOutputBytes + longestSecretBytes + OUTPUT_OVERSCAN_BYTES);
 }
 
 function createSanitizedEnvironment(): NodeJS.ProcessEnv {
   const allowedNames = ['PATH', 'Path', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'SystemDrive'];
-  return Object.fromEntries(allowedNames.flatMap((name) => (process.env[name] === undefined ? [] : [[name, process.env[name]]])));
+  return Object.fromEntries(
+    allowedNames.flatMap((name) => (process.env[name] === undefined ? [] : [[name, process.env[name]]])),
+  );
 }
 
 function createBashShellCommand(command: string): BashShellCommand {
   return {
     executable: process.env.AGENTCODE_BASH_PATH ?? 'bash',
-    args: ['--noprofile', '--norc', '-c', command]
+    args: ['--noprofile', '--norc', '-c', command],
   };
 }
 
@@ -255,7 +268,14 @@ function containsBackgroundOperator(command: string): boolean {
 
     const previousChar = command[index - 1];
     const nextChar = command[index + 1];
-    if (previousChar === '&' || nextChar === '&' || previousChar === '>' || nextChar === '>' || previousChar === '|' || previousChar === ';') {
+    if (
+      previousChar === '&' ||
+      nextChar === '&' ||
+      previousChar === '>' ||
+      nextChar === '>' ||
+      previousChar === '|' ||
+      previousChar === ';'
+    ) {
       continue;
     }
 
@@ -270,7 +290,9 @@ function getEffectiveTimeoutMs(inputTimeoutMs: number | undefined, contextTimeou
   return Math.min(inputTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, guardedContextTimeoutMs, MAX_COMMAND_TIMEOUT_MS);
 }
 
-function terminateCommand(child: ChildProcessByStdio<null, Readable, Readable>): ReturnType<typeof setTimeout> | undefined {
+function terminateCommand(
+  child: ChildProcessByStdio<null, Readable, Readable>,
+): ReturnType<typeof setTimeout> | undefined {
   if (child.pid === undefined) {
     return undefined;
   }
@@ -278,7 +300,7 @@ function terminateCommand(child: ChildProcessByStdio<null, Readable, Readable>):
   if (process.platform === 'win32') {
     const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
       windowsHide: true,
-      stdio: 'ignore'
+      stdio: 'ignore',
     });
     killer.on('error', () => child.kill());
     return undefined;
@@ -305,7 +327,11 @@ function forceKillCommand(child: ChildProcessByStdio<null, Readable, Readable>):
   }
 }
 
-function createRunCommandSuccess(command: string, exitCode: number | null, output: CommandOutput): ToolExecutionResult<RunCommandOutput> {
+function createRunCommandSuccess(
+  command: string,
+  exitCode: number | null,
+  output: CommandOutput,
+): ToolExecutionResult<RunCommandOutput> {
   return {
     ok: true,
     toolName: 'run_command',
@@ -315,13 +341,13 @@ function createRunCommandSuccess(command: string, exitCode: number | null, outpu
       stderr: output.stderr,
       exitCode,
       timedOut: false,
-      truncated: output.truncated
+      truncated: output.truncated,
     },
     meta: {
       durationMs: 0,
       timedOut: false,
-      truncated: output.truncated
-    }
+      truncated: output.truncated,
+    },
   };
 }
 
@@ -329,7 +355,7 @@ function createRunCommandError(
   command: string,
   error: ToolExecutionError,
   output: CommandOutput,
-  timedOut = false
+  timedOut = false,
 ): ToolExecutionResult<RunCommandOutput> {
   return {
     ok: false,
@@ -338,8 +364,8 @@ function createRunCommandError(
     meta: {
       durationMs: 0,
       timedOut,
-      truncated: output.truncated
-    }
+      truncated: output.truncated,
+    },
   };
 }
 
@@ -350,12 +376,16 @@ function createSpawnError(error: Error, executable: string): ToolExecutionError 
     retryable: true,
     details: {
       phase: 'spawn',
-      executable
-    }
+      executable,
+    },
   };
 }
 
-function createExitError(exitCode: number | null, signal: NodeJS.Signals | null, output: CommandOutput): ToolExecutionError {
+function createExitError(
+  exitCode: number | null,
+  signal: NodeJS.Signals | null,
+  output: CommandOutput,
+): ToolExecutionError {
   return {
     code: 'command_failed',
     message: `Command exited with ${exitCode === null ? `signal ${signal ?? 'unknown'}` : `exit code ${exitCode}`}.`,
@@ -365,8 +395,8 @@ function createExitError(exitCode: number | null, signal: NodeJS.Signals | null,
       signal,
       stdout: output.stdout,
       stderr: output.stderr,
-      truncated: output.truncated
-    }
+      truncated: output.truncated,
+    },
   };
 }
 
@@ -378,8 +408,7 @@ function createTimeoutError(timeoutMs: number, output: CommandOutput): ToolExecu
     details: {
       stdout: output.stdout,
       stderr: output.stderr,
-      truncated: output.truncated
-    }
+      truncated: output.truncated,
+    },
   };
 }
-

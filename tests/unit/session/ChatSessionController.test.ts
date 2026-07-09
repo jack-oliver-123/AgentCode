@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentConfig } from '../../../src/config/schema.js';
 import type { ChatModelProvider, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
-import { ChatSessionController, type ChatSessionControllerOptions } from '../../../src/session/ChatSessionController.js';
+import {
+  ChatSessionController,
+  type ChatSessionControllerOptions,
+} from '../../../src/session/ChatSessionController.js';
 import type { ChatSessionState } from '../../../src/session/types.js';
 import type { ToolDefinition, ToolExecutionContext, ToolRegistry } from '../../../src/tools/types.js';
 import { FakeProvider } from '../../helpers/FakeProvider.js';
@@ -13,7 +16,7 @@ describe('ChatSessionController', () => {
       { type: 'response.start' },
       { type: 'content.delta', delta: 'Hel' },
       { type: 'content.delta', delta: 'lo' },
-      { type: 'response.complete', finishReason: 'stop' }
+      { type: 'response.complete', finishReason: 'stop' },
     ]);
     const controller = createController(provider);
 
@@ -23,7 +26,7 @@ describe('ChatSessionController', () => {
     expect(states[0]).toMatchObject({
       status: 'streaming',
       messages: [{ role: 'user' }],
-      draft: { visibleText: '', thinkingText: '' }
+      draft: { visibleText: '', thinkingText: '' },
     });
 
     // 中间有 iteration.start 触发的重置，然后有 text deltas
@@ -41,14 +44,14 @@ describe('ChatSessionController', () => {
           parts: [{ type: 'text', text: 'Hello' }],
           meta: {
             model: 'test-model',
-            provider: 'openai'
-          }
-        }
-      ]
+            provider: 'openai',
+          },
+        },
+      ],
     });
     expect(finalState?.draft).toBeUndefined();
     expect(provider.requests[0]).toMatchObject({
-      messages: [{ role: 'user', content: 'Hi' }]
+      messages: [{ role: 'user', content: 'Hi' }],
     });
   });
 
@@ -56,12 +59,12 @@ describe('ChatSessionController', () => {
     const provider = new FakeProvider([
       [
         { type: 'content.delta', delta: 'First answer' },
-        { type: 'response.complete', finishReason: 'end_turn' }
+        { type: 'response.complete', finishReason: 'end_turn' },
       ],
       [
         { type: 'content.delta', delta: 'Second answer' },
-        { type: 'response.complete', finishReason: 'stop' }
-      ]
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider);
 
@@ -71,7 +74,7 @@ describe('ChatSessionController', () => {
     expect(provider.requests[1]?.messages).toEqual([
       { role: 'user', content: 'First question' },
       { role: 'assistant', content: 'First answer' },
-      { role: 'user', content: 'Second question' }
+      { role: 'user', content: 'Second question' },
     ]);
   });
 
@@ -81,16 +84,16 @@ describe('ChatSessionController', () => {
         { type: 'thinking.delta', delta: 'hidden ' },
         { type: 'thinking.delta', delta: 'reasoning' },
         { type: 'content.delta', delta: 'visible answer' },
-        { type: 'response.complete', finishReason: 'end_turn' }
+        { type: 'response.complete', finishReason: 'end_turn' },
       ],
-      { protocol: 'anthropic', supportsExtendedThinking: true }
+      { protocol: 'anthropic', supportsExtendedThinking: true },
     );
     const controller = createController(provider, {
       protocol: 'anthropic',
       thinking: {
         enabled: true,
-        budgetTokens: 1024
-      }
+        budgetTokens: 1024,
+      },
     });
 
     const states = await collectStates(controller.submitUserText('Think'));
@@ -108,7 +111,7 @@ describe('ChatSessionController', () => {
   it('omits tool choice when tool execution is not enabled', async () => {
     const provider = new FakeProvider([
       { type: 'content.delta', delta: 'Plain answer' },
-      { type: 'response.complete', finishReason: 'stop' }
+      { type: 'response.complete', finishReason: 'stop' },
     ]);
     const controller = createController(provider);
 
@@ -126,15 +129,15 @@ describe('ChatSessionController', () => {
           call: {
             id: 'call-read-file',
             name: 'test_tool',
-            argumentsText: '{"value":"hello"}'
-          }
+            argumentsText: '{"value":"hello"}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
       [
         { type: 'content.delta', delta: 'Tool result received' },
-        { type: 'response.complete', finishReason: 'stop' }
-      ]
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider, {}, { toolRegistry: createTestToolRegistry() });
 
@@ -142,7 +145,9 @@ describe('ChatSessionController', () => {
     const finalState = states.at(-1);
 
     // 验证有 tool activity 状态
-    expect(states.some((state) => state.draft?.activity.type === 'tool' && state.draft.activity.toolName === 'test_tool')).toBe(true);
+    expect(
+      states.some((state) => state.draft?.activity.type === 'tool' && state.draft.activity.toolName === 'test_tool'),
+    ).toBe(true);
 
     expect(finalState?.status).toBe('idle');
     expect(finalState?.messages[0]).toMatchObject({ role: 'user', parts: [{ type: 'text', text: 'Use a tool' }] });
@@ -155,7 +160,7 @@ describe('ChatSessionController', () => {
     expect(provider.requests).toHaveLength(2);
     expect(provider.requests[0]).toMatchObject({
       tools: [{ name: 'test_tool' }],
-      toolChoice: 'auto'
+      toolChoice: 'auto',
     });
     // 第二次请求包含工具调用和结果
     expect(provider.requests[1]?.messages.slice(-2)).toMatchObject([
@@ -165,16 +170,16 @@ describe('ChatSessionController', () => {
           {
             id: 'call-read-file',
             name: 'test_tool',
-            argumentsText: '{"value":"hello"}'
-          }
-        ]
+            argumentsText: '{"value":"hello"}',
+          },
+        ],
       },
       {
         role: 'tool',
         toolCallId: 'call-read-file',
         toolName: 'test_tool',
-        isError: false
-      }
+        isError: false,
+      },
     ]);
     // 验证 secret 被 redacted
     expect(JSON.stringify(provider.requests[1])).not.toContain('sk-test-session-secret');
@@ -189,12 +194,15 @@ describe('ChatSessionController', () => {
           call: {
             id: 'call-with-prefix',
             name: 'test_tool',
-            argumentsText: '{"value":"hello"}'
-          }
+            argumentsText: '{"value":"hello"}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
-      [{ type: 'content.delta', delta: 'Done' }, { type: 'response.complete', finishReason: 'stop' }]
+      [
+        { type: 'content.delta', delta: 'Done' },
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider, {}, { toolRegistry: createTestToolRegistry() });
 
@@ -203,7 +211,7 @@ describe('ChatSessionController', () => {
     expect(provider.requests[1]?.messages.at(-2)).toMatchObject({
       role: 'assistant',
       content: 'I will inspect the file first.',
-      toolCalls: [{ id: 'call-with-prefix' }]
+      toolCalls: [{ id: 'call-with-prefix' }],
     });
   });
 
@@ -215,18 +223,23 @@ describe('ChatSessionController', () => {
           call: {
             id: 'call-unknown',
             name: 'unknown {"argumentsText":"sk-test-session-secret"}',
-            argumentsText: '{}'
-          }
+            argumentsText: '{}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
-      [{ type: 'content.delta', delta: 'Handled unknown tool' }, { type: 'response.complete', finishReason: 'stop' }]
+      [
+        { type: 'content.delta', delta: 'Handled unknown tool' },
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider, {}, { toolRegistry: createTestToolRegistry() });
 
     const states = await collectStates(controller.submitUserText('Use an unknown tool'));
 
-    expect(states.some((state) => state.draft?.activity.type === 'tool' && state.draft.activity.toolName === 'tool')).toBe(true);
+    expect(
+      states.some((state) => state.draft?.activity.type === 'tool' && state.draft.activity.toolName === 'tool'),
+    ).toBe(true);
     expect(JSON.stringify(states)).not.toContain('sk-test-session-secret');
   });
 
@@ -239,20 +252,24 @@ describe('ChatSessionController', () => {
           call: {
             id: 'call-thinking-tool',
             name: 'test_tool',
-            argumentsText: '{"value":"hello"}'
-          }
+            argumentsText: '{"value":"hello"}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
-      [{ type: 'thinking.delta', delta: 'second pass thought' }, { type: 'content.delta', delta: 'Final' }, { type: 'response.complete', finishReason: 'stop' }]
+      [
+        { type: 'thinking.delta', delta: 'second pass thought' },
+        { type: 'content.delta', delta: 'Final' },
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(
       provider,
       {
         protocol: 'anthropic',
-        thinking: { enabled: true, budgetTokens: 1024 }
+        thinking: { enabled: true, budgetTokens: 1024 },
       },
-      { toolRegistry: createTestToolRegistry() }
+      { toolRegistry: createTestToolRegistry() },
     );
 
     const states = await collectStates(controller.submitUserText('Think and use a tool'));
@@ -271,12 +288,15 @@ describe('ChatSessionController', () => {
           call: {
             id: 'call-failing-tool',
             name: 'test_tool',
-            argumentsText: '{"value":"fail"}'
-          }
+            argumentsText: '{"value":"fail"}',
+          },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
-      [{ type: 'content.delta', delta: 'I saw the tool failure' }, { type: 'response.complete', finishReason: 'stop' }]
+      [
+        { type: 'content.delta', delta: 'I saw the tool failure' },
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider, {}, { toolRegistry: createTestToolRegistry() });
 
@@ -285,7 +305,7 @@ describe('ChatSessionController', () => {
     expect(provider.requests[1]?.messages.at(-1)).toMatchObject({
       role: 'tool',
       isError: true,
-      content: expect.stringContaining('tool failed')
+      content: expect.stringContaining('tool failed'),
     });
     const lastMsg = controller.getState().messages.at(-1);
     const textPart = lastMsg?.parts.find((p) => p.type === 'text');
@@ -298,21 +318,21 @@ describe('ChatSessionController', () => {
       [
         {
           type: 'tool.call',
-          call: { id: 'call-first', name: 'test_tool', argumentsText: '{"value":"hello"}' }
+          call: { id: 'call-first', name: 'test_tool', argumentsText: '{"value":"hello"}' },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
       [
         {
           type: 'tool.call',
-          call: { id: 'call-second', name: 'test_tool', argumentsText: '{"value":"world"}' }
+          call: { id: 'call-second', name: 'test_tool', argumentsText: '{"value":"world"}' },
         },
-        { type: 'response.complete', finishReason: 'tool_calls' }
+        { type: 'response.complete', finishReason: 'tool_calls' },
       ],
       [
         { type: 'content.delta', delta: 'Both tools executed' },
-        { type: 'response.complete', finishReason: 'stop' }
-      ]
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider, {}, { toolRegistry: registry });
 
@@ -337,9 +357,9 @@ describe('ChatSessionController', () => {
         error: {
           code: 'provider_error',
           message: 'provider failed',
-          retryable: false
-        }
-      }
+          retryable: false,
+        },
+      },
     ]);
     const controller = createController(provider);
 
@@ -351,8 +371,8 @@ describe('ChatSessionController', () => {
       messages: [{ role: 'user', parts: [{ type: 'text', text: 'Question' }] }],
       lastError: {
         code: 'provider_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
     expect(finalState?.draft).toBeUndefined();
     expect(JSON.stringify(finalState?.messages)).not.toContain('partial');
@@ -367,11 +387,14 @@ describe('ChatSessionController', () => {
           error: {
             code: 'provider_error',
             message: 'failed',
-            retryable: false
-          }
-        }
+            retryable: false,
+          },
+        },
       ],
-      [{ type: 'content.delta', delta: 'second answer' }, { type: 'response.complete', finishReason: 'stop' }]
+      [
+        { type: 'content.delta', delta: 'second answer' },
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
     ]);
     const controller = createController(provider);
 
@@ -380,25 +403,18 @@ describe('ChatSessionController', () => {
 
     expect(provider.requests[1]?.messages).toEqual([
       { role: 'user', content: 'Failed question' },
-      { role: 'user', content: 'Fresh question' }
+      { role: 'user', content: 'Fresh question' },
     ]);
-    expect(controller.getState().messages.map((message) => {
-      const textPart = message.parts.find((p) => p.type === 'text');
-      return textPart?.type === 'text' ? textPart.text : undefined;
-    })).toEqual([
-      'Failed question',
-      'Fresh question',
-      'second answer'
-    ]);
+    expect(
+      controller.getState().messages.map((message) => {
+        const textPart = message.parts.find((p) => p.type === 'text');
+        return textPart?.type === 'text' ? textPart.text : undefined;
+      }),
+    ).toEqual(['Failed question', 'Fresh question', 'second answer']);
   });
 
   it('prevents concurrent submissions while streaming', async () => {
-    const provider = new FakeProvider(
-      [
-        [{ type: 'response.complete' }]
-      ],
-      { holdBeforeEvents: true }
-    );
+    const provider = new FakeProvider([[{ type: 'response.complete' }]], { holdBeforeEvents: true });
     const controller = createController(provider);
     const firstTurn = controller.submitUserText('First')[Symbol.asyncIterator]();
 
@@ -412,8 +428,8 @@ describe('ChatSessionController', () => {
       messages: [{ role: 'user', parts: [{ type: 'text', text: 'First' }] }],
       lastError: {
         code: 'provider_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
     expect(provider.requests).toHaveLength(0);
 
@@ -438,8 +454,8 @@ describe('ChatSessionController', () => {
       messages: [{ role: 'user' }],
       lastError: {
         code: 'unknown_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
     expect(finalState?.draft).toBeUndefined();
   });
@@ -489,11 +505,11 @@ function createTestToolRegistry(): TestToolRegistry {
       properties: {
         value: {
           type: 'string',
-          description: 'Value to echo.'
-        }
+          description: 'Value to echo.',
+        },
       },
       required: ['value'],
-      additionalProperties: false
+      additionalProperties: false,
     },
     validate(input: unknown) {
       if (typeof input === 'object' && input !== null && 'value' in input && typeof input.value === 'string') {
@@ -505,8 +521,8 @@ function createTestToolRegistry(): TestToolRegistry {
         error: {
           code: 'invalid_arguments',
           message: 'value is required',
-          retryable: true
-        }
+          retryable: true,
+        },
       };
     },
     async execute(input: { value: string }, context: ToolExecutionContext) {
@@ -519,12 +535,12 @@ function createTestToolRegistry(): TestToolRegistry {
           error: {
             code: 'tool_internal_error',
             message: 'tool failed',
-            retryable: false
+            retryable: false,
           },
           meta: {
             durationMs: 0,
-            timedOut: false
-          }
+            timedOut: false,
+          },
         };
       }
 
@@ -533,14 +549,14 @@ function createTestToolRegistry(): TestToolRegistry {
         toolName: 'test_tool',
         data: {
           value: input.value,
-          secret: context.secrets[0]
+          secret: context.secrets[0],
         },
         meta: {
           durationMs: 0,
-          timedOut: false
-        }
+          timedOut: false,
+        },
       };
-    }
+    },
   };
 
   return {
@@ -551,8 +567,8 @@ function createTestToolRegistry(): TestToolRegistry {
       {
         name: tool.name,
         description: tool.description,
-        inputSchema: tool.inputSchema
-      }
+        inputSchema: tool.inputSchema,
+      },
     ],
     filterByRisk: (allowedRisks) => {
       const allowed = new Set(allowedRisks);
@@ -561,8 +577,10 @@ function createTestToolRegistry(): TestToolRegistry {
           executions,
           list: () => [tool],
           get: (name: string) => (name === tool.name ? tool : undefined),
-          getProviderDeclarations: () => [{ name: tool.name, description: tool.description, inputSchema: tool.inputSchema }],
-          filterByRisk: () => createTestToolRegistry()
+          getProviderDeclarations: () => [
+            { name: tool.name, description: tool.description, inputSchema: tool.inputSchema },
+          ],
+          filterByRisk: () => createTestToolRegistry(),
         } as TestToolRegistry;
       }
       return {
@@ -570,16 +588,23 @@ function createTestToolRegistry(): TestToolRegistry {
         list: () => [],
         get: () => undefined,
         getProviderDeclarations: () => [],
-        filterByRisk: () => ({ executions: [], list: () => [], get: () => undefined, getProviderDeclarations: () => [], filterByRisk: () => ({} as any) } as any)
+        filterByRisk: () =>
+          ({
+            executions: [],
+            list: () => [],
+            get: () => undefined,
+            getProviderDeclarations: () => [],
+            filterByRisk: () => ({}) as any,
+          }) as any,
       } as any;
-    }
+    },
   };
 }
 
 function createController(
   provider: ChatModelProvider,
   configOverrides: Partial<AgentConfig> = {},
-  controllerOptions: Partial<Omit<ChatSessionControllerOptions, 'provider' | 'config' | 'createId' | 'now'>> = {}
+  controllerOptions: Partial<Omit<ChatSessionControllerOptions, 'provider' | 'config' | 'createId' | 'now'>> = {},
 ): ChatSessionController {
   let idCounter = 0;
   return new ChatSessionController({
@@ -589,7 +614,7 @@ function createController(
     now: () => 1234,
     cwd: process.cwd(),
     buildSystemPrompt: () => ({ system: '', reminder: '' }),
-    ...controllerOptions
+    ...controllerOptions,
   });
 }
 
@@ -600,16 +625,16 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
     baseUrl: 'https://example.com/v1',
     apiKey: 'sk-test-session-secret',
     thinking: {
-      enabled: false
+      enabled: false,
     },
     request: {
       timeoutMs: 1000,
-      headers: {}
+      headers: {},
     },
     ui: {
-      showThinking: false
+      showThinking: false,
     },
-    ...overrides
+    ...overrides,
   };
 }
 

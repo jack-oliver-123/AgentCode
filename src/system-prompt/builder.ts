@@ -1,5 +1,5 @@
-import type { SystemPromptBuildInput, SystemPromptBuildOutput, SystemPromptModule } from './types.js';
 import { defaultRegistry } from './registry.js';
+import type { SystemPromptBuildInput, SystemPromptBuildOutput, SystemPromptModule } from './types.js';
 
 /**
  * 构建系统提示（system + reminder）。
@@ -17,9 +17,9 @@ export function buildSystemPrompt(
   // system 构建
   const disabledSet = new Set((input.disabled ?? []).filter(Boolean));
   const enabledModules = modules
-    .filter(m => !disabledSet.has(m.id) && m.content.length > 0)
+    .filter((m) => !disabledSet.has(m.id) && m.content.length > 0)
     .sort((a, b) => a.order - b.order);
-  const system = enabledModules.map(m => m.content).join('\n\n');
+  const system = enabledModules.map((m) => m.content).join('\n\n');
 
   // reminder 构建
   const parts: string[] = [];
@@ -28,7 +28,8 @@ export function buildSystemPrompt(
   if (input.env) {
     let envLine = `OS: ${input.env.os} | Shell: ${input.env.shell} | CWD: ${input.env.cwd} | Date: ${input.env.date}`;
     if (input.env.gitBranch !== undefined) {
-      const dirtyFlag = input.env.gitDirty === true ? ' [dirty]' : input.env.gitDirty === undefined ? ' [status unknown]' : '';
+      const dirtyFlag =
+        input.env.gitDirty === true ? ' [dirty]' : input.env.gitDirty === undefined ? ' [status unknown]' : '';
       envLine += ` | Git: ${input.env.gitBranch}${dirtyFlag}`;
     }
     parts.push(envLine);

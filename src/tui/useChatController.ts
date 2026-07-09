@@ -57,7 +57,7 @@ export function useChatController(controller: ChatSessionController): UseChatCon
         }
       })();
     },
-    [controller]
+    [controller],
   );
 
   const toggleMode = useCallback(() => {
@@ -81,6 +81,6 @@ export function useChatController(controller: ChatSessionController): UseChatCon
   return {
     state,
     submitText,
-    toggleMode
+    toggleMode,
   };
 }
