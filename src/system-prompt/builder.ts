@@ -19,7 +19,12 @@ export function buildSystemPrompt(
 
   // 1. 环境上下文
   if (input.env) {
-    parts.push(`OS: ${input.env.os} | Shell: ${input.env.shell} | CWD: ${input.env.cwd} | Date: ${input.env.date}`);
+    let envLine = `OS: ${input.env.os} | Shell: ${input.env.shell} | CWD: ${input.env.cwd} | Date: ${input.env.date}`;
+    if (input.env.gitBranch !== undefined) {
+      const dirtyFlag = input.env.gitDirty === true ? ' [dirty]' : '';
+      envLine += ` | Git: ${input.env.gitBranch}${dirtyFlag}`;
+    }
+    parts.push(envLine);
   }
 
   // 2. 模式指令（full 模式跳过）
