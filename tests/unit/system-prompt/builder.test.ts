@@ -13,7 +13,7 @@ function baseInput(overrides: Partial<SystemPromptBuildInput> = {}): SystemPromp
 // ─── AC1: 固定模块按 order 升序拼装 + disabled ────────────────────────────
 
 describe('buildSystemPrompt - 模块拼装顺序与 disabled', () => {
-  it('AC1: 7 个有内容的固定模块按 order 升序拼装', () => {
+  it('AC1: 8 个有内容的固定模块按 order 升序拼装', () => {
     const result = buildSystemPrompt(baseInput());
     // defaultRegistry 中 custom-instructions 和 memory 的 content 为空，不参与拼装
     const enabledModules = defaultRegistry

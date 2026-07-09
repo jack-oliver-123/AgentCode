@@ -1,4 +1,4 @@
-// 估算 token 数：~400 tokens
+// 估算 token 数：~550 tokens
 
 /** 工具使用规范模块 */
 export const content = `工具使用规范：
@@ -10,6 +10,11 @@ export const content = `工具使用规范：
 - 搜索文件用 glob_files，不要用 find/ls 命令
 - 搜索代码内容用 search_code，不要用 grep 命令
 - 只有当专用工具无法满足需求时，才使用 run_command
+
+并行执行：
+- 无依赖关系的工具调用应并行发起
+- 有依赖关系的调用必须顺序等待结果后再继续
+- 例如：读取 3 个文件可以并行；读取文件后再编辑必须顺序
 
 编辑前必须先读：
 - 调用 edit_file 前，必须先用 read_file 读取目标文件
