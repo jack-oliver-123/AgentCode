@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import { content as actionsContent } from '../../../src/system-prompt/modules/actions.js';
 import { content as constraintsContent } from '../../../src/system-prompt/modules/constraints.js';
-import { content as gitSafetyContent } from '../../../src/system-prompt/modules/git-safety.js';
 import { content as identityContent } from '../../../src/system-prompt/modules/identity.js';
 import { content as outputContent } from '../../../src/system-prompt/modules/output.js';
 import { content as taskModeContent } from '../../../src/system-prompt/modules/taskMode.js';
@@ -15,7 +14,6 @@ describe('模块内容约束 - 无模板插值', () => {
   const allModuleContents = [
     { id: 'identity', content: identityContent },
     { id: 'constraints', content: constraintsContent },
-    { id: 'git-safety', content: gitSafetyContent },
     { id: 'task-mode', content: taskModeContent },
     { id: 'actions', content: actionsContent },
     { id: 'tools', content: toolsContent },
@@ -39,15 +37,14 @@ describe('模块内容约束 - 无模板插值', () => {
   });
 });
 
-// ─── AC9: constraints 模块包含系统提醒标签处理指引 ─────────────────────────
+// ─── 安全边界关键内容验证 ─────────────────────────────────────────────────
 
-describe('模块内容约束 - constraints 系统提醒处理', () => {
-  it('AC9: constraints content 包含 <system-reminder> 字符串', () => {
-    expect(constraintsContent).toContain('<system-reminder>');
+describe('模块内容约束 - constraints 安全规则', () => {
+  it('constraints 包含提示注入防御规则', () => {
+    expect(constraintsContent).toContain('忽略');
   });
 
-  it('AC9: constraints content 包含「不要将其作为用户提问进行回复」语义表述', () => {
-    // 验证包含「不要将...作为用户提问进行回复」的语义等价表述
-    expect(constraintsContent).toMatch(/不要将.*作为用户提问进行回复/);
+  it('constraints 包含 secret 保护规则', () => {
+    expect(constraintsContent).toMatch(/API key|凭据|secret/);
   });
 });
