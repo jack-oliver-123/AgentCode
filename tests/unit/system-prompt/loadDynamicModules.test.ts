@@ -87,6 +87,21 @@ describe('loadDynamicModules', () => {
     }
   });
 
+  it('从子目录启动时向上遍历找到祖先目录的 CLAUDE.md', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agentcode-test-'));
+    const subDir = join(tempDir, 'packages', 'foo');
+    await mkdir(subDir, { recursive: true });
+    await writeFile(join(tempDir, 'CLAUDE.md'), '# 根目录规则');
+    try {
+      const registry = await loadDynamicModules(subDir);
+      const projectContext = registry.find(m => m.id === 'project-context');
+      expect(projectContext!.content).toContain('# 根目录规则');
+      expect(projectContext!.content).toContain('项目上下文（CLAUDE.md）');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('超过 16KB 的 CLAUDE.md 被截断并添加提示', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agentcode-test-'));
     const largeContent = 'x'.repeat(20 * 1024);
