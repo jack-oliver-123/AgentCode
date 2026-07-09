@@ -6,7 +6,6 @@ import { content as gitSafetyContent } from '../../../src/system-prompt/modules/
 import { content as identityContent } from '../../../src/system-prompt/modules/identity.js';
 import { content as outputContent } from '../../../src/system-prompt/modules/output.js';
 import { content as taskModeContent } from '../../../src/system-prompt/modules/taskMode.js';
-import { content as toneContent } from '../../../src/system-prompt/modules/tone.js';
 import { content as toolsContent } from '../../../src/system-prompt/modules/tools.js';
 import { defaultRegistry } from '../../../src/system-prompt/registry.js';
 
@@ -20,7 +19,6 @@ describe('模块内容约束 - 无模板插值', () => {
     { id: 'task-mode', content: taskModeContent },
     { id: 'actions', content: actionsContent },
     { id: 'tools', content: toolsContent },
-    { id: 'tone', content: toneContent },
     { id: 'output', content: outputContent },
   ];
 
