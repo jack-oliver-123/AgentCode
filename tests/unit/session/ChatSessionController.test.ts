@@ -337,7 +337,7 @@ describe('ChatSessionController', () => {
         error: {
           code: 'provider_error',
           message: 'provider failed',
-          retryable: true
+          retryable: false
         }
       }
     ]);
@@ -351,7 +351,7 @@ describe('ChatSessionController', () => {
       messages: [{ role: 'user', parts: [{ type: 'text', text: 'Question' }] }],
       lastError: {
         code: 'provider_error',
-        retryable: true
+        retryable: false
       }
     });
     expect(finalState?.draft).toBeUndefined();
@@ -367,7 +367,7 @@ describe('ChatSessionController', () => {
           error: {
             code: 'provider_error',
             message: 'failed',
-            retryable: true
+            retryable: false
           }
         }
       ],
