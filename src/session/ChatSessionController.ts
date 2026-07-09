@@ -150,14 +150,17 @@ export class ChatSessionController {
     const registry = this.toolRegistry;
 
     try {
-      // 每轮刷新 git 上下文
+      // 每轮刷新 git 上下文 + 日期
       const gitCtx = await getGitContext(this.cwd);
+      const freshDate = new Date().toISOString().slice(0, 10);
       if (gitCtx !== undefined) {
-        this.envContext = { ...this.envContext, gitBranch: gitCtx.branch, gitDirty: gitCtx.dirty };
+        // 先移除旧 git 字段，再重新赋值（避免 dirty 超时时残留旧值）
+        const { gitBranch: _ob, gitDirty: _od, ...base } = this.envContext;
+        this.envContext = { ...base, date: freshDate, gitBranch: gitCtx.branch, ...(gitCtx.dirty !== undefined ? { gitDirty: gitCtx.dirty } : {}) };
       } else {
         // 不在 git 仓库中，清除旧的 git 字段
         const { gitBranch: _b, gitDirty: _d, ...rest } = this.envContext;
-        this.envContext = rest;
+        this.envContext = { ...rest, date: freshDate };
       }
 
       // 构建当前轮 reminder

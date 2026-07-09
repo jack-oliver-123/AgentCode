@@ -37,7 +37,7 @@ export async function loadDynamicModules(cwd: string): Promise<SystemPromptModul
 
 /**
  * 安全读取文件内容，不存在或失败时返回空字符串。
- * 超过 MAX_FILE_SIZE_BYTES 时截断并附加提示。
+ * 超过 MAX_FILE_SIZE_BYTES 时截断到 UTF-8 安全边界并附加提示。
  */
 async function loadFileContent(path: string): Promise<string> {
   try {
@@ -46,10 +46,25 @@ async function loadFileContent(path: string): Promise<string> {
       return '';
     }
     if (buffer.length > MAX_FILE_SIZE_BYTES) {
-      return buffer.subarray(0, MAX_FILE_SIZE_BYTES).toString('utf8') + '\n...(truncated)';
+      const truncated = truncateAtUtf8Boundary(buffer, MAX_FILE_SIZE_BYTES);
+      return truncated + '\n...(truncated)';
     }
     return buffer.toString('utf8').trim();
   } catch {
     return '';
   }
+}
+
+/**
+ * 在字节限制处回退到合法 UTF-8 字符边界，避免劈裂多字节字符。
+ * UTF-8 continuation bytes 以 0b10xxxxxx 开头（0x80-0xBF），
+ * 向前回退直到找到非 continuation byte（即字符起始字节）。
+ */
+function truncateAtUtf8Boundary(buffer: Buffer, maxBytes: number): string {
+  let end = maxBytes;
+  // 回退最多 4 字节（UTF-8 最长编码单位）
+  while (end > 0 && (buffer[end]! & 0xC0) === 0x80) {
+    end--;
+  }
+  return buffer.subarray(0, end).toString('utf8');
 }
