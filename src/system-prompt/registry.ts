@@ -17,6 +17,7 @@ export const defaultRegistry: SystemPromptModule[] = [
   { id: 'tools', order: 400, content: toolsContent },
   { id: 'tone', order: 500, content: toneContent },
   { id: 'output', order: 600, content: outputContent },
+  { id: 'project-context', order: 650, content: '' },
   { id: 'custom-instructions', order: 700, content: '' },
   { id: 'memory', order: 800, content: '' },
 ];
