@@ -27,7 +27,7 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
     ...(fetch !== undefined ? { fetch } : {})
   });
 
-  // 加载动态模块（custom-instructions + memory）
+  // 加载动态模块（project-context + custom-instructions + memory）
   const systemPromptRegistry = await loadDynamicModules(runtimeCwd);
 
   const controller = new ChatSessionController({
