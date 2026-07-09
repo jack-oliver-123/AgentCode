@@ -319,6 +319,7 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
     ui: {
       showThinking: false,
     },
+    permissionMode: 'normal',
     ...overrides,
   };
 }

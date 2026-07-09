@@ -614,6 +614,7 @@ function createController(
     now: () => 1234,
     cwd: process.cwd(),
     buildSystemPrompt: () => ({ system: '', reminder: '' }),
+    permissionMode: 'yolo',
     ...controllerOptions,
   });
 }
@@ -634,6 +635,7 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
     ui: {
       showThinking: false,
     },
+    permissionMode: 'normal',
     ...overrides,
   };
 }

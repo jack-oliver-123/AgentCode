@@ -17,6 +17,9 @@ import { buildSystemPrompt } from '../system-prompt/index.js';
 import type { EnvContext, SystemPromptBuilder, SystemPromptModule } from '../system-prompt/types.js';
 import { summarizeToolResult } from '../tools/summarize.js';
 import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
+import type { AskPermissionFn, PermissionChecker, PermissionMode } from '../tools/permissions/types.js';
+import { createPermissionChecker } from '../tools/permissions/checker.js';
+import { loadPermissionRules } from '../tools/permissions/config.js';
 import type {
   ChatMessage,
   ChatSessionDraft,
@@ -41,6 +44,12 @@ export interface ChatSessionControllerOptions {
   buildSystemPrompt?: SystemPromptBuilder;
   /** 自定义系统提示模块注册表（含动态加载内容） */
   systemPromptRegistry?: SystemPromptModule[];
+  /** 权限模式覆盖（默认从 config 读取，fallback 'normal'） */
+  permissionMode?: PermissionMode;
+  /** 权限弹窗回调（TUI 层注入） */
+  askPermission?: AskPermissionFn;
+  /** 用户 home 目录（用于加载全局权限配置） */
+  homeDir?: string;
 }
 
 export interface SubmitUserTextOptions {
@@ -84,6 +93,8 @@ export class ChatSessionController {
   private readonly buildSystemPromptFn: SystemPromptBuilder;
   /** 系统提示模块注册表（可注入） */
   private readonly systemPromptRegistry: SystemPromptModule[] | undefined;
+  /** 权限检查器（可选） */
+  private readonly permissionChecker: PermissionChecker | undefined;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -118,6 +129,17 @@ export class ChatSessionController {
       this.systemPromptRegistry,
     );
     this.systemPrompt = system;
+
+    // 权限系统初始化
+    const permMode: PermissionMode = options.permissionMode ?? this.config.permissionMode;
+    const homeDir = options.homeDir ?? (process.env.HOME ?? process.env.USERPROFILE ?? '');
+    const ruleConfig = loadPermissionRules(this.cwd, homeDir);
+    this.permissionChecker = createPermissionChecker({
+      mode: permMode,
+      ruleConfig,
+      cwd: this.cwd,
+      ...(options.askPermission !== undefined ? { askFn: options.askPermission } : {}),
+    });
   }
 
   getState(): ChatSessionState {
@@ -214,6 +236,7 @@ export class ChatSessionController {
           secrets: [this.config.apiKey, ...this.toolSecrets],
           maxOutputBytes: this.maxToolOutputBytes,
           ...(signal !== undefined ? { signal } : {}),
+          ...(this.permissionChecker !== undefined ? { permissionChecker: this.permissionChecker } : {}),
         }),
         config: this.agentLoopConfig,
         model: this.config.model,

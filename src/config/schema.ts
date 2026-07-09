@@ -24,6 +24,7 @@ export interface RawConfig {
         show_thinking?: boolean | undefined;
       }
     | undefined;
+  permission_mode?: string | undefined;
 }
 
 export interface AgentConfig {
@@ -42,6 +43,7 @@ export interface AgentConfig {
   ui: {
     showThinking: boolean;
   };
+  permissionMode: 'plan' | 'strict' | 'normal' | 'auto' | 'yolo';
 }
 
 export interface ResolvedConfig {
@@ -113,6 +115,7 @@ export const rawConfigSchema = z
         show_thinking: z.boolean().optional(),
       })
       .optional(),
+    permission_mode: z.enum(['plan', 'strict', 'normal', 'auto', 'yolo']).optional(),
   })
   .strict();
 
@@ -142,5 +145,6 @@ export function normalizeConfig(rawConfig: RawConfig): AgentConfig {
     ui: {
       showThinking: rawConfig.ui?.show_thinking ?? false,
     },
+    permissionMode: (rawConfig.permission_mode as AgentConfig['permissionMode'] | undefined) ?? 'normal',
   };
 }
