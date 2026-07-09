@@ -39,7 +39,7 @@ export async function resolveWorkspacePath(cwd: string, inputPath: string): Prom
   return {
     ok: true,
     absolutePath: resolve(workspaceRoot, relative(workspaceRoot, realPathResult.realCandidatePath)),
-    relativePath: relative(workspaceRoot, realPathResult.realCandidatePath)
+    relativePath: relative(workspaceRoot, realPathResult.realCandidatePath),
   };
 }
 
@@ -58,7 +58,7 @@ async function resolveRealCandidatePath(candidatePath: string): Promise<RealCand
   if (nearestExistingPath === undefined) {
     return {
       ok: false,
-      error: createWorkspacePathError('file_not_found', 'Tool path parent directory does not exist.', true)
+      error: createWorkspacePathError('file_not_found', 'Tool path parent directory does not exist.', true),
     };
   }
 
@@ -66,13 +66,17 @@ async function resolveRealCandidatePath(candidatePath: string): Promise<RealCand
   if (realNearestPath === undefined) {
     return {
       ok: false,
-      error: createWorkspacePathError('path_outside_workspace', 'Tool path resolves through a broken symbolic link.', true)
+      error: createWorkspacePathError(
+        'path_outside_workspace',
+        'Tool path resolves through a broken symbolic link.',
+        true,
+      ),
     };
   }
 
   return {
     ok: true,
-    realCandidatePath: resolve(realNearestPath, relative(nearestExistingPath, candidatePath))
+    realCandidatePath: resolve(realNearestPath, relative(nearestExistingPath, candidatePath)),
   };
 }
 
@@ -123,13 +127,17 @@ function normalizeForComparison(path: string): string {
   return process.platform === 'win32' ? resolvedPath.toLowerCase() : resolvedPath;
 }
 
-function createWorkspacePathError(code: ToolExecutionError['code'], message: string, retryable: boolean): WorkspacePathResult {
+function createWorkspacePathError(
+  code: ToolExecutionError['code'],
+  message: string,
+  retryable: boolean,
+): WorkspacePathResult {
   return {
     ok: false,
     error: {
       code,
       message,
-      retryable
-    }
+      retryable,
+    },
   };
 }

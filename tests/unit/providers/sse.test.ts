@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { readSseStream, type SseEvent } from '../../../src/providers/shared/sse.js';
+import { type SseEvent, readSseStream } from '../../../src/providers/shared/sse.js';
 
 const encoder = new TextEncoder();
 
@@ -21,8 +21,8 @@ describe('readSseStream', () => {
         event: 'message',
         data: 'first\nsecond',
         id: 'abc',
-        retry: 1500
-      }
+        retry: 1500,
+      },
     ]);
   });
 
@@ -55,7 +55,7 @@ describe('readSseStream', () => {
     const stream = new ReadableStream<Uint8Array>({
       start(streamController) {
         controller = streamController;
-      }
+      },
     });
 
     const iterator = readSseStream(stream)[Symbol.asyncIterator]();
@@ -64,8 +64,8 @@ describe('readSseStream', () => {
     await expect(iterator.next()).resolves.toEqual({
       done: false,
       value: {
-        data: 'early'
-      }
+        data: 'early',
+      },
     });
 
     controller?.enqueue(encoder.encode('data: late\n\n'));
@@ -74,12 +74,12 @@ describe('readSseStream', () => {
     await expect(iterator.next()).resolves.toEqual({
       done: false,
       value: {
-        data: 'late'
-      }
+        data: 'late',
+      },
     });
     await expect(iterator.next()).resolves.toEqual({
       done: true,
-      value: undefined
+      value: undefined,
     });
   });
 
@@ -91,8 +91,8 @@ describe('readSseStream', () => {
     expect(events).toEqual([
       {
         event: 'error',
-        data: '{"message":"bad"}'
-      }
+        data: '{"message":"bad"}',
+      },
     ]);
   });
 
@@ -103,7 +103,7 @@ describe('readSseStream', () => {
 
     await expect(Promise.all([collectSseData(streamA), collectSseData(streamB)])).resolves.toEqual([
       ['你好'],
-      ['world']
+      ['world'],
     ]);
   });
 });
@@ -120,7 +120,7 @@ function streamFromByteChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> 
       }
 
       controller.close();
-    }
+    },
   });
 }
 

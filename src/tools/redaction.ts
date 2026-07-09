@@ -1,11 +1,10 @@
 import { redactText } from '../config/redact.js';
 import type { ToolExecutionResult } from './types.js';
 
-const SENSITIVE_FIELD_NAME_PATTERN = /^(?:api\s*key|api[_-]?key|x-api-key|authorization|token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|jwt)$/i;
-const QUOTED_SECRET_FIELD_PATTERN = new RegExp(
-  String.raw`(["'](?:api\s*key|api[_-]?key|x-api-key|authorization|token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|jwt)["']\s*:\s*["'])(?:\\.|[^"'\\])*(["'])`,
-  'gi'
-);
+const SENSITIVE_FIELD_NAME_PATTERN =
+  /^(?:api\s*key|api[_-]?key|x-api-key|authorization|token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|jwt)$/i;
+const QUOTED_SECRET_FIELD_PATTERN =
+  /(["'](?:api\s*key|api[_-]?key|x-api-key|authorization|token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|jwt)["']\s*:\s*["'])(?:\.|[^"'\])*(["'])/gi;
 const UNQUOTED_SECRET_FIELD_PATTERN =
   /((?:api\s*key|api[_-]?key|x-api-key|authorization|token|access[-_]?token|refresh[-_]?token|id[-_]?token|client[-_]?secret|jwt)\s*[:=]\s*)[^\s,;}]+/gi;
 const PUBLIC_SECRET_PATTERNS: Array<[RegExp, string]> = [
@@ -14,10 +13,13 @@ const PUBLIC_SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/(bearer\s+)[^\s,;]+/gi, '$1<redacted>'],
   [UNQUOTED_SECRET_FIELD_PATTERN, '$1<redacted>'],
   [/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '<redacted>'],
-  [/sk-[A-Za-z0-9._-]{8,}/g, 'sk-<redacted>']
+  [/sk-[A-Za-z0-9._-]{8,}/g, 'sk-<redacted>'],
 ];
 
-export function redactToolResult<T>(result: ToolExecutionResult<T>, secrets: readonly string[]): ToolExecutionResult<T> {
+export function redactToolResult<T>(
+  result: ToolExecutionResult<T>,
+  secrets: readonly string[],
+): ToolExecutionResult<T> {
   return redactToolValue(result, secrets) as ToolExecutionResult<T>;
 }
 
@@ -40,7 +42,10 @@ function redactValue(value: unknown, secrets: readonly string[], key?: string): 
 
   if (typeof value === 'object' && value !== null) {
     return Object.fromEntries(
-      Object.entries(value).map(([nestedKey, nestedValue]) => [redactObjectKey(nestedKey, secrets), redactValue(nestedValue, secrets, nestedKey)])
+      Object.entries(value).map(([nestedKey, nestedValue]) => [
+        redactObjectKey(nestedKey, secrets),
+        redactValue(nestedValue, secrets, nestedKey),
+      ]),
     );
   }
 
@@ -63,7 +68,7 @@ function redactToolText(text: string, secrets: readonly string[]): string {
   const textWithoutKnownSecrets = redactKnownSecrets(textWithRedactedJson, secrets);
   return PUBLIC_SECRET_PATTERNS.reduce(
     (currentText, [pattern, replacement]) => currentText.replace(pattern, replacement),
-    redactText(textWithoutKnownSecrets, [])
+    redactText(textWithoutKnownSecrets, []),
   );
 }
 

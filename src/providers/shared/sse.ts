@@ -20,7 +20,7 @@ export interface ReadSseStreamOptions {
 
 export async function* readSseStream(
   stream: ReadableStream<Uint8Array>,
-  options: ReadSseStreamOptions = {}
+  options: ReadSseStreamOptions = {},
 ): AsyncIterable<SseEvent> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -106,7 +106,7 @@ function takeCompleteSseLines(text: string): { lines: string[]; remainingText: s
 
   return {
     lines,
-    remainingText: text.slice(lineStart)
+    remainingText: text.slice(lineStart),
   };
 }
 
@@ -155,7 +155,7 @@ function dispatchSseEvent(pendingEvent: PendingSseEvent): SseEvent | undefined {
   }
 
   const event: SseEvent = {
-    data: pendingEvent.dataLines.join('\n')
+    data: pendingEvent.dataLines.join('\n'),
   };
 
   if (pendingEvent.event !== undefined) {
@@ -185,7 +185,7 @@ function resetPendingEvent(pendingEvent: PendingSseEvent): void {
 export async function readNextSseEvent(
   iterator: AsyncIterator<SseEvent>,
   timeoutMs: number,
-  onTimeout: () => void
+  onTimeout: () => void,
 ): Promise<IteratorResult<SseEvent>> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
 
@@ -197,7 +197,7 @@ export async function readNextSseEvent(
           onTimeout();
           reject(createNetworkError('Provider stream timed out while waiting for data.'));
         }, timeoutMs);
-      })
+      }),
     ]);
   } finally {
     if (timeout !== undefined) {

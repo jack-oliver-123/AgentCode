@@ -10,31 +10,31 @@ describe('fetchJsonStream', () => {
       start(controller) {
         controller.enqueue(encoder.encode('data: hello\n\n'));
         controller.close();
-      }
+      },
     });
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(body, {
         status: 200,
         headers: {
-          'content-type': 'text/event-stream'
-        }
-      })
+          'content-type': 'text/event-stream',
+        },
+      }),
     );
 
     const stream = await fetchJsonStream(
       {
         url: 'https://api.example.com/v1/chat/completions',
         headers: {
-          authorization: 'Bearer test-key'
+          authorization: 'Bearer test-key',
         },
         body: {
-          stream: true
-        }
+          stream: true,
+        },
       },
       {
         fetch: fetchMock,
-        timeoutMs: 1000
-      }
+        timeoutMs: 1000,
+      },
     );
 
     expect(stream).toBe(body);
@@ -45,10 +45,10 @@ describe('fetchJsonStream', () => {
         headers: expect.objectContaining({
           accept: 'text/event-stream',
           'content-type': 'application/json',
-          authorization: 'Bearer test-key'
+          authorization: 'Bearer test-key',
         }),
-        body: '{"stream":true}'
-      })
+        body: '{"stream":true}',
+      }),
     );
   });
 
@@ -57,7 +57,7 @@ describe('fetchJsonStream', () => {
     [403, 'auth_error', false],
     [429, 'rate_limit', true],
     [500, 'provider_error', true],
-    [400, 'provider_error', false]
+    [400, 'provider_error', false],
   ])('maps HTTP %s to a public provider error', async (status, code, retryable) => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response('bad', { status }));
 
@@ -65,19 +65,19 @@ describe('fetchJsonStream', () => {
       fetchJsonStream(
         {
           url: 'https://api.example.com/v1/messages',
-          body: {}
+          body: {},
         },
         {
           fetch: fetchMock,
-          timeoutMs: 1000
-        }
-      )
+          timeoutMs: 1000,
+        },
+      ),
     ).rejects.toMatchObject({
       publicError: {
         code,
         retryable,
-        status
-      }
+        status,
+      },
     });
   });
 
@@ -86,27 +86,27 @@ describe('fetchJsonStream', () => {
       new Response('{"error":"not a stream"}', {
         status: 200,
         headers: {
-          'content-type': 'application/json'
-        }
-      })
+          'content-type': 'application/json',
+        },
+      }),
     );
 
     await expect(
       fetchJsonStream(
         {
           url: 'https://api.example.com/v1/messages',
-          body: {}
+          body: {},
         },
         {
           fetch: fetchMock,
-          timeoutMs: 1000
-        }
-      )
+          timeoutMs: 1000,
+        },
+      ),
     ).rejects.toMatchObject({
       publicError: {
         code: 'protocol_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -115,27 +115,27 @@ describe('fetchJsonStream', () => {
       new Response(null, {
         status: 200,
         headers: {
-          'content-type': 'text/event-stream'
-        }
-      })
+          'content-type': 'text/event-stream',
+        },
+      }),
     );
 
     await expect(
       fetchJsonStream(
         {
           url: 'https://api.example.com/v1/messages',
-          body: {}
+          body: {},
         },
         {
           fetch: fetchMock,
-          timeoutMs: 1000
-        }
-      )
+          timeoutMs: 1000,
+        },
+      ),
     ).rejects.toMatchObject({
       publicError: {
         code: 'network_error',
-        retryable: true
-      }
+        retryable: true,
+      },
     });
   });
 
@@ -146,18 +146,18 @@ describe('fetchJsonStream', () => {
       fetchJsonStream(
         {
           url: 'https://api.example.com/v1/messages',
-          body: {}
+          body: {},
         },
         {
           fetch: fetchMock,
-          timeoutMs: 1000
-        }
-      )
+          timeoutMs: 1000,
+        },
+      ),
     ).rejects.toMatchObject({
       publicError: {
         code: 'network_error',
-        retryable: true
-      }
+        retryable: true,
+      },
     });
   });
 
@@ -171,18 +171,18 @@ describe('fetchJsonStream', () => {
         {
           url: 'https://api.example.com/v1/messages',
           body: {},
-          signal: abortController.signal
+          signal: abortController.signal,
         },
         {
           fetch: fetchMock,
-          timeoutMs: 1000
-        }
-      )
+          timeoutMs: 1000,
+        },
+      ),
     ).rejects.toMatchObject({
       publicError: {
         code: 'network_error',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -194,7 +194,7 @@ describe('fetchJsonStream', () => {
       () =>
         new Promise<Response>((_resolve, reject) => {
           setTimeout(() => reject(new DOMException('aborted', 'AbortError')), 20);
-        })
+        }),
     );
 
     try {
@@ -203,18 +203,18 @@ describe('fetchJsonStream', () => {
           {
             url: 'https://api.example.com/v1/messages',
             body: {},
-            signal: abortController.signal
+            signal: abortController.signal,
           },
           {
             fetch: fetchMock,
-            timeoutMs: 10
-          }
-        )
+            timeoutMs: 10,
+          },
+        ),
       ).rejects.toMatchObject({
         publicError: {
           code: 'network_error',
-          retryable: false
-        }
+          retryable: false,
+        },
       });
 
       await vi.advanceTimersByTimeAsync(20);
@@ -231,18 +231,18 @@ describe('fetchJsonStream', () => {
       fetchJsonStream(
         {
           url: 'https://api.example.com/v1/messages',
-          body: {}
+          body: {},
         },
         {
           fetch: fetchMock,
-          timeoutMs: 1000
-        }
-      )
+          timeoutMs: 1000,
+        },
+      ),
     ).rejects.toMatchObject({
       publicError: {
         code: 'network_error',
-        retryable: true
-      }
+        retryable: true,
+      },
     });
   });
 });

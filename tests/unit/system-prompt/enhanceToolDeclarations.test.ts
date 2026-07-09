@@ -61,10 +61,7 @@ describe('enhanceToolDeclarations - 未增强工具不受影响', () => {
 
 describe('enhanceToolDeclarations - 不修改原始输入', () => {
   it('原始 declarations 数组引用和内容不被修改', () => {
-    const declarations = [
-      makeDeclaration('edit_file', 'Edit a file'),
-      makeDeclaration('read_file', 'Read a file'),
-    ];
+    const declarations = [makeDeclaration('edit_file', 'Edit a file'), makeDeclaration('read_file', 'Read a file')];
     const originalDescriptions = declarations.map((d) => d.description);
 
     const enhanced = enhanceToolDeclarations(declarations);

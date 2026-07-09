@@ -1,5 +1,5 @@
 import { writeFileSync } from 'node:fs';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { type IncomingMessage, type ServerResponse, createServer } from 'node:http';
 
 const PORT = Number.parseInt(process.env['AGENTCODE_MOCK_SSE_PORT'] ?? '0', 10);
 const CHUNK_DELAY_MS = Number.parseInt(process.env['AGENTCODE_MOCK_SSE_DELAY_MS'] ?? '700', 10);
@@ -79,15 +79,15 @@ async function writeOpenAIToolCall(response: ServerResponse): Promise<void> {
                 type: 'function',
                 function: {
                   name: 'read_file',
-                  arguments: '{"path":'
-                }
-              }
-            ]
+                  arguments: '{"path":',
+                },
+              },
+            ],
           },
-          finish_reason: null
-        }
-      ]
-    })}\n\n`
+          finish_reason: null,
+        },
+      ],
+    })}\n\n`,
   );
   await delay(CHUNK_DELAY_MS);
   response.write(
@@ -99,15 +99,15 @@ async function writeOpenAIToolCall(response: ServerResponse): Promise<void> {
               {
                 index: 0,
                 function: {
-                  arguments: JSON.stringify(TOOL_FIXTURE_PATH) + '}'
-                }
-              }
-            ]
+                  arguments: JSON.stringify(TOOL_FIXTURE_PATH) + '}',
+                },
+              },
+            ],
           },
-          finish_reason: null
-        }
-      ]
-    })}\n\n`
+          finish_reason: null,
+        },
+      ],
+    })}\n\n`,
   );
   response.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n');
   response.write('data: [DONE]\n\n');
@@ -117,11 +117,15 @@ async function writeOpenAIToolCall(response: ServerResponse): Promise<void> {
 async function writeAnthropicStream(response: ServerResponse, rawBody: string): Promise<void> {
   const reply = chooseReply(rawBody);
   response.writeHead(200, streamHeaders());
-  response.write('event: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n');
+  response.write(
+    'event: message_start\ndata: {"type":"message_start","message":{"role":"assistant","content":[]}}\n\n',
+  );
 
   const chunks = splitReply(reply);
   for (const [index, chunk] of chunks.entries()) {
-    response.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunk } })}\n\n`);
+    response.write(
+      `event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: chunk } })}\n\n`,
+    );
     if (index < chunks.length - 1) {
       await delay(CHUNK_DELAY_MS);
     }
@@ -151,7 +155,9 @@ function hasFixtureQuestion(rawBody: string): boolean {
 }
 
 function hasToolResultContext(rawBody: string): boolean {
-  return parseMessages(rawBody).some((message) => isOpenAIToolResultMessage(message) || isAnthropicToolResultMessage(message));
+  return parseMessages(rawBody).some(
+    (message) => isOpenAIToolResultMessage(message) || isAnthropicToolResultMessage(message),
+  );
 }
 
 function isOpenAIToolResultMessage(message: unknown): boolean {
@@ -160,7 +166,11 @@ function isOpenAIToolResultMessage(message: unknown): boolean {
   }
 
   const candidate = message as { role?: unknown; tool_call_id?: unknown; content?: unknown };
-  return candidate.role === 'tool' && candidate.tool_call_id === 'call-read-fixture' && includesFixtureText(candidate.content);
+  return (
+    candidate.role === 'tool' &&
+    candidate.tool_call_id === 'call-read-fixture' &&
+    includesFixtureText(candidate.content)
+  );
 }
 
 function isAnthropicToolResultMessage(message: unknown): boolean {
@@ -179,7 +189,11 @@ function isAnthropicToolResultMessage(message: unknown): boolean {
     }
 
     const toolResult = block as { type?: unknown; tool_use_id?: unknown; content?: unknown };
-    return toolResult.type === 'tool_result' && toolResult.tool_use_id === 'call-read-fixture' && includesFixtureText(toolResult.content);
+    return (
+      toolResult.type === 'tool_result' &&
+      toolResult.tool_use_id === 'call-read-fixture' &&
+      includesFixtureText(toolResult.content)
+    );
   });
 }
 
@@ -250,7 +264,7 @@ function streamHeaders(): Record<string, string> {
   return {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
-    connection: 'keep-alive'
+    connection: 'keep-alive',
   };
 }
 

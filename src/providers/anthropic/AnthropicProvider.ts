@@ -1,8 +1,8 @@
 import type { AgentConfig } from '../../config/schema.js';
 import { AgentCodeError, toPublicError } from '../../shared/errors.js';
-import { createCancellationError, createProtocolError } from '../shared/errors.js';
 import { joinEndpoint } from '../shared/endpoint.js';
-import { fetchJsonStream, type FetchJsonOptions, type FetchTransportOptions } from '../shared/fetchTransport.js';
+import { createCancellationError, createProtocolError } from '../shared/errors.js';
+import { type FetchJsonOptions, type FetchTransportOptions, fetchJsonStream } from '../shared/fetchTransport.js';
 import { readNextSseEvent, readSseStream } from '../shared/sse.js';
 import type { ChatModelProvider, ProviderEvent, ProviderRequest, UsageInfo } from '../types.js';
 
@@ -72,14 +72,14 @@ export class AnthropicProvider implements ChatModelProvider {
           'x-api-key': this.config.apiKey,
           'anthropic-version': ANTHROPIC_VERSION,
           ...this.config.request.headers,
-          ...(betaHeader !== undefined ? { 'anthropic-beta': betaHeader } : {})
+          ...(betaHeader !== undefined ? { 'anthropic-beta': betaHeader } : {}),
         },
         body: createAnthropicRequestBody(request),
-        ...(request.signal !== undefined ? { signal: request.signal } : {})
+        ...(request.signal !== undefined ? { signal: request.signal } : {}),
       };
       const transportOptions: FetchTransportOptions = {
         timeoutMs: this.config.request.timeoutMs,
-        ...(this.fetchImpl !== undefined ? { fetch: this.fetchImpl } : {})
+        ...(this.fetchImpl !== undefined ? { fetch: this.fetchImpl } : {}),
       };
       const stream = await fetchJsonStream(requestOptions, transportOptions);
 
@@ -105,7 +105,7 @@ export class AnthropicProvider implements ChatModelProvider {
           if (sseEvent.event === 'error') {
             yield {
               type: 'response.error',
-              error: toPublicError(parseAnthropicStreamError(sseEvent.data))
+              error: toPublicError(parseAnthropicStreamError(sseEvent.data)),
             };
             return;
           }
@@ -139,7 +139,7 @@ export class AnthropicProvider implements ChatModelProvider {
             if (deltaType === 'text_delta' && typeof event.delta?.text === 'string' && event.delta.text.length > 0) {
               yield {
                 type: 'content.delta',
-                delta: event.delta.text
+                delta: event.delta.text,
               };
             }
 
@@ -150,7 +150,7 @@ export class AnthropicProvider implements ChatModelProvider {
             ) {
               yield {
                 type: 'thinking.delta',
-                delta: event.delta.thinking
+                delta: event.delta.thinking,
               };
             }
 
@@ -175,7 +175,12 @@ export class AnthropicProvider implements ChatModelProvider {
 
           if (event.type === 'message_stop') {
             if (usageInputTokens !== undefined) {
-              yield createAnthropicUsageEvent(usageInputTokens, usageOutputTokens, usageCacheCreationTokens, usageCacheReadTokens);
+              yield createAnthropicUsageEvent(
+                usageInputTokens,
+                usageOutputTokens,
+                usageCacheCreationTokens,
+                usageCacheReadTokens,
+              );
             }
             yield createCompleteEvent(finishReason);
             return;
@@ -187,7 +192,7 @@ export class AnthropicProvider implements ChatModelProvider {
     } catch (error) {
       yield {
         type: 'response.error',
-        error: toPublicError(isAbortError(error) ? createCancellationError() : error)
+        error: toPublicError(isAbortError(error) ? createCancellationError() : error),
       };
     }
   }
@@ -207,7 +212,7 @@ function createAnthropicRequestBody(request: ProviderRequest): Record<string, un
     model: request.model,
     messages: request.messages.map(toAnthropicMessage),
     stream: true,
-    max_tokens: getMaxTokens(request)
+    max_tokens: getMaxTokens(request),
   };
 
   if (request.system !== undefined && request.system.length > 0) {
@@ -218,14 +223,14 @@ function createAnthropicRequestBody(request: ProviderRequest): Record<string, un
     body.tools = request.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
-      input_schema: tool.inputSchema
+      input_schema: tool.inputSchema,
     }));
   }
 
   if (request.thinking.enabled) {
     body.thinking = {
       type: 'enabled',
-      budget_tokens: request.thinking.budgetTokens ?? DEFAULT_THINKING_BUDGET_TOKENS
+      budget_tokens: request.thinking.budgetTokens ?? DEFAULT_THINKING_BUDGET_TOKENS,
     };
   }
 
@@ -241,9 +246,9 @@ function toAnthropicMessage(message: ProviderRequest['messages'][number]): Recor
           type: 'tool_result',
           tool_use_id: message.toolCallId,
           content: message.content,
-          is_error: message.isError
-        }
-      ]
+          is_error: message.isError,
+        },
+      ],
     };
   }
 
@@ -256,15 +261,15 @@ function toAnthropicMessage(message: ProviderRequest['messages'][number]): Recor
           type: 'tool_use',
           id: call.id,
           name: call.name,
-          input: parseToolInput(call.argumentsText)
-        }))
-      ]
+          input: parseToolInput(call.argumentsText),
+        })),
+      ],
     };
   }
 
   return {
     role: message.role,
-    content: message.content
+    content: message.content,
   };
 }
 
@@ -305,11 +310,14 @@ function collectToolUseStart(toolUses: Map<number, AnthropicToolUseAccumulator>,
   toolUses.set(index, {
     id,
     name,
-    argumentsText: createInitialToolUseArgumentsText(event.content_block.input)
+    argumentsText: createInitialToolUseArgumentsText(event.content_block.input),
   });
 }
 
-function collectToolUseInputDelta(toolUses: Map<number, AnthropicToolUseAccumulator>, event: AnthropicStreamEvent): void {
+function collectToolUseInputDelta(
+  toolUses: Map<number, AnthropicToolUseAccumulator>,
+  event: AnthropicStreamEvent,
+): void {
   const index = parseAnthropicBlockIndex(event);
   const toolUse = toolUses.get(index);
 
@@ -324,7 +332,10 @@ function collectToolUseInputDelta(toolUses: Map<number, AnthropicToolUseAccumula
   toolUse.argumentsText = `${toolUse.argumentsText}${event.delta.partial_json}`;
 }
 
-function createToolCallEvent(event: AnthropicStreamEvent, toolUses: Map<number, AnthropicToolUseAccumulator>): ProviderEvent | undefined {
+function createToolCallEvent(
+  event: AnthropicStreamEvent,
+  toolUses: Map<number, AnthropicToolUseAccumulator>,
+): ProviderEvent | undefined {
   const index = parseAnthropicBlockIndex(event);
   const toolUse = toolUses.get(index);
 
@@ -337,8 +348,8 @@ function createToolCallEvent(event: AnthropicStreamEvent, toolUses: Map<number, 
     call: {
       id: toolUse.id,
       name: toolUse.name,
-      argumentsText: toolUse.argumentsText
-    }
+      argumentsText: toolUse.argumentsText,
+    },
   };
 }
 
@@ -391,7 +402,7 @@ function createAnthropicError(type: string, message: string): AgentCodeError {
     return new AgentCodeError({
       code: 'auth_error',
       message,
-      retryable: false
+      retryable: false,
     });
   }
 
@@ -399,7 +410,7 @@ function createAnthropicError(type: string, message: string): AgentCodeError {
     return new AgentCodeError({
       code: 'rate_limit',
       message,
-      retryable: true
+      retryable: true,
     });
   }
 
@@ -407,14 +418,14 @@ function createAnthropicError(type: string, message: string): AgentCodeError {
     return new AgentCodeError({
       code: 'provider_error',
       message,
-      retryable: true
+      retryable: true,
     });
   }
 
   return new AgentCodeError({
     code: 'provider_error',
     message,
-    retryable: false
+    retryable: false,
   });
 }
 
@@ -452,11 +463,14 @@ function createCompleteEvent(finishReason: string | undefined): ProviderEvent {
 
   return {
     type: 'response.complete',
-    finishReason
+    finishReason,
   };
 }
 
-function buildBetaHeader(request: ProviderRequest, existingHeaders: Record<string, string> | undefined): string | undefined {
+function buildBetaHeader(
+  request: ProviderRequest,
+  existingHeaders: Record<string, string> | undefined,
+): string | undefined {
   const PROMPT_CACHING_BETA = 'prompt-caching-2024-07-31';
 
   if (request.system === undefined || request.system.length === 0) {
@@ -491,13 +505,13 @@ function createAnthropicUsageEvent(
   inputTokens: number,
   outputTokens: number,
   cacheCreationTokens: number | undefined,
-  cacheReadTokens: number | undefined
+  cacheReadTokens: number | undefined,
 ): ProviderEvent {
   const usageInfo: UsageInfo = {
     inputTokens,
     outputTokens,
     ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
-    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {})
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
   };
 
   return { type: 'response.usage', usage: usageInfo };

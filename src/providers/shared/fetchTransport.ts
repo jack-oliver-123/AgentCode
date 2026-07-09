@@ -1,5 +1,10 @@
 import { AgentCodeError } from '../../shared/errors.js';
-import { createCancellationError, createNetworkError, createProtocolError, createProviderStatusError } from './errors.js';
+import {
+  createCancellationError,
+  createNetworkError,
+  createProtocolError,
+  createProviderStatusError,
+} from './errors.js';
 
 export interface FetchTransportOptions {
   fetch?: typeof fetch;
@@ -16,7 +21,7 @@ export interface FetchJsonOptions {
 
 export async function fetchJsonStream(
   request: FetchJsonOptions,
-  options: FetchTransportOptions
+  options: FetchTransportOptions,
 ): Promise<ReadableStream<Uint8Array>> {
   const fetchImpl = options.fetch ?? fetch;
   const timeoutController = new AbortController();
@@ -35,9 +40,9 @@ export async function fetchJsonStream(
       headers: {
         'content-type': 'application/json',
         accept: 'text/event-stream',
-        ...request.headers
+        ...request.headers,
       },
-      signal
+      signal,
     };
 
     if (request.body !== undefined) {
@@ -85,7 +90,7 @@ function isEventStreamResponse(response: Response): boolean {
 function composeAbortSignals(
   timeoutSignal: AbortSignal,
   callerSignal: AbortSignal | undefined,
-  onAbort: (source: 'timeout' | 'caller') => void
+  onAbort: (source: 'timeout' | 'caller') => void,
 ): AbortSignal {
   if (callerSignal === undefined) {
     return timeoutSignal;

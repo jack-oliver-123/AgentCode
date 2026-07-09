@@ -12,7 +12,9 @@ describe('write_file', () => {
     const workspace = await createWorkspace();
     await mkdir(join(workspace, 'src'));
 
-    const result = await executeFileTool(createWriteFileTool(), '{"path":"src/new.ts","content":"hello"}', { cwd: workspace });
+    const result = await executeFileTool(createWriteFileTool(), '{"path":"src/new.ts","content":"hello"}', {
+      cwd: workspace,
+    });
 
     expect(result).toMatchObject({
       ok: true,
@@ -20,8 +22,8 @@ describe('write_file', () => {
       data: {
         path: join('src', 'new.ts'),
         bytes: 5,
-        overwritten: false
-      }
+        overwritten: false,
+      },
     });
     await expect(readWorkspaceFile(workspace, 'src/new.ts')).resolves.toBe('hello');
   });
@@ -30,15 +32,19 @@ describe('write_file', () => {
     const workspace = await createWorkspace();
     const outsidePath = join(workspace, '..', 'outside-write.txt');
 
-    const result = await executeFileTool(createWriteFileTool(), JSON.stringify({ path: '../outside-write.txt', content: 'secret' }), {
-      cwd: workspace
-    });
+    const result = await executeFileTool(
+      createWriteFileTool(),
+      JSON.stringify({ path: '../outside-write.txt', content: 'secret' }),
+      {
+        cwd: workspace,
+      },
+    );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
     await expect(readFile(outsidePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -47,14 +53,16 @@ describe('write_file', () => {
     const workspace = await createWorkspace();
     await writeWorkspaceFile(workspace, 'existing.txt', 'original');
 
-    const result = await executeFileTool(createWriteFileTool(), '{"path":"existing.txt","content":"replacement"}', { cwd: workspace });
+    const result = await executeFileTool(createWriteFileTool(), '{"path":"existing.txt","content":"replacement"}', {
+      cwd: workspace,
+    });
 
     expect(result).toMatchObject({
       ok: false,
       error: {
         code: 'invalid_arguments',
-        retryable: true
-      }
+        retryable: true,
+      },
     });
     await expect(readWorkspaceFile(workspace, 'existing.txt')).resolves.toBe('original');
   });
@@ -66,7 +74,7 @@ describe('write_file', () => {
     const result = await executeFileTool(
       createWriteFileTool(),
       '{"path":"existing.txt","content":"replacement","overwrite":true}',
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
@@ -74,8 +82,8 @@ describe('write_file', () => {
       data: {
         path: 'existing.txt',
         bytes: 11,
-        overwritten: true
-      }
+        overwritten: true,
+      },
     });
     await expect(readWorkspaceFile(workspace, 'existing.txt')).resolves.toBe('replacement');
   });
@@ -84,14 +92,16 @@ describe('write_file', () => {
     const workspace = await createWorkspace();
     await writeWorkspaceFile(workspace, 'not-a-dir', 'content');
 
-    const result = await executeFileTool(createWriteFileTool(), '{"path":"not-a-dir/new.txt","content":"hello"}', { cwd: workspace });
+    const result = await executeFileTool(createWriteFileTool(), '{"path":"not-a-dir/new.txt","content":"hello"}', {
+      cwd: workspace,
+    });
 
     expect(result).toMatchObject({
       ok: false,
       toolName: 'write_file',
       error: {
-        code: 'invalid_arguments'
-      }
+        code: 'invalid_arguments',
+      },
     });
   });
 
@@ -99,13 +109,15 @@ describe('write_file', () => {
     const workspace = await createWorkspace();
     await mkdir(join(workspace, 'src'));
 
-    const result = await executeFileTool(createWriteFileTool(), '{"path":"src/new.ts","content":42}', { cwd: workspace });
+    const result = await executeFileTool(createWriteFileTool(), '{"path":"src/new.ts","content":42}', {
+      cwd: workspace,
+    });
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'invalid_arguments'
-      }
+        code: 'invalid_arguments',
+      },
     });
     await expect(readFile(join(workspace, 'src', 'new.ts'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -118,14 +130,14 @@ describe('write_file', () => {
     const result = await executeFileTool(
       createWriteFileTool(),
       JSON.stringify({ path: join('linked-dir', 'secret.txt'), content: 'secret' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
     await expect(readFile(join(outside, 'secret.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });

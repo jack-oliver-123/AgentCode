@@ -64,7 +64,9 @@ function formatSearchCode(data: Record<string, unknown> | undefined): string {
   const query = getString(data, 'query') ?? 'query';
   const matches = Array.isArray(data?.['matches']) ? data['matches'].length : getNumber(data, 'count');
   const truncatedQuery = query.length > 30 ? `${query.slice(0, 27)}...` : query;
-  return matches !== undefined ? `search_code: "${truncatedQuery}" (${matches} matches)` : `search_code: "${truncatedQuery}"`;
+  return matches !== undefined
+    ? `search_code: "${truncatedQuery}" (${matches} matches)`
+    : `search_code: "${truncatedQuery}"`;
 }
 
 function formatSubmitPlan(data: Record<string, unknown> | undefined): string {

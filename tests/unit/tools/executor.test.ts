@@ -10,14 +10,14 @@ import type {
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
-  ToolValidationResult
+  ToolValidationResult,
 } from '../../../src/tools/types.js';
 
 const BASE_CONTEXT: ToolExecutionContext = {
   cwd: process.cwd(),
   timeoutMs: 100,
   secrets: [],
-  maxOutputBytes: 1024
+  maxOutputBytes: 1024,
 };
 
 describe('executeToolCall', () => {
@@ -31,14 +31,14 @@ describe('executeToolCall', () => {
           toolName: 'read_file',
           data: {
             path: input.path,
-            signalProvided: true
+            signalProvided: true,
           },
           meta: {
             durationMs: 999,
-            timedOut: false
-          }
-        })
-      })
+            timedOut: false,
+          },
+        }),
+      }),
     ]);
 
     const result = await executeToolCall(createCall('read_file', '{"path":"src/index.ts"}'), registry, BASE_CONTEXT);
@@ -48,11 +48,11 @@ describe('executeToolCall', () => {
       toolName: 'read_file',
       data: {
         path: 'src/index.ts',
-        signalProvided: true
+        signalProvided: true,
       },
       meta: {
-        timedOut: false
-      }
+        timedOut: false,
+      },
     });
     expect(result.meta.durationMs).not.toBe(999);
   });
@@ -65,11 +65,11 @@ describe('executeToolCall', () => {
       toolName: 'read_file',
       error: {
         code: 'invalid_arguments',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: false
-      }
+        timedOut: false,
+      },
     });
   });
 
@@ -81,8 +81,8 @@ describe('executeToolCall', () => {
       toolName: 'missing_tool',
       error: {
         code: 'unknown_tool',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -96,14 +96,14 @@ describe('executeToolCall', () => {
           error: {
             code: 'invalid_arguments',
             message: 'path is required',
-            retryable: true
-          }
+            retryable: true,
+          },
         }),
         execute: async () => {
           executed = true;
           return createSuccessResult('write_file', {});
-        }
-      })
+        },
+      }),
     ]);
 
     const result = await executeToolCall(createCall('write_file', '{}'), registry, BASE_CONTEXT);
@@ -115,8 +115,8 @@ describe('executeToolCall', () => {
       error: {
         code: 'invalid_arguments',
         message: 'path is required',
-        retryable: true
-      }
+        retryable: true,
+      },
     });
   });
 
@@ -127,13 +127,13 @@ describe('executeToolCall', () => {
         name: 'edit_file',
         validate: () => {
           throw new Error(`validator leaked ${secret}`);
-        }
-      })
+        },
+      }),
     ]);
 
     const result = await executeToolCall(createCall('edit_file', '{}'), registry, {
       ...BASE_CONTEXT,
-      secrets: [secret]
+      secrets: [secret],
     });
 
     expect(result).toMatchObject({
@@ -141,11 +141,11 @@ describe('executeToolCall', () => {
       toolName: 'edit_file',
       error: {
         code: 'tool_internal_error',
-        retryable: false
+        retryable: false,
       },
       meta: {
-        timedOut: false
-      }
+        timedOut: false,
+      },
     });
     expect(JSON.stringify(result)).not.toContain(secret);
   });
@@ -156,8 +156,8 @@ describe('executeToolCall', () => {
         name: 'search_code',
         execute: async () => {
           throw new Error('boom');
-        }
-      })
+        },
+      }),
     ]);
 
     const result = await executeToolCall(createCall('search_code', '{}'), registry, BASE_CONTEXT);
@@ -168,8 +168,8 @@ describe('executeToolCall', () => {
       error: {
         code: 'tool_internal_error',
         message: 'boom',
-        retryable: false
-      }
+        retryable: false,
+      },
     });
   });
 
@@ -182,13 +182,13 @@ describe('executeToolCall', () => {
           observedSignal = context.signal;
           await delay(50);
           return createSuccessResult('run_command', { exitCode: 0 });
-        }
-      })
+        },
+      }),
     ]);
 
     const result = await executeToolCall(createCall('run_command', '{}'), registry, {
       ...BASE_CONTEXT,
-      timeoutMs: 1
+      timeoutMs: 1,
     });
 
     expect(observedSignal?.aborted).toBe(true);
@@ -197,11 +197,11 @@ describe('executeToolCall', () => {
       toolName: 'run_command',
       error: {
         code: 'command_timeout',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: true
-      }
+        timedOut: true,
+      },
     });
   });
 
@@ -212,13 +212,13 @@ describe('executeToolCall', () => {
         execute: async (_input, context) =>
           new Promise<ToolExecutionResult>((_resolve, reject) => {
             context.signal?.addEventListener('abort', () => reject(new Error('aborted by tool')), { once: true });
-          })
-      })
+          }),
+      }),
     ]);
 
     const result = await executeToolCall(createCall('run_command', '{}'), registry, {
       ...BASE_CONTEXT,
-      timeoutMs: 1
+      timeoutMs: 1,
     });
 
     expect(result).toMatchObject({
@@ -226,11 +226,11 @@ describe('executeToolCall', () => {
       toolName: 'run_command',
       error: {
         code: 'command_timeout',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: true
-      }
+        timedOut: true,
+      },
     });
   });
 
@@ -243,15 +243,15 @@ describe('executeToolCall', () => {
             context.signal?.addEventListener(
               'abort',
               () => resolve(createSuccessResult('run_command', { shouldNotWinRace: true })),
-              { once: true }
+              { once: true },
             );
-          })
-      })
+          }),
+      }),
     ]);
 
     const result = await executeToolCall(createCall('run_command', '{}'), registry, {
       ...BASE_CONTEXT,
-      timeoutMs: 1
+      timeoutMs: 1,
     });
 
     expect(result).toMatchObject({
@@ -259,11 +259,11 @@ describe('executeToolCall', () => {
       toolName: 'run_command',
       error: {
         code: 'command_timeout',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: true
-      }
+        timedOut: true,
+      },
     });
   });
 
@@ -277,13 +277,13 @@ describe('executeToolCall', () => {
         execute: async () => {
           executed = true;
           return createSuccessResult('write_file', {});
-        }
-      })
+        },
+      }),
     ]);
 
     const result = await executeToolCall(createCall('write_file', '{}'), registry, {
       ...BASE_CONTEXT,
-      signal: abortController.signal
+      signal: abortController.signal,
     });
 
     expect(executed).toBe(false);
@@ -292,11 +292,11 @@ describe('executeToolCall', () => {
       toolName: 'write_file',
       error: {
         code: 'tool_internal_error',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: false
-      }
+        timedOut: false,
+      },
     });
   });
 
@@ -308,14 +308,14 @@ describe('executeToolCall', () => {
         execute: async () => {
           await delay(50);
           return createSuccessResult('run_command', { exitCode: 0 });
-        }
-      })
+        },
+      }),
     ]);
 
     const resultPromise = executeToolCall(createCall('run_command', '{}'), registry, {
       ...BASE_CONTEXT,
       timeoutMs: 100,
-      signal: abortController.signal
+      signal: abortController.signal,
     });
     abortController.abort();
 
@@ -326,11 +326,11 @@ describe('executeToolCall', () => {
       toolName: 'run_command',
       error: {
         code: 'tool_internal_error',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: false
-      }
+        timedOut: false,
+      },
     });
   });
 
@@ -344,16 +344,16 @@ describe('executeToolCall', () => {
             context.signal?.addEventListener(
               'abort',
               () => resolve(createSuccessResult('run_command', { shouldNotWinRace: true })),
-              { once: true }
+              { once: true },
             );
-          })
-      })
+          }),
+      }),
     ]);
 
     const resultPromise = executeToolCall(createCall('run_command', '{}'), registry, {
       ...BASE_CONTEXT,
       timeoutMs: 100,
-      signal: abortController.signal
+      signal: abortController.signal,
     });
     abortController.abort();
 
@@ -364,11 +364,11 @@ describe('executeToolCall', () => {
       toolName: 'run_command',
       error: {
         code: 'tool_internal_error',
-        retryable: true
+        retryable: true,
       },
       meta: {
-        timedOut: false
-      }
+        timedOut: false,
+      },
     });
   });
 
@@ -379,8 +379,8 @@ describe('executeToolCall', () => {
         name: 'read_file',
         execute: async () =>
           createSuccessResult('read_file', {
-            content: `secret=${secret}`
-          })
+            content: `secret=${secret}`,
+          }),
       }),
       createTestTool({
         name: 'run_command',
@@ -390,23 +390,23 @@ describe('executeToolCall', () => {
           error: {
             code: 'command_failed',
             message: `Authorization: Bearer ${secret}`,
-            retryable: false
+            retryable: false,
           },
           meta: {
             durationMs: 1,
-            timedOut: false
-          }
-        })
-      })
+            timedOut: false,
+          },
+        }),
+      }),
     ]);
 
     const successResult = await executeToolCall(createCall('read_file', '{}'), registry, {
       ...BASE_CONTEXT,
-      secrets: [secret]
+      secrets: [secret],
     });
     const failedResult = await executeToolCall(createCall('run_command', '{}'), registry, {
       ...BASE_CONTEXT,
-      secrets: [secret]
+      secrets: [secret],
     });
 
     expect(JSON.stringify(successResult)).not.toContain(secret);
@@ -419,7 +419,7 @@ function createCall(name: string, argumentsText: string): ProviderToolCall {
   return {
     id: `call-${name}`,
     name,
-    argumentsText
+    argumentsText,
   };
 }
 
@@ -436,11 +436,11 @@ function createTestTool<TInput = unknown>(options: TestToolOptions<TInput>): Too
     inputSchema: {
       type: 'object',
       properties: {},
-      additionalProperties: false
+      additionalProperties: false,
     },
     risk: 'read',
     validate: options.validate ?? ((input: unknown) => ({ ok: true, value: input as TInput })),
-    execute: options.execute ?? (async () => createSuccessResult(options.name, {}))
+    execute: options.execute ?? (async () => createSuccessResult(options.name, {})),
   };
 }
 
@@ -451,8 +451,8 @@ function createSuccessResult(toolName: string, data: unknown): ToolExecutionResu
     data,
     meta: {
       durationMs: 1,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
 
@@ -466,7 +466,7 @@ function createRegistry(tools: ToolDefinition[]): ToolRegistry {
     filterByRisk: (allowedRisks) => {
       const allowed = new Set(allowedRisks);
       return createRegistry(tools.filter((t) => allowed.has(t.risk)));
-    }
+    },
   };
 }
 
@@ -474,6 +474,6 @@ function createProviderDeclaration(tool: ToolDefinition): ProviderToolDeclaratio
   return {
     name: tool.name,
     description: tool.description,
-    inputSchema: tool.inputSchema
+    inputSchema: tool.inputSchema,
   };
 }

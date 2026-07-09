@@ -27,18 +27,18 @@ export class AgentCodeError extends Error {
 const SENSITIVE_JSON_KEY = String.raw`(?:api\s*key|api[_-]?key|x-api-key|authorization|token|jwt)`;
 const DOUBLE_QUOTED_JSON_SECRET_PATTERN = new RegExp(
   `(["']${SENSITIVE_JSON_KEY}["']\\s*:\\s*")((?:\\\\.|[^"\\\\])*)(")`,
-  'gi'
+  'gi',
 );
 const SINGLE_QUOTED_JSON_SECRET_PATTERN = new RegExp(
   `(["']${SENSITIVE_JSON_KEY}["']\\s*:\\s*')((?:\\\\.|[^'\\\\])*)(')`,
-  'gi'
+  'gi',
 );
 
 export function toPublicError(error: unknown): PublicError {
   if (error instanceof AgentCodeError) {
     return {
       ...error.publicError,
-      message: redactPublicMessage(error.publicError.message)
+      message: redactPublicMessage(error.publicError.message),
     };
   }
 
@@ -46,14 +46,14 @@ export function toPublicError(error: unknown): PublicError {
     return {
       code: 'unknown_error',
       message: redactPublicMessage(error.message),
-      retryable: false
+      retryable: false,
     };
   }
 
   return {
     code: 'unknown_error',
     message: redactPublicMessage(String(error)),
-    retryable: false
+    retryable: false,
   };
 }
 

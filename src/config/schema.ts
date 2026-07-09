@@ -7,17 +7,23 @@ export interface RawConfig {
   model: string;
   base_url: string;
   api_key: string;
-  thinking?: {
-    enabled?: boolean | undefined;
-    budget_tokens?: number | undefined;
-  } | undefined;
-  request?: {
-    timeout_ms?: number | undefined;
-    headers?: Record<string, string> | undefined;
-  } | undefined;
-  ui?: {
-    show_thinking?: boolean | undefined;
-  } | undefined;
+  thinking?:
+    | {
+        enabled?: boolean | undefined;
+        budget_tokens?: number | undefined;
+      }
+    | undefined;
+  request?:
+    | {
+        timeout_ms?: number | undefined;
+        headers?: Record<string, string> | undefined;
+      }
+    | undefined;
+  ui?:
+    | {
+        show_thinking?: boolean | undefined;
+      }
+    | undefined;
 }
 
 export interface AgentConfig {
@@ -52,7 +58,7 @@ const headersSchema = z
   .default({})
   .refine(
     (headers) => !Object.keys(headers).some((name) => isAuthHeaderName(name)),
-    'request.headers cannot contain authentication headers; use api_key instead'
+    'request.headers cannot contain authentication headers; use api_key instead',
   );
 
 function isAuthHeaderName(name: string): boolean {
@@ -93,20 +99,20 @@ export const rawConfigSchema = z
     thinking: z
       .object({
         enabled: z.boolean().optional(),
-        budget_tokens: z.number().int().positive().optional()
+        budget_tokens: z.number().int().positive().optional(),
       })
       .optional(),
     request: z
       .object({
         timeout_ms: z.number().int().positive().optional(),
-        headers: headersSchema.optional()
+        headers: headersSchema.optional(),
       })
       .optional(),
     ui: z
       .object({
-        show_thinking: z.boolean().optional()
+        show_thinking: z.boolean().optional(),
       })
-      .optional()
+      .optional(),
   })
   .strict();
 
@@ -116,7 +122,7 @@ export function parseRawConfig(value: unknown): RawConfig {
 
 export function normalizeConfig(rawConfig: RawConfig): AgentConfig {
   const thinking: AgentConfig['thinking'] = {
-    enabled: rawConfig.thinking?.enabled ?? false
+    enabled: rawConfig.thinking?.enabled ?? false,
   };
 
   if (rawConfig.thinking?.budget_tokens !== undefined) {
@@ -131,10 +137,10 @@ export function normalizeConfig(rawConfig: RawConfig): AgentConfig {
     thinking,
     request: {
       timeoutMs: rawConfig.request?.timeout_ms ?? DEFAULT_TIMEOUT_MS,
-      headers: rawConfig.request?.headers ?? {}
+      headers: rawConfig.request?.headers ?? {},
     },
     ui: {
-      showThinking: rawConfig.ui?.show_thinking ?? false
-    }
+      showThinking: rawConfig.ui?.show_thinking ?? false,
+    },
   };
 }

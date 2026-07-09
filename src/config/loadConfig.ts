@@ -1,12 +1,12 @@
 import { access, chmod, lstat, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, parse, relative, resolve } from 'node:path';
-import { ZodError } from 'zod';
 import { parseDocument } from 'yaml';
+import { ZodError } from 'zod';
 
 import { AgentCodeError } from '../shared/errors.js';
 import { redactText } from './redact.js';
-import { normalizeConfig, parseRawConfig, type RawConfig, type ResolvedConfig } from './schema.js';
+import { type RawConfig, type ResolvedConfig, normalizeConfig, parseRawConfig } from './schema.js';
 
 const CONFIG_DIRECTORY = '.agentcode';
 const CONFIG_FILE = 'config.yaml';
@@ -49,13 +49,13 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
   throw new AgentCodeError({
     code: 'config_error',
     message: `Created ${relative(cwd, createdConfigPath)}. Add your API key, then start AgentCode again.`,
-    retryable: false
+    retryable: false,
   });
 }
 
 export async function findProjectConfigPath(
   cwd: string,
-  excludedConfigPath = join(homedir(), CONFIG_DIRECTORY, CONFIG_FILE)
+  excludedConfigPath = join(homedir(), CONFIG_DIRECTORY, CONFIG_FILE),
 ): Promise<string | undefined> {
   let currentDirectory = resolve(cwd);
   const root = parse(currentDirectory).root;
@@ -112,14 +112,14 @@ async function parseConfigFile(path: string, source: ResolvedConfig['source']): 
     return {
       source,
       path,
-      config: normalizeConfig(rawConfig)
+      config: normalizeConfig(rawConfig),
     };
   } catch (error) {
     if (error instanceof ZodError) {
       throw new AgentCodeError({
         code: 'config_error',
         message: redactText(`Invalid AgentCode config at ${path}: ${formatZodError(error)}`, secrets),
-        retryable: false
+        retryable: false,
       });
     }
 
@@ -135,7 +135,7 @@ function rejectPlaceholderApiKey(rawConfig: RawConfig, path: string): void {
   throw new AgentCodeError({
     code: 'config_error',
     message: `AgentCode config at ${path} still contains the example api_key. Replace it with your real API key.`,
-    retryable: false
+    retryable: false,
   });
 }
 
@@ -146,7 +146,7 @@ function parseYaml(rawText: string, path: string): unknown {
     throw new AgentCodeError({
       code: 'config_error',
       message: `Invalid YAML in AgentCode config at ${path}. Check the file syntax and indentation.`,
-      retryable: false
+      retryable: false,
     });
   }
 
@@ -245,10 +245,12 @@ function throwConfigAccessError(path: string): never {
   throw new AgentCodeError({
     code: 'config_error',
     message: `Cannot access AgentCode config candidate at ${path}. Check file permissions and parent directories.`,
-    retryable: false
+    retryable: false,
   });
 }
 
 function isFileNotFoundError(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT';
+  return (
+    typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT'
+  );
 }

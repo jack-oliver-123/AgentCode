@@ -15,7 +15,7 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: 'src/index.ts', oldText: '"old"', newText: '"new"' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
@@ -23,8 +23,8 @@ describe('edit_file', () => {
       toolName: 'edit_file',
       data: {
         path: join('src', 'index.ts'),
-        replacements: 1
-      }
+        replacements: 1,
+      },
     });
     await expect(readWorkspaceFile(workspace, 'src/index.ts')).resolves.toBe('const name = "new";\n');
   });
@@ -35,14 +35,14 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: 'missing.txt', oldText: 'old', newText: 'new' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'file_not_found'
-      }
+        code: 'file_not_found',
+      },
     });
   });
 
@@ -53,14 +53,14 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: 'bin/data.bin', oldText: 'old', newText: 'new' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'file_not_text'
-      }
+        code: 'file_not_text',
+      },
     });
     await expect(readFile(join(workspace, 'bin', 'data.bin'))).resolves.toEqual(Buffer.from([0xff, 0x00, 0xfe]));
   });
@@ -72,7 +72,7 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: 'src/index.ts', oldText: 'missing', newText: 'new' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
@@ -80,9 +80,9 @@ describe('edit_file', () => {
       error: {
         code: 'not_unique_match',
         details: {
-          matches: 0
-        }
-      }
+          matches: 0,
+        },
+      },
     });
     await expect(readWorkspaceFile(workspace, 'src/index.ts')).resolves.toBe('const name = "current";\n');
   });
@@ -94,7 +94,7 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: 'src/index.ts', oldText: 'repeat', newText: 'once' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
@@ -102,9 +102,9 @@ describe('edit_file', () => {
       error: {
         code: 'not_unique_match',
         details: {
-          matches: 2
-        }
-      }
+          matches: 2,
+        },
+      },
     });
     await expect(readWorkspaceFile(workspace, 'src/index.ts')).resolves.toBe('repeat\nrepeat\n');
   });
@@ -117,14 +117,14 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: '../outside-edit.txt', oldText: 'old', newText: 'new' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
     await expect(readFile(outside, 'utf8')).resolves.toBe('old');
   });
@@ -138,14 +138,14 @@ describe('edit_file', () => {
     const result = await executeFileTool(
       createEditFileTool(),
       JSON.stringify({ path: join('linked-dir', 'secret.txt'), oldText: 'old', newText: 'new' }),
-      { cwd: workspace }
+      { cwd: workspace },
     );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'path_outside_workspace'
-      }
+        code: 'path_outside_workspace',
+      },
     });
     await expect(readFile(join(outside, 'secret.txt'), 'utf8')).resolves.toBe('old');
   });
@@ -154,15 +154,19 @@ describe('edit_file', () => {
     const workspace = await createWorkspace();
     await writeWorkspaceFile(workspace, 'src/index.ts', 'old');
 
-    const result = await executeFileTool(createEditFileTool(), JSON.stringify({ path: 'src/index.ts', oldText: '', newText: 'new' }), {
-      cwd: workspace
-    });
+    const result = await executeFileTool(
+      createEditFileTool(),
+      JSON.stringify({ path: 'src/index.ts', oldText: '', newText: 'new' }),
+      {
+        cwd: workspace,
+      },
+    );
 
     expect(result).toMatchObject({
       ok: false,
       error: {
-        code: 'invalid_arguments'
-      }
+        code: 'invalid_arguments',
+      },
     });
     await expect(readWorkspaceFile(workspace, 'src/index.ts')).resolves.toBe('old');
   });

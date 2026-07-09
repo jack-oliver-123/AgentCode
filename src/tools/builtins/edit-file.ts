@@ -1,5 +1,11 @@
 import { editFileInputSchema } from '../schemas.js';
-import type { ToolDefinition, ToolExecutionContext, ToolExecutionError, ToolExecutionResult, ToolValidationResult } from '../types.js';
+import type {
+  ToolDefinition,
+  ToolExecutionContext,
+  ToolExecutionError,
+  ToolExecutionResult,
+  ToolValidationResult,
+} from '../types.js';
 import { resolveWorkspacePath } from '../workspace.js';
 import { atomicWriteTextFile } from './atomic-write.js';
 import { readTextFile } from './text-file.js';
@@ -24,7 +30,7 @@ export function createEditFileTool(): ToolDefinition<EditFileInput, EditFileOutp
     inputSchema: editFileInputSchema,
     risk: 'write',
     validate: validateEditFileInput,
-    execute: executeEditFile
+    execute: executeEditFile,
   };
 }
 
@@ -50,12 +56,15 @@ function validateEditFileInput(input: unknown): ToolValidationResult<EditFileInp
     value: {
       path: input.path,
       oldText: input.oldText,
-      newText: input.newText
-    }
+      newText: input.newText,
+    },
   };
 }
 
-async function executeEditFile(input: EditFileInput, context: ToolExecutionContext): Promise<ToolExecutionResult<EditFileOutput>> {
+async function executeEditFile(
+  input: EditFileInput,
+  context: ToolExecutionContext,
+): Promise<ToolExecutionResult<EditFileOutput>> {
   const pathResult = await resolveWorkspacePath(context.cwd, input.path);
   if (!pathResult.ok) {
     return createEditFileError(pathResult.error);
@@ -74,7 +83,7 @@ async function executeEditFile(input: EditFileInput, context: ToolExecutionConte
   const nextContent = fileResult.file.content.replace(input.oldText, input.newText);
   const writeResult = await atomicWriteTextFile(pathResult.absolutePath, nextContent, {
     overwrite: true,
-    operation: 'edit'
+    operation: 'edit',
   });
   if (!writeResult.ok) {
     return createEditFileError(writeResult.error);
@@ -86,12 +95,12 @@ async function executeEditFile(input: EditFileInput, context: ToolExecutionConte
     data: {
       path: pathResult.relativePath,
       replacements: 1,
-      bytes: Buffer.byteLength(nextContent, 'utf8')
+      bytes: Buffer.byteLength(nextContent, 'utf8'),
     },
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
 
@@ -116,8 +125,8 @@ function createNotUniqueMatchError(matchCount: number): ToolExecutionError {
     message: `Expected exactly one match for oldText, found ${matchCount}.`,
     retryable: true,
     details: {
-      matches: matchCount
-    }
+      matches: matchCount,
+    },
   };
 }
 
@@ -128,7 +137,7 @@ function createEditFileError(error: ToolExecutionError): ToolExecutionResult<Edi
     error,
     meta: {
       durationMs: 0,
-      timedOut: false
-    }
+      timedOut: false,
+    },
   };
 }
