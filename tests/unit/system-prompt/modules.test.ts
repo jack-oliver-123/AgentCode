@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { defaultRegistry } from '../../../src/system-prompt/registry.js';
 import { content as identityContent } from '../../../src/system-prompt/modules/identity.js';
 import { content as constraintsContent } from '../../../src/system-prompt/modules/constraints.js';
+import { content as gitSafetyContent } from '../../../src/system-prompt/modules/git-safety.js';
 import { content as taskModeContent } from '../../../src/system-prompt/modules/taskMode.js';
 import { content as actionsContent } from '../../../src/system-prompt/modules/actions.js';
 import { content as toolsContent } from '../../../src/system-prompt/modules/tools.js';
@@ -15,6 +16,7 @@ describe('模块内容约束 - 无模板插值', () => {
   const allModuleContents = [
     { id: 'identity', content: identityContent },
     { id: 'constraints', content: constraintsContent },
+    { id: 'git-safety', content: gitSafetyContent },
     { id: 'task-mode', content: taskModeContent },
     { id: 'actions', content: actionsContent },
     { id: 'tools', content: toolsContent },
