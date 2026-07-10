@@ -8,15 +8,14 @@ import type {
   PermissionRuleConfig,
 } from './types.js';
 
-import { checkBlacklist } from './blacklist.js';
-import { checkPathSandbox } from './pathSandbox.js';
-import { matchRules } from './ruleEngine.js';
 import { checkAutoSafety } from './autoSafety.js';
-import { applyModeDefault } from './modePolicy.js';
-import { createSessionAllowlist } from './sessionAllowlist.js';
-import { buildPromptDescription } from './promptDescription.js';
+import { checkBlacklist } from './blacklist.js';
 import { appendProjectRule } from './config.js';
-import { parseRulePattern } from './ruleParser.js';
+import { applyModeDefault } from './modePolicy.js';
+import { checkPathSandbox } from './pathSandbox.js';
+import { buildPromptDescription } from './promptDescription.js';
+import { extractMatchTarget, matchRules } from './ruleEngine.js';
+import { compileRule } from './ruleParser.js';
 
 export interface CreatePermissionCheckerOptions {
   mode: PermissionMode;
@@ -31,11 +30,9 @@ export interface CreatePermissionCheckerOptions {
  */
 export function createPermissionChecker(options: CreatePermissionCheckerOptions): PermissionChecker {
   let currentMode = options.mode;
-  const sessionAllowlist = createSessionAllowlist();
-
-  // 可变规则配置（session 层由 allowlist 管理）
+  const sessionRules = [...options.ruleConfig.session];
   const ruleConfig: PermissionRuleConfig = {
-    session: options.ruleConfig.session,
+    session: sessionRules,
     project: options.ruleConfig.project,
     global: options.ruleConfig.global,
   };
@@ -53,15 +50,18 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
       return pathResult;
     }
 
-    // Layer 3: 规则引擎
+    // plan 模式下 write/execute 不可被配置规则放开
+    if (currentMode === 'plan' && input.toolRisk !== 'read') {
+      const planResult = applyModeDefault(input, currentMode);
+      if (planResult !== 'needs_prompt') {
+        return planResult;
+      }
+    }
+
+    // Layer 3: 规则引擎（session → project → global）
     const ruleResult = matchRules(input, ruleConfig);
     if (ruleResult !== undefined) {
       return ruleResult;
-    }
-
-    // Session allowlist 检查（类似规则但动态添加）
-    if (sessionAllowlist.has(input)) {
-      return { allowed: true, source: 'session_grant' };
     }
 
     // Layer 4: Auto 安全规则
@@ -112,18 +112,15 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
         return { allowed: true, source: 'user_prompt' };
 
       case 'allow_session': {
-        // 将当前输入转为 session 规则
-        const rule = buildRuleFromInput(input);
-        sessionAllowlist.add(rule);
+        sessionRules.unshift(buildRuleFromInput(input));
         return { allowed: true, source: 'session_grant' };
       }
 
       case 'allow_permanent': {
-        const rule = buildRuleFromInput(input);
-        sessionAllowlist.add(rule);
+        const ruleString = buildRuleString(input);
+        sessionRules.unshift(compileRule({ rule: ruleString, action: 'allow' }));
         try {
-          const ruleStr = buildRuleString(input);
-          appendProjectRule(options.cwd, ruleStr);
+          appendProjectRule(options.cwd, ruleString);
         } catch (err) {
           console.warn('[permission] 写入永久规则失败，降级为 session grant:', err);
         }
@@ -144,7 +141,7 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
   }
 
   function addSessionRule(rule: CompiledRule): void {
-    sessionAllowlist.add(rule);
+    sessionRules.unshift(rule);
   }
 
   function getMode(): PermissionMode {
@@ -158,59 +155,11 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
   return { check, addSessionRule, getMode, setMode };
 }
 
-/**
- * 从输入构建 CompiledRule（用于 session/permanent 规则记录）。
- */
 function buildRuleFromInput(input: PermissionCheckInput): CompiledRule {
-  const args = input.parsedArguments as Record<string, unknown> | null;
-  let argPattern: string | undefined;
-
-  if (args !== null && typeof args === 'object') {
-    switch (input.toolName) {
-      case 'run_command':
-        argPattern = typeof args.command === 'string' ? args.command : undefined;
-        break;
-      case 'read_file':
-      case 'write_file':
-      case 'edit_file':
-      case 'search_code':
-        argPattern = typeof args.path === 'string' ? args.path : undefined;
-        break;
-      case 'glob_files':
-        argPattern = typeof args.pattern === 'string' ? args.pattern : undefined;
-        break;
-    }
-  }
-
-  return { toolName: input.toolName, argPattern, action: 'allow' };
+  return compileRule({ rule: buildRuleString(input), action: 'allow' });
 }
 
-/**
- * 从输入构建 rule 字符串（用于 YAML 持久化）。
- */
 function buildRuleString(input: PermissionCheckInput): string {
-  const args = input.parsedArguments as Record<string, unknown> | null;
-  let argPattern: string | undefined;
-
-  if (args !== null && typeof args === 'object') {
-    switch (input.toolName) {
-      case 'run_command':
-        argPattern = typeof args.command === 'string' ? args.command : undefined;
-        break;
-      case 'read_file':
-      case 'write_file':
-      case 'edit_file':
-      case 'search_code':
-        argPattern = typeof args.path === 'string' ? args.path : undefined;
-        break;
-      case 'glob_files':
-        argPattern = typeof args.pattern === 'string' ? args.pattern : undefined;
-        break;
-    }
-  }
-
-  if (argPattern !== undefined) {
-    return `${input.toolName}(${argPattern})`;
-  }
-  return input.toolName;
+  const target = extractMatchTarget(input);
+  return target === undefined ? input.toolName : `${input.toolName}(${target})`;
 }

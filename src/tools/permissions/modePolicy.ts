@@ -28,7 +28,9 @@ export function applyModeDefault(
       return { allowed: true, source: 'mode_default' };
 
     case 'plan':
-      // plan 模式理论上不走到这里（filterByRisk 已过滤），防御性 deny
+      if (_input.toolRisk === 'read') {
+        return { allowed: true, source: 'mode_default' };
+      }
       return {
         allowed: false,
         error: {

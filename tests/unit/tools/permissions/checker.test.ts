@@ -11,6 +11,7 @@ import type {
   PromptResponse,
 } from '../../../../src/tools/permissions/types.js';
 import { compileRules } from '../../../../src/tools/permissions/ruleEngine.js';
+import { compileRule } from '../../../../src/tools/permissions/ruleParser.js';
 
 // 使用真实的 cwd 以满足 pathSandbox 的 realpath 要求
 let cwd: string;
@@ -25,7 +26,11 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
-function makeInput(toolName: string, args: Record<string, unknown>, risk: 'read' | 'write' = 'write'): PermissionCheckInput {
+function makeInput(
+  toolName: string,
+  args: Record<string, unknown>,
+  risk: PermissionCheckInput['toolRisk'] = 'write',
+): PermissionCheckInput {
   return { toolName, toolRisk: risk, parsedArguments: args, cwd };
 }
 
@@ -107,7 +112,7 @@ describe('createPermissionChecker', () => {
     expect(askFn).toHaveBeenCalledTimes(2);
   });
 
-  it('askFn 返回 allow_session → allowed，再次调用不触发 askFn', async () => {
+  it('askFn 返回 allow_session → 覆盖 project deny，后续不触发 askFn', async () => {
     const askFn = vi.fn<AskPermissionFn>().mockResolvedValue({ action: 'allow_session' });
     const checker = createPermissionChecker({ mode: 'normal', ruleConfig: EMPTY_CONFIG, cwd, askFn });
 
@@ -116,9 +121,23 @@ describe('createPermissionChecker', () => {
 
     const r2 = await checker.check(makeInput('run_command', { command: 'echo hello' }));
     expect(r2.allowed).toBe(true);
-    expect(r2.source).toBe('session_grant');
+    expect(r2.source).toBe('rule_allow');
     // askFn 只被调用了一次
     expect(askFn).toHaveBeenCalledOnce();
+  });
+
+  it('动态 session allow 覆盖 project deny', async () => {
+    const config: PermissionRuleConfig = {
+      session: [],
+      project: compileRules([{ rule: 'run_command(npm *)', action: 'deny' }]),
+      global: [],
+    };
+    const checker = createPermissionChecker({ mode: 'yolo', ruleConfig: config, cwd });
+    checker.addSessionRule(compileRule({ rule: 'run_command(npm *)', action: 'allow' }));
+
+    const result = await checker.check(makeInput('run_command', { command: 'npm test' }, 'execute'));
+    expect(result.allowed).toBe(true);
+    expect(result.source).toBe('rule_allow');
   });
 
   it('askFn 返回 allow_permanent → allowed + 写入项目规则文件', async () => {
@@ -142,6 +161,31 @@ describe('createPermissionChecker', () => {
     expect(result.allowed).toBe(false);
     if (!result.allowed) {
       expect(result.source).toBe('user_prompt');
+    }
+  });
+
+  it('plan 模式允许 read，且不触发 askFn', async () => {
+    const askFn = vi.fn<AskPermissionFn>();
+    const checker = createPermissionChecker({ mode: 'plan', ruleConfig: EMPTY_CONFIG, cwd, askFn });
+
+    const result = await checker.check(makeInput('read_file', { path: 'src/index.ts' }, 'read'));
+    expect(result.allowed).toBe(true);
+    expect(result.source).toBe('mode_default');
+    expect(askFn).not.toHaveBeenCalled();
+  });
+
+  it('plan 模式不允许规则放开 execute', async () => {
+    const config: PermissionRuleConfig = {
+      session: [],
+      project: compileRules([{ rule: 'run_command(echo *)', action: 'allow' }]),
+      global: [],
+    };
+    const checker = createPermissionChecker({ mode: 'plan', ruleConfig: config, cwd });
+
+    const result = await checker.check(makeInput('run_command', { command: 'echo hello' }, 'execute'));
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.source).toBe('mode_default');
     }
   });
 

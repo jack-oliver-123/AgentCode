@@ -127,19 +127,19 @@ P4（集成 + 端到端验收）←───────────┘
 2. `normal` → `'needs_prompt'`
 3. `auto` → `'needs_prompt'`
 4. `yolo` → allow（source: 'mode_default'）
-5. `plan` → deny（防御性，不应走到此层）
+5. `plan` + read → allow；`plan` + write/execute → deny（注册层过滤之外的纵深防御）
 
-### T2.6：实现 SessionAllowlist
+### T2.6：实现可变 Session 规则层
 
-- 创建 `src/tools/permissions/sessionAllowlist.ts`：导出 `createSessionAllowlist()` 工厂
-- 创建 `tests/unit/tools/permissions/sessionAllowlist.test.ts`
+- PermissionChecker 内维护唯一的 session `CompiledRule[]`
+- 动态规则通过 `compileRule()` 构建并插入数组头部
+- RuleEngine 统一处理 session → project → global，不保留独立 allowlist 匹配路径
 
 **验证——单元测试覆盖：**
-1. 初始状态：`has(input)` → false
-2. `add({ toolName: 'run_command', argPattern: 'git *', action: 'allow' })` 后，`has({ toolName: 'run_command', command: 'git status' })` → true
-3. 不同工具名不匹配：add run_command 规则后查 read_file → false
-4. `clear()` 后所有查询 → false
-5. 新增规则优先级高于旧规则（头部插入验证）
+1. 初始 session 规则优先于 project/global
+2. 动态 session allow 覆盖 project deny
+3. 新增规则插入头部，同层最新规则优先
+4. CompiledRule matcher 在新增时编译一次，检查时复用
 
 ---
 
@@ -174,8 +174,8 @@ P4（集成 + 端到端验收）←───────────┘
 
 ### T3.3：实现 PermissionPrompt TUI 组件
 
-- 创建 `src/tui/PermissionPrompt.tsx`：Ink 阻塞式弹窗组件
-- 创建 `askPermission` 函数（渲染组件并返回 Promise<PromptResponse>）
+- 创建 `src/tui/components/PermissionPrompt.tsx`：Ink 阻塞式弹窗组件
+- 创建 `permissionPromptCoordinator.ts`：提供稳定 askPermission、FIFO 串行队列、活动项超时与 dispose
 
 **验证：**
 1. `npm run typecheck` 通过
@@ -183,8 +183,9 @@ P4（集成 + 端到端验收）←───────────┘
    - 渲染后输出包含工具名、参数摘要、risk 类型
    - 显示 4 个选项文本：允许(本次)、允许(本会话)、允许(永久)、拒绝
    - 选择各选项后 Promise resolve 为对应 PromptResponse
-3. 30s 超时后自动 resolve 为 `{ action: 'deny' }`
-4. 组件样式遵循蓝白色调（蓝色边框/标题、白色内容）
+3. 并发请求 FIFO 展示；活动请求 30s 超时后 resolve deny 并推进队列
+4. 重复响应只结算一次；dispose 拒绝所有未完成请求并清理 timer
+5. 组件样式遵循蓝白色调（蓝色边框/标题、白色内容）
 
 ### T3.4：实现 allow_permanent YAML 写入
 
@@ -282,7 +283,7 @@ T1.1（类型 + 依赖 + 现有类型扩展）
   ├─→ T2.3（RuleEngine）         │
   ├─→ T2.4（AutoSafetyRules）    ├─→ T3.5（Checker 工厂）→ T4.1 → T4.2 → T4.3
   ├─→ T2.5（ModePolicy）         │        ↑
-  ├─→ T2.6（SessionAllowlist）   │        │
+  ├─→ T2.6（Session 规则层）     │        │
   │                               │   T3.1（Config 加载）─┘
   │                               │   T3.2（promptDescription）─┘
   │                               │

@@ -18,8 +18,6 @@ export { compileRule, parseRulePattern } from './ruleParser.js';
 export { compileRules, matchRules } from './ruleEngine.js';
 export { checkAutoSafety } from './autoSafety.js';
 export { applyModeDefault } from './modePolicy.js';
-export { createSessionAllowlist } from './sessionAllowlist.js';
-export type { SessionAllowlist } from './sessionAllowlist.js';
 export { loadPermissionRules, appendProjectRule } from './config.js';
 export { buildPromptDescription } from './promptDescription.js';
 export { createPermissionChecker } from './checker.js';

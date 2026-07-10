@@ -7,11 +7,12 @@ describe('buildPromptDescription', () => {
   it('run_command → 输出包含 "run_command" 和命令内容', () => {
     const input: PermissionCheckInput = {
       toolName: 'run_command',
-      toolRisk: 'write',
+      toolRisk: 'execute',
       parsedArguments: { command: 'npm install' },
       cwd: '/workspace',
     };
     const result = buildPromptDescription(input);
+    expect(result).toContain('[execute]');
     expect(result).toContain('run_command');
     expect(result).toContain('npm install');
   });

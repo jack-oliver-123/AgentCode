@@ -4,6 +4,7 @@ import type { PermissionCheckInput, PermissionDecision, PermissionMode } from '.
 
 /** auto 模式下写/编辑工具的安全路径白名单 */
 const SAFE_WRITE_PATTERNS: readonly string[] = ['src/**', 'tests/**', 'docs/**'];
+const SAFE_WRITE_MATCHERS = SAFE_WRITE_PATTERNS.map((pattern) => picomatch(pattern, { dot: true }));
 
 /** auto 模式下 run_command 安全命令前缀白名单 */
 const SAFE_COMMAND_PREFIXES: readonly string[] = [
@@ -59,13 +60,7 @@ export function checkAutoSafety(
 }
 
 function matchesSafeWritePath(path: string): boolean {
-  for (const pattern of SAFE_WRITE_PATTERNS) {
-    const isMatch = picomatch(pattern, { dot: true });
-    if (isMatch(path)) {
-      return true;
-    }
-  }
-  return false;
+  return SAFE_WRITE_MATCHERS.some((matcher) => matcher(path));
 }
 
 function matchesSafeCommand(command: string): boolean {
