@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { createPermissionChecker } from '../../../../src/tools/permissions/checker.js';
 import { loadPermissionRules } from '../../../../src/tools/permissions/config.js';
 import { compileRules } from '../../../../src/tools/permissions/ruleEngine.js';
+import { compileRule } from '../../../../src/tools/permissions/ruleParser.js';
 import type {
   AskPermissionFn,
   PermissionCheckInput,
@@ -23,7 +24,11 @@ afterEach(() => {
   rmSync(cwd, { recursive: true, force: true });
 });
 
-function makeInput(toolName: string, args: Record<string, unknown>, risk: 'read' | 'write' = 'write'): PermissionCheckInput {
+function makeInput(
+  toolName: string,
+  args: Record<string, unknown>,
+  risk: PermissionCheckInput['toolRisk'] = 'write',
+): PermissionCheckInput {
   return { toolName, toolRisk: risk, parsedArguments: args, cwd };
 }
 
@@ -40,6 +45,13 @@ describe('权限系统集成测试', () => {
       expect(result.error.message).toContain('blacklist');
       expect(result.source).toBe('blacklist');
     }
+  });
+
+  it('AC1: yolo 模式下 rm -r / 仍被黑名单拦截', async () => {
+    const checker = createPermissionChecker({ mode: 'yolo', ruleConfig: EMPTY_CONFIG, cwd });
+    const result = await checker.check(makeInput('run_command', { command: 'rm -r /' }, 'execute'));
+    expect(result.allowed).toBe(false);
+    expect(result.source).toBe('blacklist');
   });
 
   // AC2: 路径越界输入通过完整管道拦截
@@ -84,14 +96,9 @@ describe('权限系统集成测试', () => {
       expect(result1.source).toBe('rule_deny');
     }
 
-    // 添加 session allow 后覆盖 project deny
-    const configWithSession: PermissionRuleConfig = {
-      session: compileRules([{ rule: 'run_command(npm *)', action: 'allow' }]),
-      project: compileRules([{ rule: 'run_command(npm *)', action: 'deny' }]),
-      global: compileRules([{ rule: 'run_command(npm *)', action: 'allow' }]),
-    };
-    const checker2 = createPermissionChecker({ mode: 'yolo', ruleConfig: configWithSession, cwd });
-    const result2 = await checker2.check(makeInput('run_command', { command: 'npm install' }));
+    // 同一 checker 动态添加 session allow 后覆盖 project deny
+    checker1.addSessionRule(compileRule({ rule: 'run_command(npm *)', action: 'allow' }));
+    const result2 = await checker1.check(makeInput('run_command', { command: 'npm install' }));
     expect(result2.allowed).toBe(true);
     expect(result2.source).toBe('rule_allow');
   });

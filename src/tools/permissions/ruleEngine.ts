@@ -1,5 +1,3 @@
-import picomatch from 'picomatch';
-
 import type { CompiledRule, PermissionCheckInput, PermissionDecision, PermissionRuleConfig } from './types.js';
 import { compileRule } from './ruleParser.js';
 import type { PermissionRule } from './types.js';
@@ -14,7 +12,7 @@ export function compileRules(raw: readonly PermissionRule[]): CompiledRule[] {
 /**
  * 按工具名从 parsedArguments 中提取匹配目标字符串。
  */
-function extractMatchTarget(input: PermissionCheckInput): string | undefined {
+export function extractMatchTarget(input: PermissionCheckInput): string | undefined {
   const args = input.parsedArguments as Record<string, unknown> | null;
   if (args === null || typeof args !== 'object') {
     return undefined;
@@ -44,17 +42,12 @@ function ruleMatches(rule: CompiledRule, input: PermissionCheckInput): boolean {
   }
 
   // 无 pattern = 匹配该工具的所有调用
-  if (rule.argPattern === undefined) {
+  if (rule.matcher === undefined) {
     return true;
   }
 
   const target = extractMatchTarget(input);
-  if (target === undefined) {
-    return false;
-  }
-
-  const isMatch = picomatch(rule.argPattern, { dot: true });
-  return isMatch(target);
+  return target !== undefined && rule.matcher(target);
 }
 
 /**

@@ -42,6 +42,7 @@ export interface PermissionRule {
 export interface CompiledRule {
   toolName: string;
   argPattern: string | undefined; // glob pattern，undefined = 匹配所有
+  matcher: ((target: string) => boolean) | undefined;
   action: 'allow' | 'deny';
 }
 

@@ -7,6 +7,7 @@ import { ChatSessionController } from '../session/ChatSessionController.js';
 import { loadDynamicModules } from '../system-prompt/index.js';
 import { createDefaultToolRegistry } from '../tools/registry.js';
 import { App } from '../tui/App.js';
+import { createPermissionPromptCoordinator } from '../tui/permissionPromptCoordinator.js';
 
 export type RenderApp = (node: React.ReactNode) => Instance;
 
@@ -29,6 +30,7 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
 
   // 加载动态模块（project-context + custom-instructions + memory）
   const systemPromptRegistry = await loadDynamicModules(runtimeCwd);
+  const permissionPromptCoordinator = createPermissionPromptCoordinator();
 
   const controller = new ChatSessionController({
     provider,
@@ -37,7 +39,16 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
     cwd: runtimeCwd,
     toolTimeoutMs: resolvedConfig.config.request.timeoutMs,
     systemPromptRegistry,
+    askPermission: permissionPromptCoordinator.askPermission,
+    ...(homeDir !== undefined ? { homeDir } : {}),
   });
 
-  return renderApp(<App controller={controller} resolvedConfig={resolvedConfig} cwd={runtimeCwd} />);
+  return renderApp(
+    <App
+      controller={controller}
+      resolvedConfig={resolvedConfig}
+      cwd={runtimeCwd}
+      permissionPromptCoordinator={permissionPromptCoordinator}
+    />,
+  );
 }

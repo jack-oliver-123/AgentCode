@@ -1,4 +1,11 @@
+import type { ToolRisk } from '../types.js';
 import type { PermissionCheckInput } from './types.js';
+
+const RISK_LABELS: Record<ToolRisk, string> = {
+  read: '[read]',
+  write: '[write]',
+  execute: '[execute]',
+};
 
 const MAX_ARG_DISPLAY_LEN = 100;
 
@@ -34,7 +41,7 @@ export function buildPromptDescription(input: PermissionCheckInput): string {
     argSummary = `${argSummary.slice(0, MAX_ARG_DISPLAY_LEN)}...`;
   }
 
-  const riskLabel = input.toolRisk === 'read' ? '[read]' : '[write]';
+  const riskLabel = RISK_LABELS[input.toolRisk];
 
   return `${riskLabel} ${input.toolName}: ${argSummary}`;
 }

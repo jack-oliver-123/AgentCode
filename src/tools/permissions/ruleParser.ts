@@ -1,3 +1,5 @@
+import picomatch from 'picomatch';
+
 import type { CompiledRule, PermissionRule } from './types.js';
 
 /**
@@ -20,5 +22,6 @@ export function parseRulePattern(rule: string): { toolName: string; argPattern: 
  */
 export function compileRule(raw: PermissionRule): CompiledRule {
   const { toolName, argPattern } = parseRulePattern(raw.rule);
-  return { toolName, argPattern, action: raw.action };
+  const matcher = argPattern === undefined ? undefined : picomatch(argPattern, { dot: true });
+  return { toolName, argPattern, matcher, action: raw.action };
 }

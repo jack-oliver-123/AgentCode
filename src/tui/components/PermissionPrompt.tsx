@@ -82,33 +82,3 @@ export function PermissionPrompt({ toolName, description, onRespond }: Permissio
     </Box>
   );
 }
-
-const PROMPT_TIMEOUT_MS = 30_000;
-
-/**
- * 创建一个 askPermission 函数供 PermissionChecker 使用。
- * 接受渲染回调（由 App 层注入），返回 Promise<PromptResponse>。
- */
-export function createAskPermission(
-  renderPrompt: (props: PermissionPromptProps) => void,
-  dismissPrompt: () => void,
-): (input: { toolName: string }, description: string) => Promise<PromptResponse> {
-  return (input, description) => {
-    return new Promise<PromptResponse>((resolve) => {
-      const timer = setTimeout(() => {
-        dismissPrompt();
-        resolve({ action: 'deny' });
-      }, PROMPT_TIMEOUT_MS);
-
-      renderPrompt({
-        toolName: input.toolName,
-        description,
-        onRespond(response) {
-          clearTimeout(timer);
-          dismissPrompt();
-          resolve(response);
-        },
-      });
-    });
-  };
-}

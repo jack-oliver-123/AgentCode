@@ -1,5 +1,5 @@
 import type { PermissionCheckInput, PermissionDecision } from './types.js';
-import { BLACKLIST_PATTERNS } from './blacklistPatterns.js';
+import { BLACKLIST_PATTERNS, isRecursiveRootRemoval } from './blacklistPatterns.js';
 
 /**
  * 黑名单层：检查 run_command 工具的 command 参数是否匹配危险命令正则。
@@ -17,19 +17,27 @@ export function checkBlacklist(input: PermissionCheckInput): PermissionDecision 
     return undefined;
   }
 
+  if (isRecursiveRootRemoval(command)) {
+    return createBlacklistDecision();
+  }
+
   for (const pattern of BLACKLIST_PATTERNS) {
     if (pattern.test(command)) {
-      return {
-        allowed: false,
-        error: {
-          code: 'permission_denied',
-          message: `Command blocked by blacklist: matches dangerous pattern.`,
-          retryable: false,
-        },
-        source: 'blacklist',
-      };
+      return createBlacklistDecision();
     }
   }
 
   return undefined;
+}
+
+function createBlacklistDecision(): PermissionDecision {
+  return {
+    allowed: false,
+    error: {
+      code: 'permission_denied',
+      message: 'Command blocked by blacklist: matches dangerous pattern.',
+      retryable: false,
+    },
+    source: 'blacklist',
+  };
 }

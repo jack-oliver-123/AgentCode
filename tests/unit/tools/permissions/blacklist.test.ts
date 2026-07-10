@@ -14,19 +14,24 @@ function makeInput(command: string): PermissionCheckInput {
 
 describe('checkBlacklist', () => {
   describe('正例 — 应拦截的危险命令', () => {
-    it('rm -rf / → deny', () => {
-      const result = checkBlacklist(makeInput('rm -rf /'));
+    it.each([
+      'rm -rf /',
+      'rm -r /',
+      'rm -R /',
+      'rm --recursive /',
+      'rm -r -f /',
+      'rm -f -r /',
+      'rm --recursive --force /',
+      'rm -rf --no-preserve-root /',
+      'rm --recursive -- /',
+      "sudo rm -r '/'",
+      'rm -R "/*"',
+      'git status && rm -r /',
+    ])('%s → deny', (command) => {
+      const result = checkBlacklist(makeInput(command));
       expect(result).not.toBeUndefined();
       expect(result!.allowed).toBe(false);
-      if (!result!.allowed) {
-        expect(result!.source).toBe('blacklist');
-      }
-    });
-
-    it('sudo rm -rf /* → deny', () => {
-      const result = checkBlacklist(makeInput('sudo rm -rf /*'));
-      expect(result).not.toBeUndefined();
-      expect(result!.allowed).toBe(false);
+      expect(result!.source).toBe('blacklist');
     });
 
     it('chmod 777 /etc → deny', () => {
@@ -61,12 +66,8 @@ describe('checkBlacklist', () => {
   });
 
   describe('反例 — 不应误杀的安全命令', () => {
-    it('rm file.txt → undefined', () => {
-      expect(checkBlacklist(makeInput('rm file.txt'))).toBeUndefined();
-    });
-
-    it('git rm src/old.ts → undefined', () => {
-      expect(checkBlacklist(makeInput('git rm src/old.ts'))).toBeUndefined();
+    it.each(['rm file.txt', 'rm -r ./project', 'rm -r /tmp', 'git rm src/old.ts'])('%s → undefined', (command) => {
+      expect(checkBlacklist(makeInput(command))).toBeUndefined();
     });
 
     it('chmod 755 ./script.sh → undefined', () => {

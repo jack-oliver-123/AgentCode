@@ -77,7 +77,7 @@ export class ChatSessionController {
   private draft: ChatSessionDraft | undefined;
   private status: ChatSessionState['status'] = 'idle';
   private lastError: PublicError | undefined;
-  private currentMode: AgentLoopMode = 'full';
+  private currentMode: AgentLoopMode;
   private storedPlan: PlanStep[] | undefined;
   /** 当前 turn 内累积的工具调用摘要 */
   private toolActivities: MessagePart[] = [];
@@ -95,6 +95,8 @@ export class ChatSessionController {
   private readonly systemPromptRegistry: SystemPromptModule[] | undefined;
   /** 权限检查器（可选） */
   private readonly permissionChecker: PermissionChecker | undefined;
+  /** full 模式下的权限策略；初始 plan 配置回退到 normal */
+  private readonly fullPermissionMode: Exclude<PermissionMode, 'plan'>;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -110,6 +112,10 @@ export class ChatSessionController {
       ...DEFAULT_AGENT_LOOP_CONFIG,
       ...options.agentLoopConfig,
     };
+
+    const configuredPermissionMode = options.permissionMode ?? this.config.permissionMode;
+    this.fullPermissionMode = configuredPermissionMode === 'plan' ? 'normal' : configuredPermissionMode;
+    this.currentMode = configuredPermissionMode === 'plan' ? 'plan' : 'full';
 
     // 系统提示初始化
     this.buildSystemPromptFn = options.buildSystemPrompt ?? buildSystemPrompt;
@@ -131,11 +137,10 @@ export class ChatSessionController {
     this.systemPrompt = system;
 
     // 权限系统初始化
-    const permMode: PermissionMode = options.permissionMode ?? this.config.permissionMode;
     const homeDir = options.homeDir ?? (process.env.HOME ?? process.env.USERPROFILE ?? '');
     const ruleConfig = loadPermissionRules(this.cwd, homeDir);
     this.permissionChecker = createPermissionChecker({
-      mode: permMode,
+      mode: this.resolvePermissionMode(this.currentMode),
       ruleConfig,
       cwd: this.cwd,
       ...(options.askPermission !== undefined ? { askFn: options.askPermission } : {}),
@@ -148,8 +153,9 @@ export class ChatSessionController {
 
   /** 切换运行模式（full ↔ plan），返回切换后的状态事件 */
   toggleMode(): ChatSessionEvent {
-    this.currentMode = this.currentMode === 'full' ? 'plan' : 'full';
-    const label = this.currentMode === 'plan' ? 'plan' : 'full';
+    const nextMode = this.currentMode === 'full' ? 'plan' : 'full';
+    this.setLoopMode(nextMode);
+    const label = nextMode === 'plan' ? 'plan' : 'full';
     this.notice = `Switched to ${label} mode`;
     return this.createStateChangedEvent();
   }
@@ -170,7 +176,7 @@ export class ChatSessionController {
 
     // 识别 /plan 和 /do 命令
     const { mode, actualText } = this.parseCommand(text);
-    this.currentMode = mode;
+    this.setLoopMode(mode);
 
     const userMessage = this.createMessage('user', actualText);
     this.messages.push(userMessage);
@@ -341,6 +347,15 @@ export class ChatSessionController {
     return { mode: this.currentMode, actualText: text };
   }
 
+  private setLoopMode(mode: AgentLoopMode): void {
+    this.currentMode = mode;
+    this.permissionChecker?.setMode(this.resolvePermissionMode(mode));
+  }
+
+  private resolvePermissionMode(mode: AgentLoopMode): PermissionMode {
+    return mode === 'plan' ? 'plan' : this.fullPermissionMode;
+  }
+
   private completeTurn(
     userMessage: ChatMessage,
     finalText: string,
@@ -443,18 +458,23 @@ function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   return {
     role: message.role,
     content: message.parts
-      .filter((p) => p.type === 'text')
-      .map((p) => p.text)
-      .join(''),
+      .filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n'),
   };
 }
 
 function cloneMessage(message: ChatMessage): ChatMessage {
-  return {
+  const cloned: ChatMessage = {
     ...message,
     parts: message.parts.map((part) => ({ ...part })),
-    ...(message.meta !== undefined ? { meta: { ...message.meta } } : {}),
   };
+
+  if (message.meta !== undefined) {
+    cloned.meta = { ...message.meta };
+  }
+
+  return cloned;
 }
 
 function createEmptyRegistry(): ToolRegistry {

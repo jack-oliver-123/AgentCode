@@ -105,18 +105,18 @@
 - [ ] 单元测试：normal → `'needs_prompt'`
 - [ ] 单元测试：auto → `'needs_prompt'`
 - [ ] 单元测试：yolo → allow，source 为 'mode_default'
-- [ ] 单元测试：plan → deny（防御性）
+- [ ] 单元测试：plan + read → allow；plan + write/execute → deny（防御性）
 
 ---
 
 ## CL7：会话规则存储（T2.6 → AC6）
 
-- [ ] `src/tools/permissions/sessionAllowlist.ts` 导出 `createSessionAllowlist` 工厂
-- [ ] 单元测试：初始 has → false
-- [ ] 单元测试：add `{ toolName: 'run_command', argPattern: 'git *', action: 'allow' }` 后，has `{ toolName: 'run_command', command: 'git status' }` → true
-- [ ] 单元测试：不同工具名（add run_command 后查 read_file）→ false
-- [ ] 单元测试：clear 后所有查询 → false
-- [ ] 单元测试：新增规则优先于旧规则（后 add 的 deny 覆盖先 add 的 allow）
+- [ ] PermissionChecker 持有唯一的可变 session `CompiledRule[]`
+- [ ] 动态 session 规则通过 `compileRule()` 构建并插入数组头部
+- [ ] 单元测试：动态 session allow 覆盖 project deny
+- [ ] 单元测试：初始 session 层优先于 project/global
+- [ ] 单元测试：新增规则优先于旧规则（头部插入）
+- [ ] 运行时规则匹配复用预编译 matcher，不再次调用 picomatch 编译
 
 ---
 
@@ -143,14 +143,15 @@
 
 ## CL10：TUI 弹窗组件（T3.3 → AC5, AC6）
 
-- [ ] `src/tui/PermissionPrompt.tsx` 存在
+- [ ] `src/tui/components/PermissionPrompt.tsx` 与 `src/tui/permissionPromptCoordinator.ts` 存在
 - [ ] `npm run typecheck` 通过
 - [ ] ink-testing-library 测试：渲染输出包含工具名子串
 - [ ] ink-testing-library 测试：渲染输出包含参数摘要子串
 - [ ] ink-testing-library 测试：渲染输出包含 risk 类型子串（`read`/`write`/`execute`）
 - [ ] ink-testing-library 测试：渲染输出包含 4 个选项文本（"允许(本次)"、"允许(本会话)"、"允许(永久)"、"拒绝"）
-- [ ] ink-testing-library 测试：模拟选择各选项后 Promise resolve 为对应 PromptResponse 值
-- [ ] ink-testing-library 测试：30s 后未选择 → Promise resolve 为 `{ action: 'deny' }`
+- [ ] coordinator 测试：响应各选项后 Promise resolve 为对应 PromptResponse 值
+- [ ] coordinator 测试：并发请求 FIFO 串行展示，活动请求 30s 后自动 deny 并推进队列
+- [ ] coordinator 测试：重复响应只结算一次，dispose 拒绝所有未完成请求
 - [ ] 组件标题/边框使用 Ink `color` prop 值为 `blue` 或 `blueBright`；正文无显式 color 或为终端默认
 
 ---
@@ -169,11 +170,12 @@
 
 - [ ] `src/tools/permissions/checker.ts` 导出 `createPermissionChecker` 工厂
 - [ ] `index.ts` 导出 createPermissionChecker 和所有公共类型
-- [ ] ① 单元测试：mode=yolo + 黑名单命令 → deny（AC1：黑名单不可绕过）
+- [ ] ① 单元测试：mode=yolo + `rm -rf /` / `rm -r /` → deny（AC1：黑名单不可绕过）
 - [ ] ② 单元测试：路径越界输入 → deny
 - [ ] ③ 单元测试：规则 allow 命中 → allow，askFn 未被调用（AC3）
 - [ ] ④ 单元测试：规则 deny 命中 → deny，askFn 未被调用（AC3）
 - [ ] ⑤ 单元测试：auto + read_file → allow，askFn 未被调用（AC5）
+- [ ] ⑤a 单元测试：plan + read → allow；plan + write/execute 即使规则 allow 也 deny
 - [ ] ⑥ 单元测试：normal + 无规则命中 → askFn 被调用（AC5）
 - [ ] ⑦ 单元测试：askFn 返回 allow_once → allowed，再次调用相同输入 askFn 再次被调用（AC6）
 - [ ] ⑧ 单元测试：askFn 返回 allow_session → allowed，再次相同输入 askFn 不被调用（AC6）
@@ -201,7 +203,7 @@
 - [ ] ① AC1：构造完整 checker（mode=yolo）+ 输入 `rm -rf /` → decision.allowed===false，error.message 含 "blacklist"
 - [ ] ② AC2：构造完整 checker + 输入路径越界 → decision.allowed===false，source 为 'path_sandbox'
 - [ ] ③ AC3：配置 `run_command(git *)` allow 规则 + 输入 `git status` → decision.allowed===true，askFn 未调用
-- [ ] ④ AC4：global `run_command(npm *)` allow + project `run_command(npm publish)` deny → `npm publish` denied；加 session `run_command(npm publish)` allow → allowed
+- [ ] ④ AC4：global allow + project deny → denied；在同一 checker 动态 add session allow → allowed
 - [ ] ⑤ AC5：strict 模式 + 无规则 → denied 且 message 含 "not explicitly allowed"；yolo + 无规则 → allowed
 - [ ] ⑥ AC6：askFn 返回 allow_session → 再次 check 相同输入 → allowed 且 askFn 不被调用
 - [ ] ⑦ AC7：deny 决策返回结构为 `{ allowed: false, error: { code: 'permission_denied', message: string }, source: string }`
@@ -216,9 +218,9 @@
 - [ ] ②b AC2：read_file 路径 `../../etc/passwd` → 输出含 "permission_denied"
 - [ ] ③  AC3：permissions.yaml 配置 `run_command(git *)` allow + `write_file(*.env)` deny → `git status` 直接执行无弹窗；写 `.env` 返回 permission_denied 无弹窗
 - [ ] ④  AC4：全局 allow `npm *` + 项目 deny `npm publish` → `npm publish` 被拒绝
-- [ ] ⑤a AC5-plan：plan 模式下 write/execute 工具不出现在模型可用工具列表（验证 filterByRisk 逻辑）
+- [ ] ⑤a AC5-plan：plan 模式下 read 可用；write/execute 不出现在模型工具列表且直接调用也被拒；Tab、`/plan`、`/do` 同步切换 checker
 - [ ] ⑤b AC5-strict：strict 模式 + 未被规则命中的调用 → 输出含 "permission_denied" 和 "not explicitly allowed"
-- [ ] ⑤c AC5-normal：normal 模式 + 未被规则命中的 write 调用 → 弹出 TUI 确认弹窗，等待用户选择
+- [ ] ⑤c AC5-normal：生产 bootstrap 注入 askPermission；未命中调用 → 弹出 TUI 确认弹窗而非 no UI deny；并发请求 FIFO 展示
 - [ ] ⑤d AC5-auto：auto 模式 + read_file → 直接放行无弹窗；`curl http://example.com` → 弹窗
 - [ ] ⑤e AC5-yolo：yolo 模式 + 任意 write/execute 调用 → 直接放行无弹窗
 - [ ] ⑥a AC6-once：弹窗选"仅本次"→ 执行成功；立即再发起相同调用 → 再次弹窗

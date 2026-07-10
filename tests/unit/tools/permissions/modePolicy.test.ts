@@ -39,11 +39,20 @@ describe('applyModeDefault', () => {
     }
   });
 
-  it('plan → deny (mode_default)', () => {
+  it('plan + write → deny (mode_default)', () => {
     const result = applyModeDefault(dummyInput, 'plan');
     expect(result).not.toBe('needs_prompt');
     if (result !== 'needs_prompt') {
       expect(result.allowed).toBe(false);
+      expect(result.source).toBe('mode_default');
+    }
+  });
+
+  it('plan + read → allow (mode_default)', () => {
+    const result = applyModeDefault({ ...dummyInput, toolName: 'read_file', toolRisk: 'read' }, 'plan');
+    expect(result).not.toBe('needs_prompt');
+    if (result !== 'needs_prompt') {
+      expect(result.allowed).toBe(true);
       expect(result.source).toBe('mode_default');
     }
   });

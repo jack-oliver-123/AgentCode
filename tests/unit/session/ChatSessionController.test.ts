@@ -108,6 +108,37 @@ describe('ChatSessionController', () => {
     expect(JSON.stringify(states.at(-1)?.messages)).not.toContain('hidden reasoning');
   });
 
+  it('permissionMode=plan 从 plan 状态启动并仅向 provider 暴露 read 工具', async () => {
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'Plan answer' },
+      { type: 'response.complete', finishReason: 'stop' },
+    ]);
+    const controller = createController(provider, { permissionMode: 'plan' }, {
+      permissionMode: 'plan',
+      toolRegistry: createTestToolRegistry(),
+    });
+
+    expect(controller.getState().mode).toBe('plan');
+    await collectStates(controller.submitUserText('Inspect the project'));
+
+    expect(provider.requests[0]?.tools).toEqual([{ name: 'test_tool', description: expect.any(String), inputSchema: expect.any(Object) }]);
+  });
+
+  it('Tab 和 /do 在 plan/full 间切换并恢复 full 权限策略', async () => {
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'Done' },
+      { type: 'response.complete', finishReason: 'stop' },
+    ]);
+    const controller = createController(provider, { permissionMode: 'plan' }, { permissionMode: 'plan' });
+
+    expect(controller.toggleMode().state.mode).toBe('full');
+    expect(controller.toggleMode().state.mode).toBe('plan');
+
+    const states = await collectStates(controller.submitUserText('/do implement it'));
+    expect(states[0]?.mode).toBe('full');
+    expect(provider.requests[0]?.messages.at(-1)).toMatchObject({ role: 'user', content: 'implement it' });
+  });
+
   it('omits tool choice when tool execution is not enabled', async () => {
     const provider = new FakeProvider([
       { type: 'content.delta', delta: 'Plain answer' },
