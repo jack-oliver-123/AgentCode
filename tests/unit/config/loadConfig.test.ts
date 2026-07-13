@@ -58,6 +58,7 @@ describe('loadConfig', () => {
       ui: {
         showThinking: true,
       },
+      permissionMode: 'normal',
     });
   });
 

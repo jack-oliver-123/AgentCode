@@ -17,6 +17,9 @@ import { buildSystemPrompt } from '../system-prompt/index.js';
 import type { EnvContext, SystemPromptBuilder, SystemPromptModule } from '../system-prompt/types.js';
 import { summarizeToolResult } from '../tools/summarize.js';
 import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
+import type { AskPermissionFn, PermissionChecker, PermissionMode } from '../tools/permissions/types.js';
+import { createPermissionChecker } from '../tools/permissions/checker.js';
+import { loadPermissionRules } from '../tools/permissions/config.js';
 import type {
   ChatMessage,
   ChatSessionDraft,
@@ -41,6 +44,12 @@ export interface ChatSessionControllerOptions {
   buildSystemPrompt?: SystemPromptBuilder;
   /** 自定义系统提示模块注册表（含动态加载内容） */
   systemPromptRegistry?: SystemPromptModule[];
+  /** 权限模式覆盖（默认从 config 读取，fallback 'normal'） */
+  permissionMode?: PermissionMode;
+  /** 权限弹窗回调（TUI 层注入） */
+  askPermission?: AskPermissionFn;
+  /** 用户 home 目录（用于加载全局权限配置） */
+  homeDir?: string;
 }
 
 export interface SubmitUserTextOptions {
@@ -68,7 +77,7 @@ export class ChatSessionController {
   private draft: ChatSessionDraft | undefined;
   private status: ChatSessionState['status'] = 'idle';
   private lastError: PublicError | undefined;
-  private currentMode: AgentLoopMode = 'full';
+  private currentMode: AgentLoopMode;
   private storedPlan: PlanStep[] | undefined;
   /** 当前 turn 内累积的工具调用摘要 */
   private toolActivities: MessagePart[] = [];
@@ -84,6 +93,10 @@ export class ChatSessionController {
   private readonly buildSystemPromptFn: SystemPromptBuilder;
   /** 系统提示模块注册表（可注入） */
   private readonly systemPromptRegistry: SystemPromptModule[] | undefined;
+  /** 权限检查器（可选） */
+  private readonly permissionChecker: PermissionChecker | undefined;
+  /** full 模式下的权限策略；初始 plan 配置回退到 normal */
+  private readonly fullPermissionMode: Exclude<PermissionMode, 'plan'>;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -99,6 +112,10 @@ export class ChatSessionController {
       ...DEFAULT_AGENT_LOOP_CONFIG,
       ...options.agentLoopConfig,
     };
+
+    const configuredPermissionMode = options.permissionMode ?? this.config.permissionMode;
+    this.fullPermissionMode = configuredPermissionMode === 'plan' ? 'normal' : configuredPermissionMode;
+    this.currentMode = configuredPermissionMode === 'plan' ? 'plan' : 'full';
 
     // 系统提示初始化
     this.buildSystemPromptFn = options.buildSystemPrompt ?? buildSystemPrompt;
@@ -118,6 +135,16 @@ export class ChatSessionController {
       this.systemPromptRegistry,
     );
     this.systemPrompt = system;
+
+    // 权限系统初始化
+    const homeDir = options.homeDir ?? (process.env.HOME ?? process.env.USERPROFILE ?? '');
+    const ruleConfig = loadPermissionRules(this.cwd, homeDir);
+    this.permissionChecker = createPermissionChecker({
+      mode: this.resolvePermissionMode(this.currentMode),
+      ruleConfig,
+      cwd: this.cwd,
+      ...(options.askPermission !== undefined ? { askFn: options.askPermission } : {}),
+    });
   }
 
   getState(): ChatSessionState {
@@ -126,8 +153,9 @@ export class ChatSessionController {
 
   /** 切换运行模式（full ↔ plan），返回切换后的状态事件 */
   toggleMode(): ChatSessionEvent {
-    this.currentMode = this.currentMode === 'full' ? 'plan' : 'full';
-    const label = this.currentMode === 'plan' ? 'plan' : 'full';
+    const nextMode = this.currentMode === 'full' ? 'plan' : 'full';
+    this.setLoopMode(nextMode);
+    const label = nextMode === 'plan' ? 'plan' : 'full';
     this.notice = `Switched to ${label} mode`;
     return this.createStateChangedEvent();
   }
@@ -148,7 +176,7 @@ export class ChatSessionController {
 
     // 识别 /plan 和 /do 命令
     const { mode, actualText } = this.parseCommand(text);
-    this.currentMode = mode;
+    this.setLoopMode(mode);
 
     const userMessage = this.createMessage('user', actualText);
     this.messages.push(userMessage);
@@ -214,6 +242,7 @@ export class ChatSessionController {
           secrets: [this.config.apiKey, ...this.toolSecrets],
           maxOutputBytes: this.maxToolOutputBytes,
           ...(signal !== undefined ? { signal } : {}),
+          ...(this.permissionChecker !== undefined ? { permissionChecker: this.permissionChecker } : {}),
         }),
         config: this.agentLoopConfig,
         model: this.config.model,
@@ -318,6 +347,15 @@ export class ChatSessionController {
     return { mode: this.currentMode, actualText: text };
   }
 
+  private setLoopMode(mode: AgentLoopMode): void {
+    this.currentMode = mode;
+    this.permissionChecker?.setMode(this.resolvePermissionMode(mode));
+  }
+
+  private resolvePermissionMode(mode: AgentLoopMode): PermissionMode {
+    return mode === 'plan' ? 'plan' : this.fullPermissionMode;
+  }
+
   private completeTurn(
     userMessage: ChatMessage,
     finalText: string,
@@ -420,18 +458,23 @@ function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   return {
     role: message.role,
     content: message.parts
-      .filter((p) => p.type === 'text')
-      .map((p) => p.text)
-      .join(''),
+      .filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text')
+      .map((part) => part.text)
+      .join('\n'),
   };
 }
 
 function cloneMessage(message: ChatMessage): ChatMessage {
-  return {
+  const cloned: ChatMessage = {
     ...message,
     parts: message.parts.map((part) => ({ ...part })),
-    ...(message.meta !== undefined ? { meta: { ...message.meta } } : {}),
   };
+
+  if (message.meta !== undefined) {
+    cloned.meta = { ...message.meta };
+  }
+
+  return cloned;
 }
 
 function createEmptyRegistry(): ToolRegistry {

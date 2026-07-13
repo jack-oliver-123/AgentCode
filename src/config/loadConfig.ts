@@ -5,6 +5,7 @@ import { parseDocument } from 'yaml';
 import { ZodError } from 'zod';
 
 import { AgentCodeError } from '../shared/errors.js';
+import { type McpServersConfig, mergeMcpConfigs, parseMcpServersConfig } from './mcpSchema.js';
 import { redactText } from './redact.js';
 import { type RawConfig, type ResolvedConfig, normalizeConfig, parseRawConfig } from './schema.js';
 
@@ -38,7 +39,15 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
   const projectConfigPath = await findProjectConfigPath(cwd, globalConfigPath);
 
   if (projectConfigPath !== undefined) {
-    return parseConfigFile(projectConfigPath, 'project');
+    const resolved = await parseConfigFile(projectConfigPath, 'project');
+    // F2/N6：双层 mcp_servers 合并——project 主配置已就位，额外读取 global 的 mcp_servers
+    const globalMcpServers = await readMcpServersOnly(globalConfigPath);
+    const projectMcpServers = resolved.config.mcpServers;
+    const merged = mergeMcpConfigs(globalMcpServers, projectMcpServers);
+    if (Object.keys(merged).length > 0) {
+      resolved.config.mcpServers = merged;
+    }
+    return resolved;
   }
 
   if (await configPathExists(globalConfigPath)) {
@@ -51,6 +60,23 @@ export async function loadConfig(options: LoadConfigOptions = {}): Promise<Resol
     message: `Created ${relative(cwd, createdConfigPath)}. Add your API key, then start AgentCode again.`,
     retryable: false,
   });
+}
+
+/**
+ * 仅从配置文件中提取 mcp_servers 字段，不解析主配置。
+ * 文件不存在或解析失败时静默返回空对象。
+ */
+async function readMcpServersOnly(configPath: string): Promise<McpServersConfig> {
+  try {
+    if (!(await configPathExists(configPath))) return {};
+    const rawText = await readConfigFile(configPath);
+    const yamlValue = parseYaml(rawText, configPath);
+    if (typeof yamlValue !== 'object' || yamlValue === null) return {};
+    const raw = (yamlValue as Record<string, unknown>)['mcp_servers'];
+    return parseMcpServersConfig(raw);
+  } catch {
+    return {};
+  }
 }
 
 export async function findProjectConfigPath(

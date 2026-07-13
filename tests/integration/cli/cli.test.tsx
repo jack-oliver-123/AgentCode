@@ -11,6 +11,7 @@ import { AgentCodeError } from '../../../src/shared/errors.js';
 import { App } from '../../../src/tui/App.js';
 import { InputPane, removeLastGrapheme } from '../../../src/tui/components/InputPane.js';
 import { TranscriptPane } from '../../../src/tui/components/TranscriptPane.js';
+import { createPermissionPromptCoordinator } from '../../../src/tui/permissionPromptCoordinator.js';
 import { FakeProvider } from '../../helpers/FakeProvider.js';
 import { createTempWorkspace, writeAgentConfig } from '../../helpers/tempConfig.js';
 
@@ -31,6 +32,33 @@ describe('TUI App', () => {
     expect(output).toContain('Ready for a new AgentCode conversation');
     expect(output).toContain('Ask AgentCode about this project');
     expect(output).toContain('Enter to send');
+  });
+
+  it('有活动权限请求时渲染 PermissionPrompt 替代输入框', () => {
+    const coordinator = createPermissionPromptCoordinator();
+    void coordinator.askPermission(
+      {
+        toolName: 'run_command',
+        toolRisk: 'execute',
+        parsedArguments: { command: 'npm install' },
+        cwd: '/workspace',
+      },
+      '[execute] run_command: npm install',
+    );
+    const controller = createController(new FakeProvider([]));
+
+    const output = renderToString(
+      <App
+        controller={controller}
+        resolvedConfig={createResolvedConfig()}
+        permissionPromptCoordinator={coordinator}
+      />,
+    );
+
+    expect(output).toContain('权限请求');
+    expect(output).toContain('[execute]');
+    expect(output).not.toContain('Ask AgentCode about this project');
+    coordinator.dispose();
   });
 
   it('renders completed transcript from ChatSessionController state', async () => {
@@ -319,6 +347,7 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
     ui: {
       showThinking: false,
     },
+    permissionMode: 'normal',
     ...overrides,
   };
 }

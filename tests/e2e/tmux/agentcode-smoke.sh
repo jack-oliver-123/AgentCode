@@ -164,6 +164,7 @@ protocol: openai
 model: e2e-openai-model
 base_url: $mock_url/v1
 api_key: $SENTINEL_API_KEY
+permission_mode: yolo
 request:
   timeout_ms: 10000
 ui:

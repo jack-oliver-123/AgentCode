@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { McpServersConfig } from './mcpSchema.js';
+
 export type ProviderProtocol = 'anthropic' | 'openai';
 
 export interface RawConfig {
@@ -24,6 +26,9 @@ export interface RawConfig {
         show_thinking?: boolean | undefined;
       }
     | undefined;
+  permission_mode?: string | undefined;
+  /** MCP Server 原始配置，深层解析由 mcpSchema.ts 负责 */
+  mcp_servers?: Record<string, unknown> | undefined;
 }
 
 export interface AgentConfig {
@@ -42,6 +47,9 @@ export interface AgentConfig {
   ui: {
     showThinking: boolean;
   };
+  permissionMode: 'plan' | 'strict' | 'normal' | 'auto' | 'yolo';
+  /** 合并后的 MCP Server 配置，由 loadConfig 填充 */
+  mcpServers?: McpServersConfig;
 }
 
 export interface ResolvedConfig {
@@ -113,6 +121,9 @@ export const rawConfigSchema = z
         show_thinking: z.boolean().optional(),
       })
       .optional(),
+    permission_mode: z.enum(['plan', 'strict', 'normal', 'auto', 'yolo']).optional(),
+    // mcp_servers 由 mcpSchema.ts 深层解析，这里只做宽松的结构检查
+    mcp_servers: z.record(z.string().min(1), z.unknown()).optional(),
   })
   .strict();
 
@@ -142,5 +153,6 @@ export function normalizeConfig(rawConfig: RawConfig): AgentConfig {
     ui: {
       showThinking: rawConfig.ui?.show_thinking ?? false,
     },
+    permissionMode: (rawConfig.permission_mode as AgentConfig['permissionMode'] | undefined) ?? 'normal',
   };
 }
