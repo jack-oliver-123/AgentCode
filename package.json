@@ -27,6 +27,7 @@
   "dependencies": {
     "eventsource-parser": "^3.0.6",
     "ink": "^6.5.1",
+    "picomatch": "^4.0.5",
     "react": "^19.2.3",
     "yaml": "^2.8.2",
     "zod": "^4.2.1"
@@ -34,6 +35,7 @@
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "@types/node": "^25.0.2",
+    "@types/picomatch": "^4.0.3",
     "@types/react": "^19.2.8",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3",
