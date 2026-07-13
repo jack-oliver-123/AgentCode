@@ -1,11 +1,29 @@
 import { type Instance, render } from 'ink';
 import type React from 'react';
 
+import type { McpServerEntry } from '../config/mcpSchema.js';
 import { type LoadConfigOptions, loadConfig } from '../config/loadConfig.js';
+import { initMcpManager } from '../mcp/McpManager.js';
+import { createHttpTransport } from '../mcp/transport/HttpTransport.js';
+import { createStdioTransport } from '../mcp/transport/StdioTransport.js';
+import type { McpTransport } from '../mcp/transport/types.js';
 import { createProvider } from '../providers/createProvider.js';
 import { ChatSessionController } from '../session/ChatSessionController.js';
 import { loadDynamicModules } from '../system-prompt/index.js';
-import { createDefaultToolRegistry } from '../tools/registry.js';
+import { createMcpSearchTool } from '../tools/builtins/mcpSearchTools.js';
+import {
+  createDefaultToolRegistry,
+  createCompositeRegistry,
+  createStaticRegistry,
+} from '../tools/registry.js';
+import {
+  createEditFileTool,
+  createGlobFilesTool,
+  createReadFileTool,
+  createRunCommandTool,
+  createSearchCodeTool,
+  createWriteFileTool,
+} from '../tools/builtins/index.js';
 import { App } from '../tui/App.js';
 import { createPermissionPromptCoordinator } from '../tui/permissionPromptCoordinator.js';
 
@@ -14,6 +32,14 @@ export type RenderApp = (node: React.ReactNode) => Instance;
 export interface BootstrapAppOptions extends LoadConfigOptions {
   fetch?: typeof fetch;
   renderApp?: RenderApp;
+}
+
+/** 根据 McpServerEntry 类型创建对应的 transport */
+function createDefaultTransport(entry: McpServerEntry): McpTransport {
+  if (entry.type === 'stdio') {
+    return createStdioTransport(entry);
+  }
+  return createHttpTransport(entry);
 }
 
 export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<Instance> {
@@ -32,10 +58,49 @@ export async function bootstrapApp(options: BootstrapAppOptions = {}): Promise<I
   const systemPromptRegistry = await loadDynamicModules(runtimeCwd);
   const permissionPromptCoordinator = createPermissionPromptCoordinator();
 
+  // MCP 集成：有 mcpServers 配置时初始化连接池，否则使用默认 registry（条件门控）
+  const mcpServers = resolvedConfig.config.mcpServers;
+  let toolRegistry = createDefaultToolRegistry();
+
+  if (mcpServers !== undefined && Object.keys(mcpServers).length > 0) {
+    const { manager } = await initMcpManager(mcpServers, createDefaultTransport);
+
+    // SIGINT/SIGTERM 清理：'exit' 事件是同步的，不能执行异步操作，必须用信号处理
+    const cleanup = (): void => {
+      manager.closeAll().catch(() => {
+        // 关闭失败静默忽略
+      });
+    };
+    process.once('SIGINT', () => {
+      cleanup();
+      process.exit(130);
+    });
+    process.once('SIGTERM', () => {
+      cleanup();
+      process.exit(143);
+    });
+
+    // providerTools：内置工具 + mcp_search_tools（暴露给 Provider 和 system prompt）
+    const mcpSearchTool = createMcpSearchTool(manager);
+    const providerTools = createStaticRegistry([
+      createReadFileTool(),
+      createWriteFileTool(),
+      createEditFileTool(),
+      createRunCommandTool(),
+      createGlobFilesTool(),
+      createSearchCodeTool(),
+      mcpSearchTool,
+    ]);
+
+    // hiddenTools：MCP 工具（不出现在 Provider 声明列表，仅通过 get() 按名查找）
+    const hiddenMap = new Map(manager.getTools().map((t) => [t.name, t]));
+    toolRegistry = createCompositeRegistry(providerTools, hiddenMap);
+  }
+
   const controller = new ChatSessionController({
     provider,
     config: resolvedConfig.config,
-    toolRegistry: createDefaultToolRegistry(),
+    toolRegistry,
     cwd: runtimeCwd,
     toolTimeoutMs: resolvedConfig.config.request.timeoutMs,
     systemPromptRegistry,
