@@ -41,7 +41,7 @@ export function checkAutoSafety(
   // write/edit 工具：路径匹配安全目录时放行
   if (input.toolName === 'write_file' || input.toolName === 'edit_file') {
     const path = typeof args?.path === 'string' ? args.path : '';
-    if (path.length > 0 && matchesSafeWritePath(path)) {
+    if (path.length > 0 && matchesSafeWritePath(path, input.cwd)) {
       return { allowed: true, source: 'auto_safety' };
     }
     return undefined;
@@ -59,8 +59,12 @@ export function checkAutoSafety(
   return undefined;
 }
 
-function matchesSafeWritePath(path: string): boolean {
-  return SAFE_WRITE_MATCHERS.some((matcher) => matcher(path));
+function matchesSafeWritePath(path: string, cwd: string): boolean {
+  // 将绝对路径转为相对于 cwd 的相对路径后再做 glob 匹配
+  const rel = path.startsWith(cwd)
+    ? path.slice(cwd.length).replace(/^[/\\]/, '')
+    : path;
+  return SAFE_WRITE_MATCHERS.some((matcher) => matcher(rel));
 }
 
 function matchesSafeCommand(command: string): boolean {
