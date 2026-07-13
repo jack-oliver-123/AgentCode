@@ -166,6 +166,22 @@ describe('McpClient', () => {
     await client.close();
   });
 
+  it('connect() 握手超时后 transport 被关闭，不泄露后台循环', async () => {
+    const { transport, outbox } = makeControllableTransport();
+    let closeCalled = false;
+    const origClose = transport.close.bind(transport);
+    transport.close = async () => { closeCalled = true; await origClose(); };
+
+    const client = createMcpClient({ serverName: 'test', transport, connectTimeoutMs: 50 });
+
+    // 不回包，让 initialize 超时
+    await expect(client.connect()).rejects.toThrow('timed out');
+
+    // connect 失败后 transport 应已关闭
+    expect(closeCalled).toBe(true);
+    expect(outbox.some((m) => JSON.parse(m).method === 'initialize')).toBe(true);
+  });
+
   it('transport 关闭后 pending 请求以错误返回，不永久挂起', async () => {
     const { transport, push, outbox, closeFn } = makeControllableTransport();
     const client = createMcpClient({ serverName: 'test', transport });
