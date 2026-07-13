@@ -24,9 +24,9 @@ export async function initMcpManager(
     entries.map(async ([serverName, entry]): Promise<McpManagerInitResult> => {
       const transport = createTransport(entry);
       const client = createMcpClient({ serverName, transport });
-      clients.push(client);
 
       await client.connect();
+      clients.push(client);
       const rawTools = await client.listTools();
 
       const tools = rawTools.map((raw) =>

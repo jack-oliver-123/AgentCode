@@ -460,7 +460,7 @@ function toProviderMessage(message: ChatMessage): ProviderChatMessage {
     content: message.parts
       .filter((part): part is Extract<MessagePart, { type: 'text' }> => part.type === 'text')
       .map((part) => part.text)
-      .join('\n'),
+      .join(''),
   };
 }
 

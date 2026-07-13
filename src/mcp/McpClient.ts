@@ -43,20 +43,30 @@ export function createMcpClient(options: McpClientOptions): McpClient {
       // 先启动消息循环，再发请求，避免响应在监听前到达被丢弃
       startMessageLoop();
 
-      await dispatcher.sendRequest(
-        transport,
-        'initialize',
-        {
-          protocolVersion: MCP_PROTOCOL_VERSION,
-          clientInfo: { name: 'agentcode', version: '0.1' },
-          capabilities: {},
-        },
-        undefined,
-        connectTimeoutMs,
-      );
+      try {
+        await dispatcher.sendRequest(
+          transport,
+          'initialize',
+          {
+            protocolVersion: MCP_PROTOCOL_VERSION,
+            clientInfo: { name: 'agentcode', version: '0.1' },
+            capabilities: {},
+          },
+          undefined,
+          connectTimeoutMs,
+        );
 
-      // initialized 是通知（无 id），不等待响应
-      await dispatcher.sendNotification(transport, 'notifications/initialized');
+        // initialized 是通知（无 id），不等待响应
+        await dispatcher.sendNotification(transport, 'notifications/initialized');
+      } catch (err) {
+        // 握手失败时清理消息循环和 transport，避免后台循环泄露（Issue #50）
+        loopStopped = true;
+        await transport.close().catch(() => {});
+        if (loopPromise !== undefined) {
+          await loopPromise.catch(() => {});
+        }
+        throw err;
+      }
     },
 
     async listTools(): Promise<McpRawTool[]> {
