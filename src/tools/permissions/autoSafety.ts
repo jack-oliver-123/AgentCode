@@ -1,3 +1,5 @@
+import { relative, resolve } from 'node:path';
+
 import picomatch from 'picomatch';
 
 import type { PermissionCheckInput, PermissionDecision, PermissionMode } from './types.js';
@@ -59,11 +61,13 @@ export function checkAutoSafety(
   return undefined;
 }
 
-function matchesSafeWritePath(path: string, cwd: string): boolean {
-  // 将绝对路径转为相对于 cwd 的相对路径后再做 glob 匹配
-  const rel = path.startsWith(cwd)
-    ? path.slice(cwd.length).replace(/^[/\\]/, '')
-    : path;
+function matchesSafeWritePath(filePath: string, cwd: string): boolean {
+  // 用 resolve + relative 做路径感知比较，避免 startsWith 的相邻目录名绕过漏洞
+  // relative() 返回以 '..' 开头 → 路径在 cwd 之外，直接拒绝
+  // replace 将 Windows 反斜杠统一为正斜杠，保证 picomatch 匹配正确
+  const abs = resolve(cwd, filePath);
+  const rel = relative(cwd, abs).replace(/\\/g, '/');
+  if (!rel || rel.startsWith('..')) return false;
   return SAFE_WRITE_MATCHERS.some((matcher) => matcher(rel));
 }
 

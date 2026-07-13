@@ -4,8 +4,8 @@ import { checkAutoSafety } from '../../../../src/tools/permissions/autoSafety.js
 import type { PermissionCheckInput } from '../../../../src/tools/permissions/types.js';
 import type { ToolRisk } from '../../../../src/tools/types.js';
 
-function makeInput(toolName: string, args: Record<string, unknown>, risk: ToolRisk = 'write'): PermissionCheckInput {
-  return { toolName, toolRisk: risk, parsedArguments: args, cwd: '/workspace' };
+function makeInput(toolName: string, args: Record<string, unknown>, risk: ToolRisk = 'write', cwd = '/workspace'): PermissionCheckInput {
+  return { toolName, toolRisk: risk, parsedArguments: args, cwd };
 }
 
 describe('checkAutoSafety', () => {
@@ -53,5 +53,35 @@ describe('checkAutoSafety', () => {
     const result = checkAutoSafety(makeInput('run_command', { command: 'git log --oneline' }), 'auto');
     expect(result).not.toBeUndefined();
     expect(result!.allowed).toBe(true);
+  });
+
+  // 绝对路径白名单匹配
+  it('auto + write_file 绝对路径在 src/ 内 → allow', () => {
+    const result = checkAutoSafety(makeInput('write_file', { path: '/workspace/src/foo.ts' }, 'write', '/workspace'), 'auto');
+    expect(result).not.toBeUndefined();
+    expect(result!.allowed).toBe(true);
+  });
+
+  it('auto + write_file 绝对路径在 tests/ 内 → allow', () => {
+    const result = checkAutoSafety(makeInput('write_file', { path: '/workspace/tests/bar.test.ts' }, 'write', '/workspace'), 'auto');
+    expect(result).not.toBeUndefined();
+    expect(result!.allowed).toBe(true);
+  });
+
+  // 路径穿越漏洞防护（Issue #49）
+  it('auto + write_file 相邻目录名（/workspace/src → /workspacesrc 前缀匹配误判）→ undefined', () => {
+    // /workspacesrc/evil.ts 不在 /workspace 内，不应被 src/** 匹配放行
+    const result = checkAutoSafety(makeInput('write_file', { path: '/workspacesrc/evil.ts' }, 'write', '/workspace'), 'auto');
+    expect(result).toBeUndefined();
+  });
+
+  it('auto + write_file 路径逃出 cwd（../outside/evil.ts）→ undefined', () => {
+    const result = checkAutoSafety(makeInput('write_file', { path: '/workspace/../outside/evil.ts' }, 'write', '/workspace'), 'auto');
+    expect(result).toBeUndefined();
+  });
+
+  it('auto + write_file cwd 外绝对路径（/etc/passwd）→ undefined', () => {
+    const result = checkAutoSafety(makeInput('write_file', { path: '/etc/passwd' }, 'write', '/workspace'), 'auto');
+    expect(result).toBeUndefined();
   });
 });
