@@ -1,157 +1,259 @@
 ---
 name: submit-pr
-description: AgentCode 项目的 PR 提交质量门禁——把改动事实 + issue 关联说清楚、跑类型检查、跑测试、符合项目规范。当用户说「提交 PR」「开 PR」「创建 PR」「提个 PR」「写 PR 描述」「push 完开 PR」「这个分支可以 review 了」时务必使用，不要自己手撸跳过门禁。仅在用户明确提到 PR 时使用，单纯的 git commit / git push 不要触发。
+description: 当用户要求为 AgentCode 草拟、审查、检查或发布 PR 时使用。提到“写 PR 标题/描述”“检查能否提 PR”进入只读模式；明确要求 push、创建、更新或发布 PR 时进入发布模式。所有 PR 发布都必须使用本 Skill，其他 Skill 必须转交。
 ---
 
 # Submit PR
 
-提交 PR 不是写得漂亮，是把质量门禁过了。本 skill 的核心是 **门 0 + 3 道门**，不是文采。
+## 核心原则
 
-## 门 0：先跑 simplify 复盘改动（强制前置，不能跳过）
+本 Skill 是所有 PR 发布操作的唯一入口。其他 Skill 可以完成诊断、修复或实现，但需要 push、创建或更新 PR 时，必须 handoff 给本 Skill，不得自行执行。
 
-进入任何后续门之前，**第一件事**就是调用 simplify skill 对本分支改动做一次质量复盘：
+发布意图不等于写入授权。先完成只读预检和质量门禁，展示完整发布预览，再取得针对该预览的明确确认。确认前不得执行首次远端写操作。
 
+## 先判定模式
+
+| 模式 | 典型请求 | 允许的动作 |
+|---|---|---|
+| 只读草稿/审查 | “写 PR 标题和描述”“检查能不能提 PR”“review PR 草稿” | 读取本地 Git 状态和必要的 GitHub 元数据，返回草稿或检查结果 |
+| 发布 | “push 并创建 PR”“开 PR”“更新 PR”“发布这个分支” | 先只读预检、验证和预览；用户确认后才 push 并创建或更新 PR |
+
+无法确定模式时，采用只读模式并说明未执行写操作。
+
+### 只读模式是绝对只读
+
+只读模式中禁止：
+
+- 调用可能修改文件的 `simplify`
+- 编辑、格式化、生成或删除仓库文件
+- `git add`、`git commit`、`git stash`、`git reset`、`git checkout`
+- `git push`
+- `gh pr create`、`gh pr edit`、`gh pr close` 或其他 PR 写操作
+
+用户只要求草稿时，输出标题和正文草稿后停止。不要把“写 PR 描述”扩大成代码复盘或发布。
+
+## 发布模式：只读预检
+
+以下步骤均在任何代码修改、commit、push 或 PR 写操作之前执行。
+
+### 1. 解析仓库与分支
+
+只读获取并记录：
+
+```bash
+git rev-parse --show-toplevel
+git remote get-url origin
+gh repo view --json nameWithOwner,url,defaultBranchRef
+git symbolic-ref --quiet --short HEAD
+git branch --show-current
+git status --porcelain=v1 --untracked-files=all
 ```
+
+- 没有 Git 仓库、没有 `origin`、无法解析默认分支时停止。
+- 从 `gh repo view` 的 `defaultBranchRef.name` 动态取得 `base`；不得假定它是 `main`。
+- `git symbolic-ref` 失败或当前分支名为空表示 detached HEAD，立即停止。
+- 当前分支等于 `base` 时立即停止，要求用户先创建独立分支。
+- 工作树输出非空时立即停止并保留用户改动。不得自动 stash、stage、commit、reset、checkout、清理文件或调用 `simplify`。
+- dirty worktree 时请用户自行处理，或明确选择在隔离 worktree 中继续；没有该选择不得代为隔离。
+
+确认本地存在动态 base 的远端跟踪引用：
+
+```bash
+git show-ref --verify "refs/remotes/origin/${base}"
+```
+
+不存在或明显过期时停止，说明需要更新远端引用；不要在只读预检中擅自 `fetch`。取得单独授权并更新后，从头重跑预检。
+
+### 2. 读取改动事实
+
+所有比较都使用动态 base：
+
+```bash
+git log --oneline "origin/${base}..HEAD"
+git diff --stat "origin/${base}...HEAD"
+git diff "origin/${base}...HEAD"
+```
+
+没有可发布的 commit 时停止。按最终 diff 说明改了什么、为什么改，不要把 commit message 直接堆成 PR 正文。
+
+### 3. 检查已有 PR
+
+在预览前只读查询当前 head 的所有 PR：
+
+```bash
+gh pr list --head "${head}" --state all --json number,url,state,title,baseRefName,headRefName
+```
+
+- 存在 open PR：预览操作必须写“更新 PR #N”，确认后使用 `gh pr edit`。
+- 不存在 PR：预览操作写“创建 PR”。
+- 只有 closed/merged PR：停止并向用户说明，由用户决定是否允许新建；不要自行重复创建。
+- 多个候选或 base/head 不一致：停止并要求用户选择。
+
+## `simplify` 与代码修改授权
+
+PR 请求本身不授权修改代码。`simplify` 默认不运行，只有用户另行明确授权“允许 `simplify` 修改本分支代码”时才可调用：
+
+```text
 Skill(skill="simplify")
 ```
 
-simplify 会并行跑 3 个 review agent（reuse / quality / efficiency），把改动里的重复代码、hacky 模式、低效写法挑出来并就地修掉。
+- 只读草稿模式绝不调用 `simplify`。
+- 运行后先只读展示实际 diff；不得自动 stage 或 commit。
+- `simplify` 的修改必须重新执行完整预检和全部适用验证。
+- commit 是另一项独立授权。只有用户明确允许提交后，才能按具体文件 stage 并 commit；禁止 `git add .` 和 `git add -A`。
+- commit 后再次执行完整预检和验证，再生成新的发布预览。旧确认自动失效。
 
-执行要求：
+## Issue 关联语义
 
-- **必须真跑**，不能 "我看了一眼觉得没问题" 就跳过
-- simplify 跑完如果**改了文件**，先 `git status` / `git diff` 看清楚改了哪些地方，再 `git add <按文件名> && git commit` 把复盘修复作为独立 commit 落地（commit message 建议 `refactor: simplify 复盘修复` 或类似）
-- simplify 报告里**确认为假阳性的项**，在心里记下原因，不要再花时间反复纠结
-- 如果 simplify 完成时**未做任何修改**，说明改动已够干净，直接进门 1
+分支名、commit message、代码注释或其他文本里的 `#数字` 都只是候选，不代表关联关系，更不代表关闭语义。代码注释绝不能自动生成 `Closes`。
 
-simplify 复盘是为了让进入门 1-3 的代码本身值得过门禁——别让 reviewer 替你做 simplify 的活。
-
-## 3 道门（按顺序过，缺一不可）
-
-### 门 1：把改了什么 + 关联 issue 写清楚
-
-读 git log + diff，从事实出发，写一个清单——**改了什么**，**关联哪些 issue**。
+对每个候选逐项只读核验：
 
 ```bash
-git status                                   # 是否还有未提交改动
-git branch --show-current                    # 当前分支名
-git log main..HEAD --oneline                 # 本分支所有 commit
-git diff main...HEAD --stat                  # 文件改动总览
+gh issue view "${issue_number}" --json number,title,state,body,url
 ```
 
-提取信息：
+向用户展示候选编号、来源、issue 标题/状态、与 diff 的关系及建议语义：
 
-- **改动清单**：按子系统列（`src/agent` / `src/mcp` / `src/tools` / `src/tui` / `src/config` / `src/session` / `src/providers` / `tests` / `docs` 等），每条说「改了什么文件 / 模块」「为什么改」。事实陈述，不要营销话术
-- **issue 关联**：搜分支名、commit message、改动注释里的 `#数字`，统一在 PR body 里写 `Closes #X`（每个 issue 独立一行）。没找到就明确写「本次未关联 issue」，不要硬编
+- 只有用户明确确认“本 PR 完整解决该 issue”时，才能写 `Closes #N`。
+- 相关但未完整解决、无法确认或只是背景信息时，写 `Refs #N`。
+- 无关编号不写入 PR。
+- 不得根据 `fix`、`refs`、分支名或评论自行升级为 `Closes`。
 
-### 门 2：类型检查必须通过
+发布预览必须列出每个候选的最终语义；没有用户确认时一律不得使用 `Closes`。
 
-只要改了 `src/**` 下的任何 TypeScript 文件，必须真跑：
+## 质量门禁与证据
+
+根据 `origin/${base}...HEAD` 的最终 diff 判断是否有代码变更。先读取 `package.json` 的实际 scripts；只要有代码变更，当前项目必须实际运行：
 
 ```bash
 npm run typecheck
+npm run lint
+npm run build
+npm test
+npm run e2e:tmux
 ```
 
-- 输出 `0 errors` 才算通过
-- 有错误 → **不能提 PR**，先修了再回来
-- Test plan 里的对应行才能勾 `[x]`
+判定与记录规则：
 
-### 门 3：测试必须通过且有覆盖
+- typecheck 以退出码为 0 且没有 TypeScript 诊断为通过；不要求工具打印字面量 `0 errors`，PR 正文也不得虚构该输出。
+- lint、build 和测试以实际退出码及输出为证据。typecheck、lint、build、单元/集成测试失败时停止发布。
+- E2E 功能失败时停止。环境不可用时保持未通过、记录命令和具体阻塞，不得写成通过；是否带阻塞发布只能由用户在发布预览后明确决定。
+- 文档等非代码变更可将不适用项保持未勾选并写明原因，不得伪装成已运行。
+- manifest 以后发生变化时以当时的 `package.json` 为准；不得运行不存在的脚本，也不得声称运行了未执行的 lint。
 
-只要改了 `src/**` 下的实现文件，必须满足：
+### 测试覆盖证据
 
-1. **改动有对应测试**：
-   - 改了已有模块 → 要么已有测试覆盖改动路径，要么本次新增 / 修改测试
-   - 新建模块 → 必须配套新建测试文件（`tests/unit/` 对应路径下）
-   - 用 `git diff main...HEAD --stat -- 'tests/'` 验证有测试改动
-2. **`npm test` 必须全部通过**：
-   - 失败 → 不能提，先修
-   - 因文件系统竞争导致的偶发 flaky（见 CLAUDE.md 踩坑记录）可单独验证后注明
+tests 目录是否有 diff 既不是必要条件，也不是充分条件。对每项变更行为建立证据映射：
 
-PR body 的「验证」段必须列出**新增 / 修改的测试文件名**，不只是「npm test 通过」一句话。
+| 变更行为 | 具体测试文件 | 测试/断言名称 | 实际命令与结果 |
+|---|---|---|---|
+| 行为 X | `tests/...` | `it/test ...` | 命令、exit 0 |
 
-## 3 道门都过了之后
+- 既有测试可以证明覆盖，但必须读取具体测试/断言并实际运行相关命令。
+- 新行为没有对应证据时停止，先报告覆盖缺口；不要未经授权新增测试。
+- PR 正文列出实际提供证据的测试文件，包括未修改但用于证明覆盖的既有测试。
 
-### 写 PR title + body
+## 标题与正文
 
-**Title 格式**：`type(scope): 中文描述`
+标题使用 `type(scope): 中文描述`，总长度不超过 70 个字符。type 使用 `feat`、`fix`、`refactor`、`chore`、`docs`、`test` 或 `perf`；scope 使用项目实际子系统英文名。
 
-- type：`feat` / `fix` / `refactor` / `chore` / `docs` / `test` / `perf`
-- scope：子系统英文（`agent` / `mcp` / `tools` / `permissions` / `tui` / `config` / `session` / `providers` / `system-prompt` / `e2e` 等）
-- 描述中文，整个 title ≤ 70 字符
-
-**Body 模板**（按这个骨架填，没内容的段就不要加，不要写「无」/「N/A」占位）：
+正文只陈述可由 diff 和验证结果支持的事实：
 
 ```markdown
 ## 改了什么
 
 ### src/[子系统]
-- `**模块名**`：改了 X，原因是 Y
-- ...
-
-### tests/
-- 新增 / 修改 `XxxTest.ts`：覆盖 [场景]
-- ...
-
-### docs/（如有）
-- ...
+- `模块名`：改了什么，原因是什么
 
 ## 关联 issue
 
-Closes #X
-Closes #Y
-
-（或写：本次未关联 issue）
+Refs #N
+Closes #M（仅限用户已确认完整解决）
 
 ## 验证
 
-- [x] `npm run typecheck` — 0 errors
-- [x] `npm test` — 全部通过（新增 / 修改测试：`tests/unit/xxx.test.ts`）
-- [ ] `npm run e2e:tmux` — [说明是否跑过；tmux 不可用时注明环境阻塞]
+- [x] `npm run typecheck` — exit 0，无 TypeScript 诊断
+- [x] `npm run lint` — exit 0，无 lint 诊断
+- [x] `npm run build` — exit 0
+- [x] `npm test` — exit 0；覆盖证据：`tests/...` 的 `测试名称`
+- [ ] `npm run e2e:tmux` — 未通过；具体环境阻塞：[事实]
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
-### 推分支 + 创建 PR
+checkbox 必须反映事实：实际通过才写 `[x]`；失败、未运行、环境阻塞或不适用均写 `[ ]` 并说明。
+
+## 发布预览与确认门
+
+在首次 `git push`、`gh pr create` 或 `gh pr edit` 前，向用户完整展示：
+
+1. 仓库与 origin
+2. `base` 与 `head`
+3. 操作类型：创建 PR 或更新 PR #N
+4. 最终 title
+5. 完整 body
+6. 每个 issue 候选及 `Refs` / `Closes` / 不关联的语义
+7. typecheck、build、测试、E2E 的命令、退出状态和覆盖映射
+8. 未通过、未运行、不适用项及具体阻塞
+9. 即将执行的写操作
+
+然后明确询问用户是否按这份预览发布。用户最初说“推送并创建 PR”只表示进入发布模式，不是对尚未展示内容的确认。
+
+只有用户在预览后明确同意，才能解锁首次远端写入。含糊回复、沉默或只确认其中一项都不算授权。预览后若 commit、diff、base、head、title、body、issue 语义或验证状态变化，旧确认立即失效；重跑相关检查、重新预览并再次确认。
+
+## 确认后的安全发布
+
+### 1. 准备安全输入
+
+在系统临时目录创建仅当前用户可访问的独立临时目录。创建前后都要验证目录不是符号链接、junction 或其他 reparse point，并把 `title.txt`、`body.md` 权限限制为 owner-only。使用 Claude Code 的文件写入工具写入最终 title 和完整 body；不要用 `echo`、HEREDOC、命令替换或字符串拼接把用户/仓库内容嵌入 shell。
+
+随后从标题文件读取安全变量，正文始终使用 `--body-file`：
 
 ```bash
-# 检查 upstream
-git rev-parse --abbrev-ref --symbolic-full-name @{u} 2>/dev/null
+title_file="/已创建的临时目录/title.txt"
+body_file="/已创建的临时目录/body.md"
+IFS= read -r title < "${title_file}"
 ```
 
-- 没 upstream → `git push -u origin $(git branch --show-current)`
-- 有 upstream 且本地领先 → `git push`
-- 同步了 → 跳过
+### 2. 推送 head
 
-**禁止**：`--force` / `--no-verify` 除非用户明确要求。
-
-最后用 HEREDOC 创建：
+确认仍在预览过的 commit、分支和干净工作树后，只使用：
 
 ```bash
-gh pr create --title "<title>" --body "$(cat <<'EOF'
-<完整 body>
-EOF
-)"
+git push -u origin HEAD
 ```
 
-成功后把 PR URL 抛给用户。
+永不使用 `--force`、`--force-with-lease` 或 `--no-verify`。push 失败时停止，不得尝试绕过保护。
 
-## 写作约定（强制，违反会被打回）
+### 3. 创建或更新
 
-| 规则 | 反例 | 正例 |
-|---|---|---|
-| 标题：英文前缀 + 中文描述 | `feat: add mcp client` | `feat(mcp): MCP 客户端集成，支持 stdio 和 HTTP 传输` |
-| 不写版本批次标识 | 「task07 新增」「本期重点」 | 直接说「新增 X」「改造 Y」——版本信息属 git history |
-| 标识符保留英文 | 「权限检查器」 | `PermissionChecker` |
-| Test plan checkbox 反映事实 | 全部 `[x]`（包括没跑过的） | 跑过 `[x]`，未跑 `[ ]` 必带说明 |
-| scope 用项目实际子系统名 | `feat(backend)` | `feat(permissions)` |
+push 后再次只读检查已有 PR，防止并发重复创建。所有变量都加引号；PR 正文只通过文件传入。
 
-## 不要做的事
+没有 open PR 时：
 
-- **不要假定默认分支名**：先 `gh repo view --json defaultBranchRef`
-- **不要 `git add -A` / `git add .`**：`.agentcode/` 可能含 API key；按文件名加
-- **不要漏 `Closes #X`**：issue 自动关联依赖这个语法
-- **不要漏 `🤖 Generated with [Claude Code]` 标识**：保留在 body 末尾
-- **不要把 commit message 直接堆成 body**：commit history 反映过程，PR body 反映结果
-- **不要为了写得漂亮而虚构**：没跑的测试不要写在 `[x]` 里
-- **不要跳过门 0**：没跑 simplify 直接进门 1 等同于跳过质量门禁
+```bash
+gh pr create --base "${base}" --head "${head}" --title "${title}" --body-file "${body_file}"
+```
+
+已有 open PR 时：
+
+```bash
+gh pr edit "${pr_number}" --base "${base}" --title "${title}" --body-file "${body_file}"
+```
+
+不得把 title、body、issue 内容或日志直接拼入 shell 命令。完成后用 `gh pr view` 只读回查 base、head、title、body 和 URL；不一致时报告并停止，不要继续写。无论成功或失败，都在 finally 清理本次创建的两个明确临时文件和私有临时目录；路径验证失败时不删除任何内容。最后向用户返回 PR URL 与验证摘要。
+
+## 硬停止速查
+
+遇到以下任一情况立即停止发布：
+
+- detached HEAD、当前分支等于默认分支或工作树不干净
+- origin、默认 base 或 `origin/${base}` 无法可靠解析
+- 没有可发布 commit，或已有 PR 状态/数量存在歧义
+- typecheck、build、测试失败，或 E2E 出现真实功能失败
+- issue 的 `Closes` 语义未经用户确认
+- 发布预览尚未展示，或展示后尚未取得明确确认
+- 预览内容在确认后发生变化
+
+停止时保留用户现状，说明阻塞和下一步；不得自动修改、提交、切分支或绕过门禁。

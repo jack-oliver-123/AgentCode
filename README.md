@@ -2,37 +2,33 @@
 
 AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目标是逐步实现类似 Claude Code 的终端工作流体验。
 
-当前版本已经实现单会话 TUI 和一次工具调用闭环：可以在终端启动、读取配置、连接 Anthropic 或 OpenAI-compatible 流式 Provider、进行多轮上下文对话，并在单个用户 turn 内完成一次工具调用、工具结果回灌和最终回答。真实 CLI 行为通过 tmux/psmux E2E 验证。
+当前版本实现了完整的 ReAct 多步 Agent Loop、工具权限/审批系统和 MCP 客户端集成：可以在终端启动、读取配置、连接 Anthropic 或 OpenAI-compatible 流式 Provider、进行多轮上下文对话，并在单个用户 turn 内连续调用多个工具直到产出最终回答。真实 CLI 行为通过 tmux/psmux E2E 验证。
 
 ## 当前能力
 
 - TypeScript + ESM CLI，Node.js 20+。
-- Ink/React 终端 TUI。
+- Ink/React 终端 TUI，蓝白小猫风格：顶部小猫标识、横向分隔线、无左右大边框。
 - 项目级和全局 YAML 配置加载。
 - 首次启动自动创建 `.agentcode/config.yaml` 模板。
 - Anthropic Messages streaming Provider。
 - OpenAI-compatible Chat Completions streaming Provider。
 - 当前进程内多轮会话上下文。
-- 蓝白小猫风格 TUI：顶部小猫标识、横向分隔线、无左右大边框。
-- 用户提示词左侧使用蓝色竖杠区分；assistant 回复不显示固定发言人标签。
-- streaming 回复显示简短运行状态和动态效果，例如 Thinking / Writing。
-- Tool runtime MVP：六个内置工具 `read_file`、`write_file`、`edit_file`、`run_command`、`glob_files`、`search_code`。
-- OpenAI-compatible `tool_calls` 和 Anthropic `tool_use` 流式解析。
-- 单工具闭环：每个用户 turn 最多执行一个工具，随后把 redacted 工具结果回灌给模型生成最终回答。
+- ReAct 多步工具执行（Agent Loop）：模型可连续调用多个工具直到产出最终回答。
+- 内置工具：`read_file`、`write_file`、`edit_file`、`run_command`、`glob_files`、`search_code`。
+- 工具执行经过 workspace 路径边界、timeout/输出限制和 redaction。
+- 工具权限系统：风险分级（low/medium/high）、交互式审批 UI、allowlist 持久化。
+- MCP 客户端集成：通过配置连接外部 MCP server，工具自动注册到 ToolRegistry。
+- Plan/Full 模式切换（Tab 键），plan 模式使用 `submit_plan` 工具。
+- 结构化 system prompt 系统，按上下文动态拼装提示词。
 - API key / Authorization / token 脱敏与 E2E 泄露检查。
 
 ## 当前边界
 
-当前阶段是带工具系统 MVP 的单会话 TUI，但仍不实现：
+当前阶段不实现：
 
-- 多步 Agent Loop：每个用户 turn 最多执行一个工具，第二轮再次工具调用会被拒绝；
-- 工具权限/审批 UI：`write_file`、`edit_file`、`run_command` 已有基础安全边界，但还没有交互式批准流程；
-- MCP、plugins、hooks、skills、subagents；
+- plugins、hooks、subagents；
 - 多会话恢复或长期 memory；
-- Plan/Build 权限模式；
 - 文件 diff、checkpoint、undo/redo 工作流。
-
-这些能力会在后续设计 permission layer、multi-step agent loop 和 session persistence 后再拆分实现。
 
 ## 安装依赖
 
@@ -110,13 +106,14 @@ ui:
 npm run dev
 npm run build
 npm run typecheck
+npm run lint          # Biome 静态检查（只读）
 npm test
 npm test -- tests/unit/config/loadConfig.test.ts
 npm run test:watch
 npm run e2e:tmux
 ```
 
-当前没有 lint 脚本。
+`npm run format` 和 `npm run check` 会写入文件，只在有代码修改授权时运行。
 
 ## 验证
 
@@ -145,29 +142,21 @@ npm run e2e:tmux
 ## 文档
 
 - `docs/task01/claude-code-implementation-research.md`：Claude Code 可观察架构研究。
-- `docs/task02/spec.md`：纯对话 TUI 首版 spec。
-- `docs/task02/plan.md`：纯对话 TUI 首版架构方案。
-- `docs/task02/tasks.md`：纯对话 TUI 首版任务拆解。
-- `docs/task02/checklist.md`：纯对话 TUI 首版验收记录。
-- `docs/task03/spec.md`：TUI vNext spec。
-- `docs/task03/plan.md`：TUI vNext 方案与开源参考取舍。
-- `docs/task03/tasks.md`：TUI vNext 任务拆解。
-- `docs/task03/checklist.md`：TUI vNext 验收记录。
-- `docs/task04/spec.md`：工具系统 MVP spec。
-- `docs/task04/plan.md`：工具系统架构方案、边界和风险。
-- `docs/task04/tasks.md`：工具系统任务拆解。
-- `docs/task04/checklist.md`：工具系统验收记录。
+- `docs/task02/`：纯对话 TUI 首版 spec/plan/tasks/checklist。
+- `docs/task03/`：TUI vNext（蓝白小猫风格）spec/plan/tasks/checklist。
+- `docs/task04/`：工具系统 MVP spec/plan/tasks/checklist。
+- `docs/task05/`：Agent Loop（ReAct 多步执行）+ 结构化 System Prompt。
+- `docs/task06/`：工具权限系统（风险分级 + 审批 UI）。
+- `docs/task07/`：MCP 客户端集成。
 
 ## 后续方向
 
-后续若要继续向 Claude Code 类产品靠近，优先级不是继续加边框或文案，而是设计：
+后续若要继续向 Claude Code 类产品靠近，优先级方向：
 
 - session event taxonomy；
 - 可滚动/可审阅 timeline；
 - stop/cancel/retry；
 - slash command / command palette；
 - context usage 可视化；
-- tool execution layer；
-- permission and approval UI；
 - session persistence / resume；
 - diff/checkpoint/undo 工作流。

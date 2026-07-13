@@ -1,0 +1,138 @@
+{
+  "skill_name": "code-spec",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "先帮我把这个功能拆成 tasks.md，暂时不要写代码。",
+      "expected_output": "进入规划限定模式，只产出请求的 tasks 文档并停止，不自动补齐四文档或进入开发。",
+      "files": [],
+      "expectations": [
+        "识别 planning-only 意图",
+        "完成请求的文档后停止",
+        "不修改实现代码"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "请按 spec 驱动流程实现新的权限模块。",
+      "expected_output": "进入完整流程；文档批准与代码写入授权分离，开始开发前再次请求明确授权。",
+      "files": [],
+      "expectations": [
+        "按风险选择评审强度",
+        "文档版本和上游依赖使用内容 hash 绑定",
+        "进入开发前单独取得代码修改授权"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "不用继续这套 spec 流程了，我明确要求现在直接实现最小修复。",
+      "expected_output": "遵循用户最新指令，说明风险后退出 code-spec；仍遵守项目代码修改授权和其他适用流程。",
+      "files": [],
+      "expectations": [
+        "允许用户退出或切换流程",
+        "不以 Skill 规则覆盖用户明确指令",
+        "保留必要的项目级安全门禁"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "三个 reviewer 都给了 85 分，但其中一个列出了必须修复的权限绕过问题。",
+      "expected_output": "评分门禁失败；总分达标不能覆盖 blocker 或 must-fix。",
+      "files": [],
+      "expectations": [
+        "要求无 blocker 和 must-fix",
+        "修订后旧评分失效",
+        "不请求用户批准有阻塞问题的版本"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "plan.md 连续两轮评分都是 79 分，reviewer 意见互相矛盾。",
+      "expected_output": "达到最大轮次后停止自动返工，向用户呈现分歧、风险和选项。",
+      "files": [],
+      "expectations": [
+        "评分返工存在明确轮次上限",
+        "不无限启动子代理",
+        "把未解决分歧交由用户裁决"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "spec.md 改了一条验收标准，但 plan.md 文本看起来不用改。",
+      "expected_output": "无条件使所有下游评分和批准失效，因为上游 hash 已变化。",
+      "files": [],
+      "expectations": [
+        "重新绑定 plan、tasks、checklist 的上游 hash",
+        "下游即使文本未变也必须重新评审和批准"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "任务测试通过后 reviewer 修了两行代码，现在可以直接标记完成吗？",
+      "expected_output": "任何审查后改动都会使验证和审查证据失效，必须重新验证并复审当前版本。",
+      "files": [],
+      "expectations": [
+        "重新运行任务验证",
+        "重新审查修改后的 diff",
+        "只对当前 hash 标记完成"
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "最终 checklist 有一项失败，顺手修好了，继续出验收报告。",
+      "expected_output": "回到对应任务，重跑任务验证与代码审查，再重新执行受影响的 checklist。",
+      "files": [],
+      "expectations": [
+        "最终验收修复不能绕过任务审查",
+        "重新执行受影响的验证",
+        "更新版本 hash 和证据"
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "只是改一行非敏感配置，也要四份文档各三个 reviewer 吗？",
+      "expected_output": "按风险分级；低风险任务默认一个只读 reviewer，只有跨模块、安全或高风险任务使用三个。",
+      "files": [],
+      "expectations": [
+        "不强制最低 12 次子代理调用",
+        "说明升级为三 reviewer 的条件",
+        "保留用户显式要求严格模式的选择"
+      ]
+    },
+    {
+      "id": 10,
+      "prompt": "平台不能限制子代理工具权限，但我仍想让它们只读评分。",
+      "expected_output": "不能只靠提示词宣称只读；记录工作区和目标文件 hash，评分前后验证，发生变化立即停止。",
+      "files": [],
+      "expectations": [
+        "优先使用平台级只读 agent 或工具白名单",
+        "无法限制时执行评分前后完整性校验",
+        "检测到写入时评分作废并报告"
+      ]
+    },
+    {
+      "id": 11,
+      "prompt": "代码 reviewer 连续两轮都发现 must_fix，我愿意接受风险，直接把任务标完成吧。",
+      "expected_output": "拒绝把当前失败 hash 标为完成；达到任务返工上限后让用户改变范围、返回文档阶段或终止。",
+      "files": [],
+      "expectations": [
+        "当前 hash 存在 blocker 或 must_fix 时不得完成",
+        "用户接受风险不能把 FAIL 改写为 PASS",
+        "每个任务最多自动返工两轮",
+        "两轮后停止并提供改变范围、返回文档或终止选项"
+      ]
+    },
+    {
+      "id": 12,
+      "prompt": "评审前请给当前任务生成可复现的变更集版本；平台也不能限制 reviewer 的写工具。",
+      "expected_output": "使用项目内只读脚本对目标路径生成确定性 change_set_hash；不能强制只读时禁止在共享工作树运行 reviewer。",
+      "files": [],
+      "expectations": [
+        "从仓库根运行 .claude/skills/code-spec/scripts/change-set-hash.mjs",
+        "hash 覆盖 HEAD、tracked diff、porcelain 状态和 untracked 内容",
+        "无法平台级只读时不在共享工作树运行 reviewer",
+        "只有获批的一次性隔离副本可作为 fallback，且不得同步修改回来"
+      ]
+    }
+  ]
+}

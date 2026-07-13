@@ -6,7 +6,7 @@
 
 AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目标是实现类似 Claude Code 的能力。
 
-当前阶段：`docs/task05` 的 Agent Loop 和结构化 System Prompt 已实现。仓库具备：可运行的 TypeScript CLI、首次启动配置引导、OpenAI/Anthropic 流式 Provider、蓝白小猫风格 Ink TUI、会话控制器、ReAct 多步工具执行循环、结构化 system prompt 系统、六个内置工具，并通过 psmux E2E smoke 测试验证真实 CLI 行为。
+当前阶段：`docs/task07` 的 MCP 客户端集成已实现。仓库具备：可运行的 TypeScript CLI、首次启动配置引导、OpenAI/Anthropic 流式 Provider、蓝白小猫风格 Ink TUI、会话控制器、ReAct 多步工具执行循环、结构化 system prompt 系统、六个内置工具、工具权限/审批系统、MCP 客户端集成，并通过 psmux E2E smoke 测试验证真实 CLI 行为。
 
 ## 参考文档
 
@@ -19,6 +19,8 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 | `docs/task03` | TUI vNext（蓝白小猫风格、无边框布局） |
 | `docs/task04` | 工具系统 MVP（六工具 + 单工具闭环） |
 | `docs/task05` | Agent Loop（ReAct 多步执行）+ 结构化 System Prompt |
+| `docs/task06` | 工具权限系统（风险分级 + 审批 UI） |
+| `docs/task07` | MCP 客户端集成 |
 
 参考这些文档时须区分：哪些是公开资料确认的事实，哪些是本项目自己的实现选择。不要把 Claude Code 未公开的内部实现当作已知事实。
 
@@ -30,18 +32,19 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 
 ## 常用命令
 
-以下命令均来自当前 `package.json`，不要使用不存在的脚本名。运行环境：Node.js >= 18，测试框架为 Vitest。
+以下命令均来自当前 `package.json`，不要使用不存在的脚本名。运行环境：Node.js >= 20.19.0，测试框架为 Vitest。
 
 - 安装依赖：`npm install`
 - 本地开发运行 CLI：`npm run dev`
 - 构建：`npm run build`
 - 类型检查：`npm run typecheck`
+- Lint（只读）：`npm run lint`（Biome）
 - 运行全部测试：`npm test`（Vitest）
 - 运行指定测试文件：`npm test -- tests/unit/config/loadConfig.test.ts`
 - watch 模式运行测试：`npm run test:watch`
 - E2E smoke 测试：`npm run e2e:tmux`（需要 psmux/tmux）
 
-当前没有 lint 脚本；不要声称已运行 lint。
+`npm run format` 和 `npm run check` 会写入文件，只有当前任务已获代码修改授权时才能运行；只读检查使用 `npm run lint`。
 
 ## 启动与配置
 
@@ -59,9 +62,11 @@ AgentCode 是一个使用 TypeScript 构建的终端 AI 编程助手项目，目
 - 工具执行经过 workspace 路径边界、timeout/输出限制和 redaction。
 - 结构化 system prompt 系统，按上下文动态拼装提示词。
 - Plan/Full 模式切换（Tab 键），plan 模式使用 `submit_plan` 工具。
+- 工具权限系统：风险分级（low/medium/high）、审批 UI、allowlist 持久化。
+- MCP 客户端集成：通过配置连接外部 MCP server，工具自动注册到 ToolRegistry。
 
 尚未实现：
-- 工具权限/审批 UI、MCP、plugins、hooks、skills、subagents、多会话恢复、长期 memory。
+- plugins、hooks、subagents、多会话恢复、长期 memory。
 
 TUI 规范：
 - 蓝白色调、顶部小猫标识、横向分隔线、无左右大边框。
@@ -70,6 +75,12 @@ TUI 规范：
 - `ui.show_thinking=false` 时 thinking 文本不得泄漏到任何输出。
 
 ## 推荐工作方式
+
+### PR 提交唯一入口
+
+- 所有 PR 的准备、推送、创建或更新都必须使用项目 Skill：`.claude/skills/submit-pr/SKILL.md`。
+- 其他 Skill 和工作流不得直接执行 `git push`、`gh pr create` 或 `gh pr edit`；完成本地工作后，必须把 issue、变更摘要和验证证据移交给 `submit-pr`。
+- 仅要求 PR 标题或正文草稿时，`submit-pr` 必须保持只读。任何代码修改、commit、push 或 GitHub 写操作都需要对应的明确授权，文档批准或本地修复授权不能代替发布授权。
 
 **底线：** 干净设计优先于向后兼容。旧架构不合适就重构，不设兜底兼容层，不保留过渡代码。
 
