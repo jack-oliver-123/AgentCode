@@ -202,7 +202,7 @@ export async function* runAgentLoop(
 
       // 检查 submit_plan
       const planResult = allResults.find((r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok);
-      if (planResult && planResult.result.ok) {
+      if (planResult?.result.ok) {
         const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
         yield { type: 'plan.submitted', steps };
         yield {
@@ -381,7 +381,7 @@ async function* streamWithRetry(
 
 /** 指数退避延迟计算（含 jitter） */
 function computeRetryDelay(attempt: number, retry: RetryConfig): number {
-  const exponential = retry.baseDelayMs * Math.pow(2, attempt - 1);
+  const exponential = retry.baseDelayMs * 2 ** (attempt - 1);
   const capped = Math.min(exponential, retry.maxDelayMs);
   // 添加 ±25% 随机 jitter 避免 thundering herd
   const jitter = capped * (0.75 + Math.random() * 0.5);

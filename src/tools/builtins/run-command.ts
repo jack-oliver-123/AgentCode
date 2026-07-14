@@ -91,6 +91,7 @@ async function executeRunCommand(
     const timeoutMs = getEffectiveTimeoutMs(input.timeoutMs, context.timeoutMs);
     let settled = false;
     let timedOut = false;
+    // biome-ignore lint/style/useConst: assigned in deferred setTimeout callback
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let killEscalationId: ReturnType<typeof setTimeout> | undefined;
     let timeoutResultId: ReturnType<typeof setTimeout> | undefined;

@@ -6,6 +6,7 @@ import type {
   PermissionDecision,
   PermissionMode,
   PermissionRuleConfig,
+  PromptResponse,
 } from './types.js';
 
 import { checkAutoSafety } from './autoSafety.js';
@@ -91,7 +92,7 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
     }
 
     const description = buildPromptDescription(input);
-    let response;
+    let response: PromptResponse;
     try {
       response = await options.askFn(input, description);
     } catch {
