@@ -1,313 +1,408 @@
-# 上下文管理 Plan
+# 上下文压缩增强 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 完成 Issue #54/#55：实现 `/compact`、三档自动压缩、九段式两阶段摘要、用户原文与关键上下文恢复、超长降级重试和紧急机械兜底。
+
+**Architecture:** 保留 `ChatSessionController -> ContextManager -> ChatModelProvider` 现有分层。新增一个 `src/context/compaction.ts` 纯函数模块处理水位、完整 turn、九段解析和恢复消息构造；`ContextManager` 负责会话状态、Provider stream、熔断和原子数组替换，Controller 只负责触发和 UI notice。
+
+**Tech Stack:** TypeScript 5.9、ESM、Node.js 20、Vitest 4、Biome。
+
+---
 
 ## 已批准输入
 
-- spec.md: `4df5c77bb6cf5974ad02b6e096043275481ba9ad`
+- spec.md: `458a6e188c504c86297dcc1ec20ca332f4551663`
+- GitHub Issues: `#54`, `#55`
 
-## 方案摘要
+## 方案选择
 
-在现有 `ChatSessionController` 上叠加一个 `ContextManager` 辅助类，以"Controller 持有 providerContext 数组，ContextManager 以参数形式接收"的就地修改模式集成。不引入新的状态共享机制，不改变 AgentLoop / Provider 接口。
+采用“单一 compact 入口 + 纯函数边界处理”的务实方案。
 
-未采用的方案：
-- ContextManager 内部持有 providerContext 引用 → 会使 ContextManager 与 Controller 生命周期耦合，测试时需构造完整 Controller
-- 将压缩逻辑嵌入 AgentLoop → AgentLoop 是无状态 generator，职责边界清晰，不应引入会话级状态
+未采用：
 
-## 组件与职责
+- 把全部逻辑继续堆入 `ContextManager.ts`：改动最少，但九段解析、turn 边界、路径恢复和紧急渲染无法独立测试。
+- 引入完整 `ProviderContextState` 和不可变状态机：长期边界最清晰，但会扩大 Controller 中所有 `providerContext` 访问点的改动。
 
-| 组件 | 职责 | 依赖 |
-|------|------|------|
-| `ContextManager` | token 估算、工具结果卸载、LLM 摘要、熔断 | `ChatModelProvider`, `fs/promises` |
-| `ChatSessionController`（修改） | 构造 ContextManager、在 3 个集成点调用其方法、扩展 parseCommand | `ContextManager` |
-| `lookupContextWindow` | model 名前缀查表，返回 contextWindow 大小 | 无 |
+本方案不修改 AgentLoop、OpenAI Provider、Anthropic Provider 和配置文件 schema。
 
-## 交互与数据流
+## 文件结构
 
-```text
-submitUserText
-  │
-  ├─ parseCommand() → { mode, actualText, isCompress? }
-  │     isCompress=true 时：
-  │       不调用 setLoopMode（/compress 不切换会话模式）
-  │       在 this.messages.push(userMessage) 之前拦截，/compress 不写入 TUI 历史
-  │       └─ estimated > contextWindow - 3000?
-  │             YES → compress(providerContext, protectedIndices, true)
-  │                     → 成功(true):  notice='上下文已压缩', yield state, return
-  │                     → 失败(false): notice='上下文压缩失败，请稍后重试', yield state, return
-  │             NO  → notice='上下文尚未到压缩阈值', yield state, return
-  │     isCompress=false 时：
-  │       this.setLoopMode(mode)（保留现有逻辑）
-  │       this.messages.push(userMessage)（保留现有逻辑）
-  │
-  ├─ offloadToolResults(providerContext)      ← F2 卸载
-  │     对 role:'tool' 消息就地修改 content
-  │
-  ├─ !circuitOpen && estimated > contextWindow - 13000?
-  │     └─ compress(providerContext, protectedIndices) ← F3 自动摘要
-  │           （详见"核心算法 - F3 压缩流程"）
-  │
-  └─ runAgentLoop(...)
-        loop.completed → completeTurn
-          // push 前记录 user 消息的插入下标
-          const userIdx = providerContext.length;
-          providerContext.push(toProviderMessage(userMessage), ...turnMessages, assistantMsg);
-          protectedContextIndices.add(userIdx);
-          // chars = 用户消息字符数 + 每条 turnMessage.content 字符数之和 + finalText 字符数
-          // ProviderAssistantToolCallMessage.content 可能为空字符串，toolCalls 不计入
-          const turnMsgsChars = turnMessages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
-          onMessagesAppended(toProviderMessage(userMessage).content.length + turnMsgsChars + finalText.length)
-        failTurn（有条件 push user 时，在现有 guard 内）
-          const userIdx = providerContext.length;
-          providerContext.push(toProviderMessage(userMessage));
-          protectedContextIndices.add(userIdx);
-          onMessagesAppended(toProviderMessage(userMessage).content.length)
-        token.usage → onTokenUsage(event.totalPromptTokens)
-```
+| 操作 | 文件 | 职责 |
+|---|---|---|
+| 新建 | `src/context/compaction.ts` | 纯函数：档位选择、完整 turn、重试裁剪、九段校验、用户原文注入、恢复消息渲染 |
+| 修改 | `src/context/ContextManager.ts` | token/F2 状态、路径账本、Provider 摘要调用、重试编排、熔断、原子 compact |
+| 修改 | `src/context/index.ts` | 导出 compaction 公共类型和 Skill 来源类型 |
+| 修改 | `src/session/ChatSessionController.ts` | `/compact`、自动触发、用户原文来源、notice 映射；删除 protected indices |
+| 新建 | `tests/unit/context/compaction.test.ts` | 纯算法单测 |
+| 修改 | `tests/unit/context/contextManager.test.ts` | Provider 调用、重试、恢复、熔断、紧急兜底单测 |
+| 修改 | `tests/unit/session/ChatSessionController.test.ts` | 命令和集成时序单测 |
+| 修改 | `docs/task08/tasks.md` | TDD 执行步骤 |
+| 修改 | `docs/task08/checklist.md` | Issue #54/#55 行为验收 |
 
-## 核心算法
+## 公共类型
 
-### F1：token 估算
-
-```
-estimated = lastKnownTotalPromptTokens + Math.ceil(pendingChars / 4)
-```
-
-- `onTokenUsage(total)` → `lastKnownTotalPromptTokens = total; pendingChars = 0`
-- `onMessagesAppended(chars)` → `pendingChars += chars`
-- 初始值均为 0
-
-### F2：卸载文件格式与 turn 边界定位
-
-**卸载文件命名：** `<slug>.txt`，slug = `toolCallId` 中非字母数字字符替换为 `-`，截断到 64 字符。同名文件直接覆盖。
-
-**卸载后 content 替换内容（固定模板）：**
-
-```
-[内容已卸载至文件: {absolutePath}，共 {n} 字符]
---- 内容预览（前 200 字符）---
-{content.slice(0, 200)}
----
-如需完整内容，请用 read_file 重新读取原始路径。
-```
-
-**`offloadToolResults(messages)` 遍历方式：**
-
-```
-以 role:'user' 消息作为 turn 起始标记。
-从头到尾扫描 messages，遇到 role:'user' 时记为新 turn 起点。
-每个 turn 范围 = [turn起点, 下一个role:'user'起点 - 1]（末尾 turn 含到数组末尾）。
-对每个 turn：
-  1. 先对 role:'tool' 消息执行单条卸载（Buffer.byteLength(content, 'utf8') > offloadThresholdBytes）
-  2. 统计该 turn 内所有 role:'tool' 消息 content 字节合计
-  3. 若合计 > turnOffloadThresholdBytes，按剩余字节从大到小依次卸载直到合计 ≤ 阈值
-```
-
-### F3：压缩流程
-
-**1. 保留窗口计算（求 N）**
-
-```
-从 messages 尾部往前扫描，以 role:'user' 消息作为 turn 边界：
-- 累计扫描字符数 / 4 作为 token 近似值
-- 每遇到 role:'user' 且其前面所有消息均已纳入，turn 数 +1
-- 条件：累计 token >= 10000 OR 已回溯 turn 数 >= 5，停止
-
-retainFrom = 停止时的消息下标（含该下标）
-N = retainFrom（待摘要区 = messages[0..N-1]，保留区 = messages[N..]）
-若 N < 2，跳过摘要返回 true。
-```
-
-**2. LLM 摘要请求**
-
-完整请求结构（对照 spec F3）：
+在 `src/context/compaction.ts` 定义并由 `src/context/index.ts` 重导出：
 
 ```typescript
-const request: ProviderRequest = {
-  model: this.model,                    // 来自构造参数
-  system: SUMMARY_SYSTEM_PROMPT,        // 固定文本，见 spec F3
-  tools: [],
-  toolChoice: 'none',
-  thinking: { enabled: false },
-  messages: [
-    ...messages.slice(0, N),            // 待摘要区原始消息
-    { role: 'user', content: SUMMARY_INSTRUCTION }, // 指令消息，见 spec F3
-  ],
-  signal: AbortSignal.timeout(this.options.timeoutMs),
+export type CompactionTrigger = 'auto' | 'manual';
+export type CompactionLevel = 'normal' | 'force' | 'emergency';
+
+export interface CompactionRequest {
+  trigger: CompactionTrigger;
+  originalUserMessages: readonly string[];
+}
+
+export type CompactionResult =
+  | { outcome: 'compacted'; level: CompactionLevel; attempts: number }
+  | { outcome: 'emergency_fallback'; level: 'emergency'; attempts: number }
+  | {
+      outcome: 'skipped';
+      reason: 'below_threshold' | 'circuit_open' | 'no_history';
+      level?: CompactionLevel;
+      attempts: 0;
+    }
+  | { outcome: 'failed'; level: CompactionLevel; attempts: number };
+
+export interface SkillDefinitionSnapshot {
+  id: string;
+  renderedContent: string;
+  lastUsedOrder: number;
+}
+
+export interface SkillContextSource {
+  getUsedSkillDefinitions(): Promise<readonly SkillDefinitionSnapshot[]>;
+}
+```
+
+`ContextManagerOptions` 扩展为：
+
+```typescript
+export interface ContextManagerOptions {
+  contextWindow: number;
+  offloadThresholdBytes: number;
+  turnOffloadThresholdBytes: number;
+  cacheDir: string;
+  timeoutMs: number;
+  forceMargin?: number;
+  emergencyMargin?: number;
+  skillContextSource?: SkillContextSource;
+  _writeFile?: (path: string, data: string, encoding: string) => Promise<void>;
+}
+```
+
+默认值：
+
+```typescript
+const NORMAL_MARGIN = 13_000;
+const DEFAULT_FORCE_MARGIN = 5_000;
+const DEFAULT_EMERGENCY_MARGIN = 2_000;
+const EMPTY_SKILL_CONTEXT_SOURCE: SkillContextSource = {
+  async getUsedSkillDefinitions() {
+    return [];
+  },
 };
 ```
 
-`SUMMARY_SYSTEM_PROMPT` 和 `SUMMARY_INSTRUCTION` 为 spec F3 中定义的固定字符串，抽取为模块级常量。
+构造时若不满足 `NORMAL_MARGIN > forceMargin > emergencyMargin >= 0`，抛出 `RangeError`。
 
-**3. 应用摘要后状态重置**
+## `compaction.ts` 设计
+
+### 完整 turn
 
 ```typescript
-// compress() 内部，摘要成功后：
-messages.splice(0, N);
-messages.unshift(summaryMsg, boundaryMsg);
-
-// 重置 token 估算（全量重扫，不通过 onMessagesAppended）
-this._lastKnownTotalPromptTokens = 0;
-this._pendingChars = messages.reduce((acc, m) => acc + (m.content?.length ?? 0), 0);
-
-// 下标重映射
-const newIndices = new Set<number>();
-for (const i of protectedIndices) {
-  if (i >= N) newIndices.add(i - N + 2);
-  // i < N 的受保护消息随摘要区被移除，不保留
+export interface CompleteTurn {
+  start: number;
+  endExclusive: number;
+  messages: readonly ChatMessage[];
+  estimatedTokens: number;
 }
-protectedIndices.clear();
-for (const i of newIndices) protectedIndices.add(i);
+
+export function splitCompleteTurns(
+  messages: readonly ChatMessage[],
+  compactedPrefixLength: number,
+): CompleteTurn[];
 ```
 
-### F5：熔断规格
+规则：
 
-```
-consecutiveSummaryFailures: number  // ContextManager 内部私有字段，初始 0
+- 从 `compactedPrefixLength` 之后开始识别真实 turn。
+- `role: 'user'` 开始新 turn，直到下一条真实 user 之前。
+- turn 内 assistant `toolCalls[].id` 必须与 tool `toolCallId` 配平。
+- 如果前缀长度非法或出现孤立 tool result，返回可诊断错误；ContextManager 本次 compact 返回失败且不修改数组。
 
-失败（stream 报错、response.error、无 <summary>）：
-  if (!manual) consecutiveSummaryFailures++;   // 手动路径不计入
-  return false;
-
-成功：
-  consecutiveSummaryFailures = 0;
-  return true;
-
-circuitOpen = consecutiveSummaryFailures >= 3
-// 仅阻止自动触发；compress(messages, indices, true) 不受影响
-```
-
-## 接口与数据结构
-
-### ChatSessionController 新增字段
+### 档位选择
 
 ```typescript
-// 新增私有字段（在构造函数中初始化）
-private readonly contextManager: ContextManager;
-private readonly protectedContextIndices: Set<number> = new Set();
+export function selectCompactionLevel(input: {
+  estimated: number;
+  contextWindow: number;
+  forceMargin: number;
+  emergencyMargin: number;
+}): CompactionLevel | undefined;
 ```
 
-`contextManager` 在 `constructor` 中构造：
+严格按 emergency、force、normal 顺序检查 `>`；低于 normal 线返回 `undefined`。manual 在 `undefined` 时由 ContextManager 强制按 normal 执行。
+
+### 摘要区与保留区
 
 ```typescript
-this.contextManager = new ContextManager(options.provider, config.model, {
-  contextWindow: lookupContextWindow(config.model),
-  offloadThresholdBytes: 8192,
-  turnOffloadThresholdBytes: 32768,
-  cacheDir: path.join(this.cwd, '.agentcode', 'context-cache'),
-  timeoutMs: config.request.timeoutMs,
+export function countSummaryTurns(
+  turns: readonly CompleteTurn[],
+  retainTokens?: number,
+  retainTurns?: number,
+): number;
+```
+
+默认从尾部保留约 10000 tokens 或最近 5 个完整 turn，返回应进入摘要区的 turn 数。没有摘要 turn 时返回 0。
+
+### 重试裁剪
+
+```typescript
+export function dropOldestTurns(
+  turns: readonly CompleteTurn[],
+  ratio: number,
+): CompleteTurn[];
+```
+
+删除 `max(1, ceil(currentTurns.length * ratio))` 个最旧完整 turn。结果为空时不再调用 Provider。
+
+### 九段摘要解析
+
+```typescript
+export const USER_MESSAGES_PLACEHOLDER = '{{ALL_USER_MESSAGES_VERBATIM}}';
+
+export function finalizeSummary(
+  providerText: string,
+  originalUserMessages: readonly string[],
+): string | undefined;
+```
+
+实现顺序：
+
+1. 提取唯一 `<summary>...</summary>`。
+2. 校验九个 `## N.` 标题按 1 到 9 顺序各出现一次。
+3. 校验第 6 节只含唯一用户消息占位符。
+4. 用 `renderVerbatimUserMessages()` 输出替换占位符。
+5. 返回不含 `<analysis>` 的完整 `<summary>` 正文；任一校验失败返回 `undefined`。
+
+用户原文包装格式固定，正文不 trim、不转义：
+
+```text
+<user_message index="1" length="{content.length}">
+{content}
+</user_message>
+```
+
+### 合成消息
+
+```typescript
+export function createSummaryMessages(summary: string): ChatMessage[];
+export function createFileRecoveryMessage(paths: readonly string[]): ChatMessage | undefined;
+export function createSkillRecoveryMessage(contents: readonly string[]): ChatMessage | undefined;
+export function createEmergencyMessages(originalUserMessages: readonly string[]): ChatMessage[];
+```
+
+正常摘要前缀顺序固定为 summary user、boundary assistant、可选 file user、可选 Skill user。紧急前缀使用独立的恢复 user 和真实机械截断 boundary，不伪称旧历史已摘要。
+
+### 旧合成前缀
+
+`ContextManager` 维护 `_compactedPrefixLength`。下一次 compact：
+
+- `splitCompleteTurns()` 不把旧前缀计为 turn。
+- 从旧 summary 中移除第 6 节原文块，作为上一代摘要输入。
+- 旧文件和 Skill 恢复块不再次送入 LLM。
+- 新 compact 成功后用新前缀替换旧前缀及新摘要 turn。
+
+## `ContextManager` 设计
+
+### 新增状态
+
+```typescript
+private readonly forceMargin: number;
+private readonly emergencyMargin: number;
+private readonly skillContextSource: SkillContextSource;
+private _compactedPrefixLength = 0;
+private _fileAccessSequence = 0;
+private readonly recentFileAccesses: FileAccessRecord[] = [];
+```
+
+`FileAccessRecord` 为私有类型：
+
+```typescript
+interface FileAccessRecord {
+  path: string;
+  source: 'read_file' | 'search_code' | 'glob_files';
+  sequence: number;
+}
+```
+
+每个来源只保留最近的少量去重项，避免账本无界增长。
+
+### F1 接口调整
+
+把 `onMessagesAppended(chars)` 改为：
+
+```typescript
+onMessagesAppended(messages: readonly ChatMessage[]): void;
+```
+
+该方法同时累计 `content.length` 并解析新 assistant/tool 消息中的结构化文件路径。Controller 在 push 前构造一次 `appendedMessages`，push 后把同一数组传入。
+
+### 单次摘要请求
+
+```typescript
+type SummaryAttemptResult =
+  | { kind: 'success'; summary: string }
+  | { kind: 'prompt_too_long' }
+  | { kind: 'failure' };
+
+private async requestSummaryOnce(messages: readonly ChatMessage[]): Promise<SummaryAttemptResult>;
+```
+
+判定规则：
+
+- `response.error.error.message` 或 caught `Error.message` 匹配 `context window`、`context length`、`maximum ... token`、`token limit`、`prompt too long`、`input too long` 时返回 `prompt_too_long`。
+- 不以裸 `token` 关键词判断，避免把认证 token 错误当作超长。
+- timeout、其他 Provider 错误、stream 未 complete、缺失/非法九段 summary 返回 `failure`。
+- 每次请求创建独立 AbortSignal。
+
+### 最多五次调用
+
+```text
+attempt 1: 完整摘要 turns
+attempt 2: 丢当前最旧 10%
+attempt 3: 再丢当前最旧 10%
+attempt 4: 再丢当前最旧 10%
+attempt 5: 再丢当前最旧 20%
+```
+
+任何非 prompt-too-long 失败立即停止。`attempts` 记录真实 Provider 调用次数。
+
+### 路径选择
+
+`selectRecentFilePaths()` 依次读取 read_file、search_code、glob_files 三组记录；每组 sequence 降序，跨组规范化去重，取前 5 个。输出只含路径。
+
+### Skill 预算
+
+调用可选 `skillContextSource`，按 `lastUsedOrder` 降序。预算按 `ceil(chars / 4)` 近似 25000 tokens；最后一个定义超预算时按剩余字符容量截断，之后停止。
+
+### 原子 compact
+
+```typescript
+async compact(
+  messages: ChatMessage[],
+  request: CompactionRequest,
+): Promise<CompactionResult>;
+```
+
+流程：
+
+1. 计算档位；auto 低水位或 auto normal 熔断时返回 skipped。
+2. 分离旧合成前缀和完整真实 turns。
+3. 计算摘要 turns；为 0 时返回 `no_history`。
+4. 从摘要 turns 提取文件路径候选，并获取 Skill snapshots。
+5. 发起九段摘要及超长降级重试。
+6. 成功时在临时数组构造新前缀 + 原保留 turns。
+7. emergency 最终失败时构造用户原文恢复 + 文件/Skill + 最近 5 完整 turns。
+8. 仅成功结果使用一次 `messages.splice()` 原子替换，并更新 `_compactedPrefixLength` 与 token 估算。
+9. normal/force 最终失败保持数组、prefix length 和估算不变。
+10. 按 spec F9 更新熔断计数。
+
+## Controller 集成
+
+### 删除旧保护机制
+
+删除：
+
+- `protectedContextIndices` 字段。
+- complete/fail turn 中记录 user 下标的逻辑。
+- `compress(messages, indices, manual)` 调用。
+
+用户原文改由完整 `contextMessages` 提供：
+
+```typescript
+private getOriginalUserMessages(): string[] {
+  return this.contextMessages
+    .filter(message => message.role === 'user')
+    .map(message => toProviderMessage(message).content);
+}
+```
+
+### `/compact`
+
+`parseCommand()` 返回 `isCompact?: boolean`，只匹配 `/^\/compact\b/i`。
+
+手动路径：
+
+```typescript
+await this.contextManager.offloadToolResults(this.providerContext);
+const result = await this.contextManager.compact(this.providerContext, {
+  trigger: 'manual',
+  originalUserMessages: this.getOriginalUserMessages(),
 });
 ```
 
-`cacheDir` 由已有的 `this.cwd`（工作目录）拼接 `.agentcode/context-cache` 得出，目录自动创建逻辑由 `ContextManager` 内部处理（`fs.mkdir` recursive）。
+`/compact` 不写入 UI 历史；`/compress` 作为普通文本进入 AgentLoop。
 
-**测试注入：** `ChatSessionControllerOptions` 新增可选字段 `contextManager?: ContextManager`，Constructor 优先使用注入值；未注入时自行构造。这样现有 Controller 测试无需改动，新测试可注入 mock。
+### 自动路径
 
-```typescript
-// ChatSessionControllerOptions 新增：
-contextManager?: ContextManager;
-```
-
-### ContextManagerOptions
+F2 后无条件委托 ContextManager：
 
 ```typescript
-interface ContextManagerOptions {
-  contextWindow: number;             // 模型窗口 tokens
-  offloadThresholdBytes: number;     // 单条卸载阈值，默认 8192
-  turnOffloadThresholdBytes: number; // 轮级卸载阈值，默认 32768
-  cacheDir: string;                  // 绝对路径，由 Controller 以 cwd + '.agentcode/context-cache' 填充
-  timeoutMs: number;                 // 来自 config.request.timeoutMs
-}
+await this.contextManager.compact(this.providerContext, {
+  trigger: 'auto',
+  originalUserMessages: this.getOriginalUserMessages(),
+});
 ```
 
-### ContextManager（公开接口）
+Controller 不再读取 `estimated`、`contextWindow` 或 `circuitOpen` 做策略判断。
 
-`ChatMessage` 指 `src/providers/types.ts` 中导出的 provider 层类型（`import type { ChatMessage } from '../providers/types.js'`），**不是** `src/session/types.ts` 中的会话层同名类型。
+### notice 映射
 
-```typescript
-// ChatMessage = ProviderTextMessage | ProviderAssistantToolCallMessage | ProviderToolResultMessage
-//   来自 src/providers/types.ts，不是 src/session/types.ts
-class ContextManager {
-  constructor(provider: ChatModelProvider, model: string, options: ContextManagerOptions);
+| 结果 | notice |
+|---|---|
+| `compacted` | `上下文已压缩` |
+| `emergency_fallback` | `上下文已紧急压缩，摘要失败后已使用机械兜底` |
+| `skipped/no_history` | `没有可压缩的历史` |
+| `failed` | `上下文压缩失败，请稍后重试` |
 
-  // F1 集成：applyAgentLoopEvent token.usage case 调用
-  onTokenUsage(totalPromptTokens: number): void;
+自动路径不展示成功 notice；现有 Provider 上下文过长错误提示改为 `/compact`。
 
-  // F1 集成：completeTurn / failTurn push 后调用
-  onMessagesAppended(chars: number): void;
+## 构建顺序
 
-  // 当前估算值（只读）
-  get estimated(): number;
+1. T1：纯函数 compaction 边界与九段解析。
+2. T2：ContextManager 档位、重试和结构化结果。
+3. T3：文件路径与 Skill 恢复。
+4. T4：紧急兜底、重复 compact 和熔断组合。
+5. T5：Controller `/compact` 与自动集成。
+6. T6：文档绑定、全量验证与 E2E。
 
-  // F2：就地修改 messages，将大工具结果替换为预览
-  offloadToolResults(messages: ChatMessage[]): Promise<void>;
+每项按 `docs/task08/tasks.md` 的 RED -> GREEN -> REFACTOR -> 验证步骤执行。
 
-  // F3：就地修改 messages，执行 LLM 摘要压缩
-  // manual=true 时 safetyMargin=3000（仍有水位检查）；false/省略 时 safetyMargin=13000
-  // 待摘要区 < 2 条时跳过并返回 true（非失败）
-  compress(
-    messages: ChatMessage[],
-    protectedIndices: Set<number>,
-    manual?: boolean,
-  ): Promise<boolean>;
+## 风险与缓解
 
-  // F5：consecutiveSummaryFailures >= 3
-  get circuitOpen(): boolean;
-}
+| 风险 | 缓解 |
+|---|---|
+| 用户原文含 Markdown/XML 标记破坏九段解析 | 先解析模型占位符，再插入原文；插入后不再解析 |
+| 多次 compact 嵌套旧恢复块 | `_compactedPrefixLength` 显式排除旧合成前缀 |
+| F2 后无法解析原工具 JSON | 在 `onMessagesAppended` 时记录路径，不从卸载预览猜测 |
+| 裸 `token` 误判认证错误 | 使用长度语义组合模式，不匹配单独 token |
+| normal/force 失败导致半改写 | 临时构造，成功后单次 splice |
+| 紧急恢复仍超窗 | 明确保留所有用户原文的产品约束和残余风险，不静默删除 |
+| ContextManager 继续变大 | 把纯算法集中到 `compaction.ts`，Manager 只保留状态和 I/O |
+
+## 验证命令
+
+```bash
+npm test -- tests/unit/context/compaction.test.ts
+npm test -- tests/unit/context/contextManager.test.ts
+npm test -- tests/unit/session/ChatSessionController.test.ts
+npm run typecheck
+npm run lint
+npm test
+npm run build
+npm run e2e:tmux
 ```
 
-### parseCommand 返回类型变更
-
-```typescript
-// 原：{ mode: AgentLoopMode; actualText: string }
-// 新：
-{ mode: AgentLoopMode; actualText: string; isCompress?: boolean }
-```
-
-### lookupContextWindow
-
-```typescript
-function lookupContextWindow(model: string): number
-// 最长前缀优先；位于 src/context/contextWindow.ts
-```
-
-## 文件组织
-
-| 操作 | 路径 | 目的 |
-|------|------|------|
-| 新建 | `src/context/ContextManager.ts` | 压缩逻辑主体 |
-| 新建 | `src/context/contextWindow.ts` | model 窗口查表 |
-| 新建 | `src/context/index.ts` | 导出 ContextManager, lookupContextWindow |
-| 修改 | `src/session/ChatSessionController.ts` | 集成 ContextManager，扩展 parseCommand |
-| 新建 | `tests/unit/context/contextManager.test.ts` | ContextManager 单元测试 |
-| 新建 | `tests/unit/context/contextWindow.test.ts` | 查表单元测试 |
-
-## 兼容性与迁移
-
-- 所有现有工具、Provider、AgentLoop 接口不变
-- `providerContext` 继续是 `ProviderChatMessage[]`（即 `providers/types.ts` 的 `ChatMessage[]`），数组结构不变，只是元素 content 可能被替换或数组被截断/扩充
-- 无配置文件 schema 变更（ContextManagerOptions 由 Controller 在构造时直接填充）
-- 现有测试不需要修改（Controller 测试中 contextManager 不存在时自动跳过集成点，或通过注入接口保持兼容）
-
-## 验证策略
-
-- 单元验证：
-  - `lookupContextWindow`：前缀优先级，边界 model 名，默认值
-  - `ContextManager.offloadToolResults`：单条 > 8KB 触发，< 8KB 不触发，轮级合并卸载，文件写入内容
-  - `ContextManager.compress`：保留窗口计算，摘要请求字段，成功/失败路径，熔断计数，safetyMargin 差异，protectedIndices 截断，下标重映射
-  - `ContextManager.estimated`：onTokenUsage 重置，onMessagesAppended 累加
-  - 命令：`npm test -- tests/unit/context/`
-- 集成验证：
-  - `ChatSessionController` 收到 `token.usage` 事件后 estimated 正确更新
-  - `/compress` 命令不残留在 messages[]
-  - 命令：`npm test -- tests/unit/session/`
-- 端到端验证：
-  - `npm run e2e:tmux`（需 psmux/tmux）
-
-## 风险与回滚
-
-| 风险 | 影响 | 缓解 | 回滚 |
-|------|------|------|------|
-| providerContext 就地修改导致竞态（理论上单线程） | 消息错乱 | submitUserText 串行执行，无并发写入 | 回退 ChatSessionController 改动 |
-| 摘要 LLM 调用消耗额外 token | 费用增加 | 熔断 3 次上限；手动触发用户主动 | 直接禁用 F3 路径 |
-| 卸载文件路径泄漏 secret | 安全风险 | cacheDir 在 .agentcode/ 下，已在 .gitignore 中 | 删除 context-cache/ 目录 |
-| 估算误差导致频繁摘要 | 性能下降 | 13K 安全余量；摘要成功后全量重扫重置 | 调大 safetyMargin 常量 |
-| ChatMessage 类型歧义（session vs providers） | 编译错误 | N4 已明确指向 providers/types.ts；导入语句加注释 | 无需回滚，编译期即暴露 |
+E2E 依赖 psmux/tmux；不可用时记录环境阻塞，不声称通过。
