@@ -9,6 +9,9 @@ import type {
 } from '../agent/types.js';
 import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
 import type { AgentConfig } from '../config/schema.js';
+import { ContextManager } from '../context/ContextManager.js';
+import { lookupContextWindow } from '../context/contextWindow.js';
+import { join } from 'node:path';
 import type { ChatModelProvider, ChatMessage as ProviderChatMessage } from '../providers/types.js';
 import { type PublicError, toPublicError } from '../shared/errors.js';
 import { type IdGenerator, createId } from '../shared/ids.js';
@@ -50,6 +53,8 @@ export interface ChatSessionControllerOptions {
   askPermission?: AskPermissionFn;
   /** 用户 home 目录（用于加载全局权限配置） */
   homeDir?: string;
+  /** 依赖注入：ContextManager 实例（用于测试） */
+  contextManager?: ContextManager;
 }
 
 export interface SubmitUserTextOptions {
@@ -97,6 +102,10 @@ export class ChatSessionController {
   private readonly permissionChecker: PermissionChecker | undefined;
   /** full 模式下的权限策略；初始 plan 配置回退到 normal */
   private readonly fullPermissionMode: Exclude<PermissionMode, 'plan'>;
+  /** F1/F2/F3：上下文管理器 */
+  private readonly contextManager: ContextManager;
+  /** N2：受保护的 user 消息下标集合，摘要时不可删除 */
+  private readonly protectedContextIndices: Set<number> = new Set();
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -145,6 +154,19 @@ export class ChatSessionController {
       cwd: this.cwd,
       ...(options.askPermission !== undefined ? { askFn: options.askPermission } : {}),
     });
+
+    // 上下文管理器初始化（可注入，用于测试）
+    this.contextManager = options.contextManager ?? new ContextManager(
+      this.provider,
+      this.config.model,
+      {
+        contextWindow: lookupContextWindow(this.config.model),
+        offloadThresholdBytes: 8192,
+        turnOffloadThresholdBytes: 32768,
+        cacheDir: join(this.cwd, '.agentcode', 'context-cache'),
+        timeoutMs: this.config.request.timeoutMs,
+      },
+    );
   }
 
   getState(): ChatSessionState {
@@ -174,8 +196,26 @@ export class ChatSessionController {
     // 清除上一次切换产生的瞬态通知
     this.notice = undefined;
 
-    // 识别 /plan 和 /do 命令
-    const { mode, actualText } = this.parseCommand(text);
+    // 识别命令（/compress、/plan、/do）
+    const { mode, actualText, isCompress } = this.parseCommand(text);
+
+    // F6：/compress 拦截（在 messages.push 前，不调用 setLoopMode）
+    if (isCompress === true) {
+      const manualThreshold = this.contextManager.contextWindow - 3000;
+      if (this.contextManager.estimated <= manualThreshold) {
+        this.notice = '上下文尚未到压缩阈值';
+      } else {
+        const success = await this.contextManager.compress(
+          this.providerContext,
+          this.protectedContextIndices,
+          true,
+        );
+        this.notice = success ? '上下文已压缩' : '上下文压缩失败，请稍后重试';
+      }
+      yield this.createStateChangedEvent();
+      return;
+    }
+
     this.setLoopMode(mode);
 
     const userMessage = this.createMessage('user', actualText);
@@ -224,6 +264,13 @@ export class ChatSessionController {
         this.systemPromptRegistry,
       );
       this.turnIndex++;
+
+      // F7：在 AgentLoop 前执行 F2 卸载 + F3 自动压缩
+      await this.contextManager.offloadToolResults(this.providerContext);
+      const autoThreshold = this.contextManager.contextWindow - 13000;
+      if (this.contextManager.estimated > autoThreshold && !this.contextManager.circuitOpen) {
+        await this.contextManager.compress(this.providerContext, this.protectedContextIndices);
+      }
 
       const input: AgentLoopInput = {
         contextMessages: [...this.providerContext],
@@ -309,6 +356,7 @@ export class ChatSessionController {
         return undefined;
 
       case 'token.usage':
+        this.contextManager.onTokenUsage(event.totalPromptTokens);
         return undefined;
 
       case 'loop.retrying':
@@ -324,9 +372,15 @@ export class ChatSessionController {
         );
         return this.createStateChangedEvent();
 
-      case 'loop.failed':
+      case 'loop.failed': {
+        // 检测上下文溢出关键词，设置专用 notice
+        const errMsg = event.error.message.toLowerCase();
+        if (errMsg.includes('context') || errMsg.includes('token') || errMsg.includes('length')) {
+          this.notice = '上下文过长，请使用 /compress 压缩后继续';
+        }
         this.failTurn(userMessage, event.error);
         return this.createStateChangedEvent();
+      }
 
       default: {
         // exhaustive check: 新增事件类型时编译器会报错
@@ -336,8 +390,12 @@ export class ChatSessionController {
     }
   }
 
-  private parseCommand(text: string): { mode: AgentLoopMode; actualText: string } {
+  private parseCommand(text: string): { mode: AgentLoopMode; actualText: string; isCompress?: boolean } {
     const trimmed = text.trim();
+    if (/^\/compress\b/i.test(trimmed)) {
+      // /compress 不调用 setLoopMode，直接返回 isCompress 标志
+      return { mode: this.currentMode, actualText: '', isCompress: true };
+    }
     if (/^\/plan\b/i.test(trimmed)) {
       return { mode: 'plan', actualText: trimmed.slice(5).trim() || trimmed };
     }
@@ -377,11 +435,20 @@ export class ChatSessionController {
     };
     this.messages.push(assistantMessage);
     this.contextMessages.push(userMessage, assistantMessage);
-    // 跨 turn 上下文：保留用户消息 + 完整工具调用历史 + 最终回答
+
+    // 记录 user 消息在 providerContext 中的下标（N2 保护）
+    const userIdx = this.providerContext.length;
     this.providerContext.push(toProviderMessage(userMessage), ...turnMessages, {
       role: 'assistant',
       content: finalText,
     });
+    this.protectedContextIndices.add(userIdx);
+
+    // F1：通知 contextManager 追加的字符数
+    const turnMsgsChars = turnMessages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
+    const appendedChars = toProviderMessage(userMessage).content.length + turnMsgsChars + finalText.length;
+    this.contextManager.onMessagesAppended(appendedChars);
+
     this.toolActivities = [];
     this.draft = undefined;
     this.status = 'idle';
@@ -391,7 +458,12 @@ export class ChatSessionController {
   private failTurn(userMessage: ChatMessage, error: PublicError): void {
     if (!this.contextMessages.some((message) => message.id === userMessage.id)) {
       this.contextMessages.push(userMessage);
+      // 记录 user 消息在 providerContext 中的下标（N2 保护）
+      const userIdx = this.providerContext.length;
       this.providerContext.push(toProviderMessage(userMessage));
+      this.protectedContextIndices.add(userIdx);
+      // F1：通知 contextManager 追加的字符数
+      this.contextManager.onMessagesAppended(toProviderMessage(userMessage).content.length);
     }
 
     this.draft = undefined;

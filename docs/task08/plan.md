@@ -48,10 +48,13 @@ submitUserText
   └─ runAgentLoop(...)
         loop.completed → completeTurn
           // push 前记录 user 消息的插入下标
-          const userIdx = providerContext.length;   // 用户消息将落在此下标
+          const userIdx = providerContext.length;
           providerContext.push(toProviderMessage(userMessage), ...turnMessages, assistantMsg);
-          protectedContextIndices.add(userIdx);     // 只保护 user 消息下标
-          onMessagesAppended(userMsg.content.length + turnMsgsChars + finalText.length)
+          protectedContextIndices.add(userIdx);
+          // chars = 用户消息字符数 + 每条 turnMessage.content 字符数之和 + finalText 字符数
+          // ProviderAssistantToolCallMessage.content 可能为空字符串，toolCalls 不计入
+          const turnMsgsChars = turnMessages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
+          onMessagesAppended(toProviderMessage(userMessage).content.length + turnMsgsChars + finalText.length)
         failTurn（有条件 push user 时，在现有 guard 内）
           const userIdx = providerContext.length;
           providerContext.push(toProviderMessage(userMessage));
@@ -72,16 +75,28 @@ estimated = lastKnownTotalPromptTokens + Math.ceil(pendingChars / 4)
 - `onMessagesAppended(chars)` → `pendingChars += chars`
 - 初始值均为 0
 
-### F2：轮级卸载中的 turn 边界定位
+### F2：卸载文件格式与 turn 边界定位
 
-`offloadToolResults(messages)` 遍历方式：
+**卸载文件命名：** `<slug>.txt`，slug = `toolCallId` 中非字母数字字符替换为 `-`，截断到 64 字符。同名文件直接覆盖。
+
+**卸载后 content 替换内容（固定模板）：**
+
+```
+[内容已卸载至文件: {absolutePath}，共 {n} 字符]
+--- 内容预览（前 200 字符）---
+{content.slice(0, 200)}
+---
+如需完整内容，请用 read_file 重新读取原始路径。
+```
+
+**`offloadToolResults(messages)` 遍历方式：**
 
 ```
 以 role:'user' 消息作为 turn 起始标记。
 从头到尾扫描 messages，遇到 role:'user' 时记为新 turn 起点。
 每个 turn 范围 = [turn起点, 下一个role:'user'起点 - 1]（末尾 turn 含到数组末尾）。
 对每个 turn：
-  1. 先对 role:'tool' 消息执行单条卸载（content 字节 > offloadThresholdBytes）
+  1. 先对 role:'tool' 消息执行单条卸载（Buffer.byteLength(content, 'utf8') > offloadThresholdBytes）
   2. 统计该 turn 内所有 role:'tool' 消息 content 字节合计
   3. 若合计 > turnOffloadThresholdBytes，按剩余字节从大到小依次卸载直到合计 ≤ 阈值
 ```

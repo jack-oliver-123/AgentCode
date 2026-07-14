@@ -680,3 +680,231 @@ async function collectStates(events: AsyncIterable<{ state: ChatSessionState }>)
 
   return states;
 }
+
+// ─────────────────────────────────────────────
+// T5：ContextManager 集成先行测试
+// ─────────────────────────────────────────────
+
+describe('ChatSessionController - ContextManager 集成', () => {
+  it('token.usage 事件触发 contextManager.onTokenUsage(totalPromptTokens)', async () => {
+    const onTokenUsageCalls: number[] = [];
+    const mockContextManager = {
+      onTokenUsage: (n: number) => { onTokenUsageCalls.push(n); },
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => true,
+      get estimated() { return 0; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'response.start' },
+      { type: 'response.usage', usage: { inputTokens: 1234, outputTokens: 0 } },
+      { type: 'content.delta', delta: 'Hi' },
+      { type: 'response.complete' },
+    ]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    await collectStates(controller.submitUserText('test'));
+    expect(onTokenUsageCalls).toContain(1234);
+  });
+
+  it('completeTurn 路径：onMessagesAppended 被调用且参数 > 0', async () => {
+    const appendedChars: number[] = [];
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: (n: number) => { appendedChars.push(n); },
+      offloadToolResults: async () => {},
+      compress: async () => true,
+      get estimated() { return 0; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'Reply' },
+      { type: 'response.complete' },
+    ]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    await collectStates(controller.submitUserText('Hello'));
+
+    expect(appendedChars.length).toBeGreaterThan(0);
+    expect(appendedChars.some(n => n > 0)).toBe(true);
+  });
+
+  it('failTurn 路径：onMessagesAppended 被调用（N2 双路覆盖）', async () => {
+    const appendedChars: number[] = [];
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: (n: number) => { appendedChars.push(n); },
+      offloadToolResults: async () => {},
+      compress: async () => true,
+      get estimated() { return 0; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'response.error', error: { code: 'provider_error', message: 'fail', retryable: false } },
+    ]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    await collectStates(controller.submitUserText('Hello'));
+    expect(appendedChars.length).toBeGreaterThan(0);
+  });
+
+  it('正常 submitUserText：offloadToolResults 在 AgentLoop 前被调用', async () => {
+    const callOrder: string[] = [];
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => { callOrder.push('offload'); },
+      compress: async () => { return true; },
+      get estimated() { return 0; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'Hi' },
+      { type: 'response.complete' },
+    ]);
+    const originalStream = provider.stream.bind(provider);
+    (provider as any).stream = async function* (req: any) {
+      callOrder.push('agentloop');
+      yield* originalStream(req);
+    };
+
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    await collectStates(controller.submitUserText('test'));
+
+    expect(callOrder.indexOf('offload')).toBeGreaterThanOrEqual(0);
+    expect(callOrder.indexOf('agentloop')).toBeGreaterThan(callOrder.indexOf('offload'));
+  });
+
+  it('estimated 超过自动阈值时，compress 在 AgentLoop 前被调用（F7）', async () => {
+    const callOrder: string[] = [];
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => { callOrder.push('compress'); return true; },
+      get estimated() { return 200000; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'Hi' },
+      { type: 'response.complete' },
+    ]);
+    const originalStream = provider.stream.bind(provider);
+    (provider as any).stream = async function* (req: any) {
+      callOrder.push('agentloop');
+      yield* originalStream(req);
+    };
+
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    await collectStates(controller.submitUserText('test'));
+
+    expect(callOrder.indexOf('compress')).toBeGreaterThanOrEqual(0);
+    expect(callOrder.indexOf('agentloop')).toBeGreaterThan(callOrder.indexOf('compress'));
+  });
+
+  it('/compress 成功：notice 含"上下文已压缩"，messages 不含 /compress', async () => {
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => true,
+      get estimated() { return 200000; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    const states = await collectStates(controller.submitUserText('/compress'));
+
+    const finalState = states.at(-1)!;
+    expect(finalState.notice).toContain('上下文已压缩');
+    expect(finalState.messages.every(m =>
+      m.parts.every(p => p.type !== 'text' || !(p as any).text.includes('/compress'))
+    )).toBe(true);
+  });
+
+  it('/compress 且 compress() 返回 false：notice 含"上下文压缩失败，请稍后重试"', async () => {
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => false,
+      get estimated() { return 200000; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    const states = await collectStates(controller.submitUserText('/compress'));
+
+    expect(states.at(-1)!.notice).toContain('上下文压缩失败，请稍后重试');
+  });
+
+  it('/compress 且 estimated 未达阈值：compress 未被调用，notice 含"上下文尚未到压缩阈值"', async () => {
+    let compressCalled = false;
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => { compressCalled = true; return true; },
+      get estimated() { return 100; }, // 远低于 contextWindow-3000
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    const states = await collectStates(controller.submitUserText('/compress'));
+
+    expect(compressCalled).toBe(false);
+    expect(states.at(-1)!.notice).toContain('上下文尚未到压缩阈值');
+  });
+
+  it('loop.failed 且错误信息含 "context length" → notice 含"上下文过长"', async () => {
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => true,
+      get estimated() { return 0; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'response.error', error: { code: 'provider_error', message: 'context length exceeded', retryable: false } },
+    ]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    const states = await collectStates(controller.submitUserText('test'));
+    expect(states.at(-1)!.notice).toContain('上下文过长');
+  });
+
+  it('loop.failed 且错误信息含 "token" → notice 含"上下文过长"', async () => {
+    const mockContextManager = {
+      onTokenUsage: () => {},
+      onMessagesAppended: () => {},
+      offloadToolResults: async () => {},
+      compress: async () => true,
+      get estimated() { return 0; },
+      get circuitOpen() { return false; },
+      get contextWindow() { return 128000; },
+    } as any;
+
+    const provider = new FakeProvider([
+      { type: 'response.error', error: { code: 'provider_error', message: 'maximum token limit exceeded', retryable: false } },
+    ]);
+    const controller = createController(provider, {}, { contextManager: mockContextManager });
+    const states = await collectStates(controller.submitUserText('test'));
+    expect(states.at(-1)!.notice).toContain('上下文过长');
+  });
+});
