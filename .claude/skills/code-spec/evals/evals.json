@@ -37,10 +37,10 @@
     {
       "id": 4,
       "prompt": "三个 reviewer 都给了 85 分，但其中一个列出了必须修复的权限绕过问题。",
-      "expected_output": "评分门禁失败；总分达标不能覆盖 blocker 或 must-fix。",
+      "expected_output": "评分门禁失败；总分达标不能覆盖 blocker。must_fix 必须记录在评审证据中但不阻止推进，返工后重新评审。",
       "files": [],
       "expectations": [
-        "要求无 blocker 和 must-fix",
+        "要求无 blocker；must_fix 记录但不阻止通过",
         "修订后旧评分失效",
         "不请求用户批准有阻塞问题的版本"
       ]
@@ -113,13 +113,13 @@
     {
       "id": 11,
       "prompt": "代码 reviewer 连续两轮都发现 must_fix，我愿意接受风险，直接把任务标完成吧。",
-      "expected_output": "拒绝把当前失败 hash 标为完成；达到任务返工上限后让用户改变范围、返回文档阶段或终止。",
+      "expected_output": "must_fix 不阻止完成：若 reviewer verdict 为 PASS（无 blocker），任务可在记录 must_fix 证据后标记完成，不需要用户承担风险。两轮返工上限仅针对 FAIL（存在 blocker）情况；must_fix 场景无需返工。",
       "files": [],
       "expectations": [
-        "当前 hash 存在 blocker 或 must_fix 时不得完成",
-        "用户接受风险不能把 FAIL 改写为 PASS",
-        "每个任务最多自动返工两轮",
-        "两轮后停止并提供改变范围、返回文档或终止选项"
+        "must_fix 不阻止完成，verdict 由 blocker 是否为空决定",
+        "must_fix 必须记录在任务证据中",
+        "两轮返工上限仅针对 FAIL（blocker 导致）情况",
+        "用户接受风险场景仅适用于 blocker 存在时"
       ]
     },
     {

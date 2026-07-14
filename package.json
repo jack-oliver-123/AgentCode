@@ -22,7 +22,8 @@
     "test": "vitest --run",
     "test:run": "vitest --run",
     "test:watch": "vitest",
-    "e2e:tmux": "npm run build && bash tests/e2e/tmux/agentcode-smoke.sh"
+    "e2e:tmux": "npm run build && bash tests/e2e/tmux/agentcode-smoke.sh",
+    "test:skills": "node .claude/skills/code-spec/scripts/change-set-hash.test.mjs"
   },
   "dependencies": {
     "eventsource-parser": "^3.0.6",

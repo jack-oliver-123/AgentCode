@@ -99,13 +99,7 @@ git hash-object -- <文档路径>
 
 ## 评分门禁与有限返工
 
-每个被评审文档使用统一门禁。单个 reviewer 通过必须同时满足：
-
-- 总分 `>= 80`
-- 四个分项均有效，且分项之和严格等于总分
-- `blockers` 为空
-
-`must_fix` 必须在评审证据中列出，但不阻止推进，可在下一阶段跟进处理。
+每个被评审文档使用统一门禁。通过条件、问题级别（blocker / must_fix / suggestion）及 must_fix 追踪要求详见 [references/review-rubric.md](references/review-rubric.md)（文档评分表 → 问题级别章节），以该文件为唯一权威，不在此重复。
 
 所有要求数量的 reviewer 都通过，当前 hash 才可请求用户批准。高分不能覆盖 blocker，也不得请求用户批准仍有阻塞项的版本。
 

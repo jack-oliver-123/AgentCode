@@ -7,12 +7,16 @@ import path from 'node:path';
 
 const MAX_BUFFER = 512 * 1024 * 1024;
 
+// git 操作超时上限：30 秒。防止凭据提示、NFS 锁或 hook 阻塞导致进程永久挂起。
+const GIT_TIMEOUT_MS = 30_000;
+
 function runGit(args, cwd) {
   const result = spawnSync('git', args, {
     cwd,
     encoding: null,
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
+    timeout: GIT_TIMEOUT_MS,
   });
 
   if (result.status !== 0) {
