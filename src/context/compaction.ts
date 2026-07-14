@@ -177,44 +177,47 @@ export function renderVerbatimUserMessages(messages: readonly UserMessageInput[]
 }
 
 /** Validates the model response and injects the original user messages. */
-export function finalizeSummary(response: string, userMessages: readonly UserMessageInput[]): string {
+export function finalizeSummary(response: string, userMessages: readonly UserMessageInput[]): string | undefined {
   if (typeof response !== 'string') {
-    throw new TypeError('摘要响应必须是字符串');
+    return undefined;
   }
 
   const openingTags = response.match(/<summary>/g) ?? [];
   const closingTags = response.match(/<\/summary>/g) ?? [];
   const match = response.match(/<summary>([\s\S]*?)<\/summary>/);
   if (openingTags.length !== 1 || closingTags.length !== 1 || !match) {
-    throw new Error('摘要响应必须包含唯一的 <summary> 块');
+    return undefined;
   }
 
   const body = match[1]!;
   if (/<\/?analysis\b/i.test(body)) {
-    throw new Error('正式摘要中不能包含 analysis');
+    return undefined;
   }
   if (/\bundefined\b/.test(body)) {
-    throw new Error('正式摘要中不能包含 undefined');
+    return undefined;
   }
 
-  const headings = [...body.matchAll(/^##\s+(.+?)\s*$/gm)].map((heading) => heading[1]);
+  const headingMatches = [...body.matchAll(/^##\s+(.+?)\s*$/gm)];
+  const headings = headingMatches.map((heading) => heading[1]);
   if (
     headings.length !== SUMMARY_HEADINGS.length ||
     headings.some((heading, index) => heading !== SUMMARY_HEADINGS[index])
   ) {
-    throw new Error('摘要必须包含按固定顺序排列且各出现一次的九个章节');
+    return undefined;
   }
 
   const placeholderMatches = response.match(/\{\{ALL_USER_MESSAGES_VERBATIM\}\}/g) ?? [];
   if (placeholderMatches.length !== 1) {
-    throw new Error('摘要必须包含唯一的用户消息占位符');
+    return undefined;
   }
 
-  const userHeading = body.indexOf(`## ${SUMMARY_HEADINGS[5]}`);
-  const nextHeading = body.indexOf(`## ${SUMMARY_HEADINGS[6]}`, userHeading);
+  const userHeading = headingMatches[5]!;
+  const nextHeading = headingMatches[6]!;
+  const userSectionStart = userHeading.index! + userHeading[0].length;
+  const userSectionEnd = nextHeading.index!;
   const placeholder = body.indexOf(USER_MESSAGES_PLACEHOLDER);
-  if (placeholder <= userHeading || placeholder >= nextHeading) {
-    throw new Error('用户消息占位符必须位于第六节');
+  if (placeholder < userSectionStart || placeholder >= userSectionEnd) {
+    return undefined;
   }
 
   return body.replace(USER_MESSAGES_PLACEHOLDER, renderVerbatimUserMessages(userMessages)).trim();

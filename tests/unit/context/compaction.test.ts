@@ -123,6 +123,24 @@ describe('compaction primitives', () => {
     expect(turns).toEqual(snapshot);
   });
 
+  it('locks ten-percent trimming to ceil and does not mutate either input', () => {
+    const tenTurns = Array.from({ length: 10 }, (_, index) => ({
+      messages: [message('user', String(index))],
+      estimatedTokens: index,
+    }));
+    const elevenTurns = Array.from({ length: 11 }, (_, index) => ({
+      messages: [message('user', String(index))],
+      estimatedTokens: index,
+    }));
+    const tenSnapshot = [...tenTurns];
+    const elevenSnapshot = [...elevenTurns];
+
+    expect(dropOldestTurns(tenTurns, 0.1)).toEqual(tenTurns.slice(1));
+    expect(dropOldestTurns(elevenTurns, 0.1)).toEqual(elevenTurns.slice(2));
+    expect(tenTurns).toEqual(tenSnapshot);
+    expect(elevenTurns).toEqual(elevenSnapshot);
+  });
+
   it('renders every user message exactly, including whitespace and markup', () => {
     const users = ['  keep <xml> & text  ', '', '重复', '重复'];
     const rendered = renderVerbatimUserMessages(users);
@@ -136,6 +154,10 @@ describe('compaction primitives', () => {
   it('finalizes exactly one ordered nine-section summary and replaces the sole placeholder', () => {
     const userText = ['first', '  <second>  '];
     const result = finalizeSummary(validDraft, userText);
+    expect(result).toBeDefined();
+    if (result === undefined) {
+      throw new Error('合法摘要不应返回 undefined');
+    }
     const headings = [...result.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
     expect(headings).toEqual([
       '主要请求和意图',
@@ -155,11 +177,24 @@ describe('compaction primitives', () => {
   });
 
   it('rejects malformed drafts, duplicate sections/placeholders, analysis and undefined', () => {
-    expect(() => finalizeSummary(validDraft.replace('## 当前工作', '## 待办任务'), ['x'])).toThrow();
-    expect(() => finalizeSummary(validDraft.replace(USER_MESSAGES_PLACEHOLDER, 'missing'), ['x'])).toThrow();
-    expect(() => finalizeSummary(`${validDraft}\n${USER_MESSAGES_PLACEHOLDER}`, ['x'])).toThrow();
-    expect(() => finalizeSummary(validDraft.replace('请求', '<analysis>secret</analysis>'), ['x'])).toThrow();
-    expect(() => finalizeSummary(validDraft.replace('请求', 'undefined'), ['x'])).toThrow();
+    expect(finalizeSummary(validDraft.replace('## 当前工作', '## 待办任务'), ['x'])).toBeUndefined();
+    expect(finalizeSummary(validDraft.replace(USER_MESSAGES_PLACEHOLDER, 'missing'), ['x'])).toBeUndefined();
+    expect(finalizeSummary(`${validDraft}\n${USER_MESSAGES_PLACEHOLDER}`, ['x'])).toBeUndefined();
+    expect(finalizeSummary(validDraft.replace('请求', '<analysis>secret</analysis>'), ['x'])).toBeUndefined();
+    expect(finalizeSummary(validDraft.replace('请求', 'undefined'), ['x'])).toBeUndefined();
+  });
+
+  it('returns undefined when inline heading text would disguise a misplaced placeholder', () => {
+    const disguised = validDraft
+      .replace('## 主要请求和意图\n请求', '## 主要请求和意图\n正文提到“## 所有用户消息”，但这不是章节标题')
+      .replace(USER_MESSAGES_PLACEHOLDER, '第六节没有占位符')
+      .replace('## 问题解决过程\n过程', `## 问题解决过程\n过程\n${USER_MESSAGES_PLACEHOLDER}`);
+
+    expect(finalizeSummary(disguised, ['x'])).toBeUndefined();
+  });
+
+  it('returns undefined when the response contains two summary blocks', () => {
+    expect(finalizeSummary(`${validDraft}\n${validDraft}`, ['x'])).toBeUndefined();
   });
 
   it('creates summary, file, skill, and emergency recovery messages', () => {
