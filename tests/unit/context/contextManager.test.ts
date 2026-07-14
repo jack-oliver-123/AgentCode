@@ -442,7 +442,6 @@ describe('ContextManager - F3/F4/F5 compress', () => {
       stream: (_req: any) =>
         (async function* () {
           throw new DOMException('The operation was aborted', 'AbortError');
-          yield { type: 'response.complete' } as ProviderEvent; // unreachable
         })(),
     };
     const mgr = new ContextManager(provider, 'test-model', {

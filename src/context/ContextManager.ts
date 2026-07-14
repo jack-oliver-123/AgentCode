@@ -165,12 +165,7 @@ export class ContextManager {
 
     try {
       await writeFile(absolutePath, originalContent, 'utf8');
-      msg.content =
-        `[内容已卸载至文件: ${absolutePath}，共 ${n} 字符]\n` +
-        `--- 内容预览（前 200 字符）---\n` +
-        `${preview}\n` +
-        `---\n` +
-        `如需完整内容，请用 read_file 重新读取原始路径。`;
+      msg.content = `[内容已卸载至文件: ${absolutePath}，共 ${n} 字符]\n--- 内容预览（前 200 字符）---\n${preview}\n---\n如需完整内容，请用 read_file 重新读取原始路径。`;
     } catch (err) {
       console.warn(`[ContextManager] 卸载文件失败: ${absolutePath}`, err);
       // content 保持原值，不中断
