@@ -61,9 +61,9 @@ export async function fetchJsonStream(
       if (response.status === 400 && (await responseIndicatesInputTooLong(response))) {
         throw createInputTooLongError(response.status);
       }
-      if (response.status !== 400) {
-        await cancelResponseBodySafely(response);
-      }
+      // 无论是 400（body 已被 responseIndicatesInputTooLong 消费）还是其他非 OK 状态，
+      // 都在此处取消 body，确保底层连接归还连接池。
+      await cancelResponseBodySafely(response);
       throw createProviderStatusError(response.status);
     }
 

@@ -280,10 +280,12 @@ export class ChatSessionController {
       this.turnIndex++;
 
       // 在 AgentLoop 前执行工具结果卸载，再由 ContextManager 统一判断自动压缩档位。
+      // 当前 userMessage 尚未进入 contextMessages（在 completeTurn/failTurn 才写入），
+      // 需显式追加到 originalUserMessages，确保本轮用户请求出现在摘要第 6 节。
       await this.contextManager.offloadToolResults(this.providerContext);
       await this.contextManager.compact(this.providerContext, {
         trigger: 'auto',
-        originalUserMessages: this.getOriginalUserMessages(),
+        originalUserMessages: [...this.getOriginalUserMessages(), toProviderMessage(userMessage).content],
       });
 
       const input: AgentLoopInput = {
@@ -387,9 +389,10 @@ export class ChatSessionController {
         return this.createStateChangedEvent();
 
       case 'loop.failed': {
-        // 检测上下文溢出关键词，设置专用 notice
-        const errMsg = event.error.message.toLowerCase();
-        if (errMsg.includes('context') || errMsg.includes('token') || errMsg.includes('length')) {
+        // code 为 provider_error 且消息明确指示输入过长时提示使用 /compact。
+        // 使用与 ContextManager.classifySummaryError 一致的精确模式，避免误匹配
+        // "authentication token expired"、"invalid key length" 等无关错误。
+        if (event.error.code === 'provider_error' && isInputTooLongMessage(event.error.message)) {
           this.notice = '上下文过长，请使用 /compact 压缩后继续';
         }
         this.failTurn(userMessage, event.error);
@@ -536,6 +539,22 @@ export class ChatSessionController {
 }
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────
+
+/**
+ * 判断 provider_error 消息是否明确指示输入过长。
+ * 与 ContextManager.classifySummaryError 使用相同的精确模式集，
+ * 避免误匹配 "authentication token expired"、"invalid key length" 等无关错误。
+ */
+function isInputTooLongMessage(message: string): boolean {
+  const normalized = message.replace(/[_-]+/g, ' ');
+  return (
+    /\bcontext\s+(?:window|length)\b/i.test(normalized) ||
+    /\bprompt\s+(?:is\s+)?too\s+long\b/i.test(normalized) ||
+    /\binput\s+(?:is\s+)?too\s+long\b/i.test(normalized) ||
+    /\bmax(?:imum)?\b[^\r\n]{0,80}\btokens?\b/i.test(normalized) ||
+    /\btokens?\s+limit\b/i.test(normalized)
+  );
+}
 
 function toProviderMessage(message: ChatMessage): ProviderChatMessage {
   return {

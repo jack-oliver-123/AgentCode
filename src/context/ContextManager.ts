@@ -149,6 +149,8 @@ export class ContextManager {
   /** 文件访问账本只保存规范化路径、来源和最近访问顺序。 */
   private _fileAccessSequence = 0;
   private readonly recentFileAccesses: FileAccessRecord[] = [];
+  /** 缓存目录是否已创建（懒初始化，避免每轮都发起 mkdir syscall）。 */
+  private _cacheDirCreated = false;
 
   constructor(provider: ChatModelProvider, model: string, options: ContextManagerOptions) {
     this.provider = provider;
@@ -212,9 +214,6 @@ export class ContextManager {
   // ─────────────────────────────────────────────
 
   async offloadToolResults(messages: ChatMessage[]): Promise<void> {
-    // 确保缓存目录存在
-    await mkdir(this.options.cacheDir, { recursive: true });
-
     const { offloadThresholdBytes, turnOffloadThresholdBytes, cacheDir } = this.options;
     let didOffload = false;
 
@@ -291,6 +290,11 @@ export class ContextManager {
     const writeFile = this.options._writeFile ?? fsWriteFile;
 
     try {
+      // 懒创建缓存目录：只在首次实际写入时执行，避免每轮都发起 mkdir syscall。
+      if (!this._cacheDirCreated) {
+        await mkdir(cacheDir, { recursive: true });
+        this._cacheDirCreated = true;
+      }
       await writeFile(absolutePath, originalContent, 'utf8');
       msg.content = `[内容已卸载至文件: ${absolutePath}，共 ${n} 字符]\n--- 内容预览（前 200 字符）---\n${preview}\n---\n如需完整内容，请用 read_file 重新读取原始路径。`;
       return true;

@@ -816,9 +816,9 @@ describe('ChatSessionController - ContextManager 集成', () => {
       'offload', 'compact', 'agentloop',
     ]);
     expect(compactCalls).toEqual([
-      { trigger: 'auto', originalUserMessages: [] },
       { trigger: 'auto', originalUserMessages: ['First question'] },
       { trigger: 'auto', originalUserMessages: ['First question', 'Second question'] },
+      { trigger: 'auto', originalUserMessages: ['First question', 'Second question', 'Third question'] },
     ]);
   });
 
@@ -1120,7 +1120,7 @@ describe('ChatSessionController - ContextManager 集成', () => {
     const controller = createController(provider, {}, { contextManager: mockContextManager });
     const states = await collectStates(controller.submitUserText('/compress'));
 
-    expect(compactCalls).toEqual([{ trigger: 'auto', originalUserMessages: [] }]);
+    expect(compactCalls).toEqual([{ trigger: 'auto', originalUserMessages: ['/compress'] }]);
     expect(provider.requests[0]?.messages.at(-1)).toEqual({ role: 'user', content: '/compress' });
     expect(states.at(-1)?.messages[0]).toMatchObject({
       role: 'user',
