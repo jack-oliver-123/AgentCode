@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { Buffer } from 'node:buffer';
 
 import type { ChatModelProvider, ChatMessage, ProviderToolResultMessage } from '../providers/types.js';
+import { AgentCodeError, type PublicError } from '../shared/errors.js';
 import {
   NORMAL_MARGIN,
   countSummaryTurns,
@@ -126,6 +127,10 @@ export class ContextManager {
     this.forceMargin = options.forceMargin ?? DEFAULT_FORCE_MARGIN;
     this.emergencyMargin = options.emergencyMargin ?? DEFAULT_EMERGENCY_MARGIN;
     this.skillContextSource = options.skillContextSource ?? EMPTY_SKILL_CONTEXT_SOURCE;
+
+    if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+      throw new RangeError('timeoutMs 必须是大于 0 的有限数值');
+    }
 
     if (!(NORMAL_MARGIN > this.forceMargin && this.forceMargin > this.emergencyMargin && this.emergencyMargin >= 0)) {
       throw new RangeError('压缩水位必须满足 13000 > forceMargin > emergencyMargin >= 0');
@@ -355,7 +360,7 @@ export class ContextManager {
       toolChoice: 'none' as const,
       thinking: { enabled: false },
       messages: [...messages, { role: 'user' as const, content: SUMMARY_INSTRUCTION }],
-      ...(this.options.timeoutMs > 0 ? { signal: AbortSignal.timeout(this.options.timeoutMs) } : {}),
+      signal: AbortSignal.timeout(this.options.timeoutMs),
     };
 
     let fullText = '';
@@ -365,13 +370,16 @@ export class ContextManager {
         if (event.type === 'content.delta') {
           fullText += event.delta;
         } else if (event.type === 'response.error') {
-          return this.classifySummaryError(event.error.message);
+          return this.classifySummaryError(event.error);
         } else if (event.type === 'response.complete') {
           completed = true;
           break;
         }
       }
     } catch (error) {
+      if (error instanceof AgentCodeError) {
+        return this.classifySummaryError(error.publicError);
+      }
       return error instanceof Error ? this.classifySummaryError(error.message) : { kind: 'failure' };
     }
 
@@ -383,13 +391,38 @@ export class ContextManager {
     return summary === undefined ? { kind: 'failure' } : { kind: 'success', summary };
   }
 
-  private classifySummaryError(message: string): SummaryAttemptResult {
+  private classifySummaryError(error: PublicError | string): SummaryAttemptResult {
+    if (typeof error !== 'string' && error.code !== 'provider_error' && error.code !== 'unknown_error') {
+      return { kind: 'failure' };
+    }
+
+    const message = typeof error === 'string' ? error : error.message;
+    const normalizedMessage = message.replace(/[_-]+/g, ' ');
+    const isRateOrQuotaLimit =
+      /\brate\s+limit\b/i.test(normalizedMessage) ||
+      /\btokens?\s+per\s+(?:second|minute|hour|day)\b/i.test(normalizedMessage);
+    if (isRateOrQuotaLimit) {
+      return { kind: 'failure' };
+    }
+
+    const hasExplicitInputLength =
+      /\bcontext\s+(?:window|length)\b/i.test(normalizedMessage) ||
+      /\bprompt\s+(?:is\s+)?too\s+long\b/i.test(normalizedMessage) ||
+      /\binput\s+(?:is\s+)?too\s+long\b/i.test(normalizedMessage);
+    if (hasExplicitInputLength) {
+      return { kind: 'prompt_too_long' };
+    }
+
+    const isOutputLimit =
+      /\b(?:output|completion)\b[^\r\n]{0,40}\btokens?\b/i.test(normalizedMessage) ||
+      /\btokens?\b[^\r\n]{0,40}\b(?:output|completion)\b/i.test(normalizedMessage);
+    if (isOutputLimit) {
+      return { kind: 'failure' };
+    }
+
     const isPromptTooLong =
-      /\bcontext\s+(?:window|length)\b/i.test(message) ||
-      /\bmaximum\b[^\r\n]{0,80}\btokens?\b/i.test(message) ||
-      /\btoken\s+limit\b/i.test(message) ||
-      /\bprompt\s+too\s+long\b/i.test(message) ||
-      /\binput\s+too\s+long\b/i.test(message);
+      /\bmax(?:imum)?\b[^\r\n]{0,80}\btokens?\b/i.test(normalizedMessage) ||
+      /\btokens?\s+limit\b/i.test(normalizedMessage);
 
     return isPromptTooLong ? { kind: 'prompt_too_long' } : { kind: 'failure' };
   }

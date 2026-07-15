@@ -6,6 +6,8 @@ import {
   createProviderStatusError,
 } from './errors.js';
 
+const MAX_ERROR_BODY_CHARS = 64 * 1024;
+
 export interface FetchTransportOptions {
   fetch?: typeof fetch;
   timeoutMs: number;
@@ -52,6 +54,14 @@ export async function fetchJsonStream(
     const response = await fetchImpl(request.url, init);
 
     if (!response.ok) {
+      if ((response.status === 400 || response.status === 413) && (await responseIndicatesInputTooLong(response))) {
+        throw new AgentCodeError({
+          code: 'provider_error',
+          message: 'Provider input too long.',
+          retryable: false,
+          status: response.status,
+        });
+      }
       throw createProviderStatusError(response.status);
     }
 
@@ -85,6 +95,54 @@ export async function fetchJsonStream(
 
 function isEventStreamResponse(response: Response): boolean {
   return response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') ?? false;
+}
+
+async function responseIndicatesInputTooLong(response: Response): Promise<boolean> {
+  const body = await readErrorBodySafely(response);
+  if (body === undefined) {
+    return false;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body) as unknown;
+  } catch {
+    return false;
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || !('error' in parsed)) {
+    return false;
+  }
+
+  const error = (parsed as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+
+  const details = error as { code?: unknown; type?: unknown; message?: unknown };
+  if (details.code === 'context_length_exceeded' || details.type === 'context_length_exceeded') {
+    return true;
+  }
+
+  if (typeof details.message !== 'string') {
+    return false;
+  }
+
+  return (
+    /\bmaximum\s+context\s+length\b/i.test(details.message) ||
+    /\bcontext\s+length\s+(?:is\s+)?exceeded\b/i.test(details.message) ||
+    /\bprompt\s+(?:is\s+)?too\s+long\b/i.test(details.message) ||
+    /\binput\s+(?:is\s+)?too\s+long\b/i.test(details.message)
+  );
+}
+
+async function readErrorBodySafely(response: Response): Promise<string | undefined> {
+  try {
+    const body = await response.text();
+    return body.length <= MAX_ERROR_BODY_CHARS ? body : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function composeAbortSignals(

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { fetchJsonStream } from '../../../src/providers/shared/fetchTransport.js';
+import { AgentCodeError } from '../../../src/shared/errors.js';
 
 const encoder = new TextEncoder();
 
@@ -77,6 +78,118 @@ describe('fetchJsonStream', () => {
         code,
         retryable,
         status,
+      },
+    });
+  });
+
+  it.each([
+    [
+      400,
+      {
+        error: {
+          code: 'context_length_exceeded',
+          type: 'invalid_request_error',
+          message: 'maximum context length exceeded: PRIVATE_USER_CONTENT',
+        },
+      },
+    ],
+    [
+      400,
+      {
+        error: {
+          type: 'invalid_request_error',
+          message: "This model's maximum context length is exceeded: PRIVATE_USER_CONTENT",
+        },
+      },
+    ],
+    [
+      413,
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'prompt is too long: PRIVATE_USER_CONTENT',
+        },
+      },
+    ],
+    [
+      400,
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'input too long: PRIVATE_USER_CONTENT',
+        },
+      },
+    ],
+  ])('normalizes HTTP %s input-length bodies without leaking the raw body', async (status, body) => {
+    const rawBody = JSON.stringify(body);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(rawBody, {
+        status,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await fetchJsonStream(
+        { url: 'https://api.example.com/v1/messages', body: {} },
+        { fetch: fetchMock, timeoutMs: 1000 },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AgentCodeError);
+    expect(caught).toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider input too long.',
+        retryable: false,
+        status,
+      },
+    });
+    const publicMessage = (caught as AgentCodeError).publicError.message;
+    expect(publicMessage).not.toContain('PRIVATE_USER_CONTENT');
+    expect(publicMessage).not.toContain(rawBody);
+  });
+
+  it.each([
+    {
+      error: {
+        code: 'invalid_request_error',
+        message: 'maximum output tokens exceeded',
+      },
+    },
+    {
+      error: {
+        code: 'rate_limit_exceeded',
+        message: 'maximum tokens per minute exceeded',
+      },
+    },
+    {
+      error: {
+        code: 'invalid_request_error',
+        message: 'ordinary malformed request',
+      },
+    },
+  ])('does not misclassify a non-length HTTP 400 body: %j', async (body) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider request failed with HTTP 400.',
+        retryable: false,
+        status: 400,
       },
     });
   });

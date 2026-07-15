@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { AgentConfig } from '../../../src/config/schema.js';
 import { ContextManager } from '../../../src/context/ContextManager.js';
 import { USER_MESSAGES_PLACEHOLDER } from '../../../src/context/compaction.js';
+import { OpenAIProvider } from '../../../src/providers/openai/OpenAIProvider.js';
 import type { ChatModelProvider, ChatMessage, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
 
 // 最小 mock provider，T2 阶段不使用 stream
@@ -270,6 +272,31 @@ function makeMessages(n: number): ChatMessage[] {
   return messages;
 }
 
+function makeOpenAIConfig(): AgentConfig {
+  return {
+    protocol: 'openai',
+    model: 'gpt-4.1',
+    baseUrl: 'https://api.openai.test/v1',
+    apiKey: 'test-key',
+    thinking: { enabled: false },
+    request: { timeoutMs: 1000, headers: {} },
+    ui: { showThinking: false },
+    permissionMode: 'normal',
+  };
+}
+
+function makeOpenAISummaryResponse(): Response {
+  const chunks = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: VALID_SUMMARY_RESPONSE }, finish_reason: null }] })}\n\n`,
+    `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
+    'data: [DONE]\n\n',
+  ];
+  return new Response(chunks.join(''), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
 describe('ContextManager - F3-F6/F9 compact', () => {
   const CONTEXT_WINDOW = 20_000;
   let cacheDir: string;
@@ -310,6 +337,10 @@ describe('ContextManager - F3-F6/F9 compact', () => {
         emergencyMargin,
       }),
     ).toThrow(RangeError);
+  });
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('拒绝非法 timeoutMs=%s', (timeoutMs) => {
+    expect(() => makeCompactManager(mockProvider, { timeoutMs })).toThrow(RangeError);
   });
 
   it('auto 位于 normal 严格边界时返回 below_threshold 且不调用 Provider', async () => {
@@ -426,6 +457,34 @@ describe('ContextManager - F3-F6/F9 compact', () => {
     expect(new Set(signals).size).toBe(5);
   });
 
+  it('真实 OpenAIProvider 将 HTTP 400 context_length_exceeded 穿透为五次降级并最终成功', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
+      if (fetchMock.mock.calls.length <= 4) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 'context_length_exceeded',
+              type: 'invalid_request_error',
+              message: 'maximum context length exceeded; private user content must not leak',
+            },
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return makeOpenAISummaryResponse();
+    });
+    const provider = new OpenAIProvider({ config: makeOpenAIConfig(), fetch: fetchMock });
+    const manager = makeCompactManager(provider);
+
+    await expect(
+      manager.compact(makeMessages(25), {
+        trigger: 'manual',
+        originalUserMessages: ['所有原始用户消息'],
+      }),
+    ).resolves.toEqual({ outcome: 'compacted', level: 'normal', attempts: 5 });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
   it('认证 token 错误不是长度错误，只调用一次且不改写上下文', async () => {
     const stream = vi.fn((_request: ProviderRequest) =>
       streamEvents([
@@ -433,7 +492,7 @@ describe('ContextManager - F3-F6/F9 compact', () => {
           type: 'response.error',
           error: {
             code: 'auth_error',
-            message: 'authentication token invalid',
+            message: 'authentication token invalid: context length exceeded',
             retryable: false,
           },
         },
@@ -448,6 +507,55 @@ describe('ContextManager - F3-F6/F9 compact', () => {
     );
     expect(stream).toHaveBeenCalledTimes(1);
     expect(messages).toEqual(snapshot);
+  });
+
+  it.each([
+    ['rate_limit', 'maximum tokens per minute exceeded'],
+    ['network_error', 'context window exceeded'],
+    ['provider_error', 'maximum output tokens exceeded'],
+    ['protocol_error', 'input is too long'],
+    ['config_error', 'prompt too long'],
+  ] as const)('%s 的“%s”不是输入长度错误，只调用一次', async (code, message) => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        {
+          type: 'response.error',
+          error: { code, message, retryable: false },
+        },
+      ]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream));
+
+    await expect(
+      manager.compact(makeMessages(8), { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'failed', level: 'normal', attempts: 1 });
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['provider_error', 'context_length_exceeded'],
+    ['provider_error', "This model's maximum context length is 4096 tokens, including 1000 completion tokens."],
+    ['provider_error', 'prompt is too long'],
+    ['provider_error', 'input is too long'],
+    ['provider_error', 'max prompt tokens exceeded'],
+    ['unknown_error', 'token limit exceeded'],
+  ] as const)('%s 的真实输入长度变体“%s”会降级重试', async (code, message) => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      stream.mock.calls.length === 1
+        ? streamEvents([
+            {
+              type: 'response.error',
+              error: { code, message, retryable: false },
+            },
+          ])
+        : validSummaryStream(),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream));
+
+    await expect(
+      manager.compact(makeMessages(8), { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'compacted', level: 'normal', attempts: 2 });
+    expect(stream).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -475,24 +583,6 @@ describe('ContextManager - F3-F6/F9 compact', () => {
       expect(manager.estimated).toBe(estimate);
     },
   );
-
-  it('timeoutMs <= 0 时省略 signal', async () => {
-    let capturedRequest: ProviderRequest | undefined;
-    const manager = makeCompactManager(
-      makeStreamProvider((request) => {
-        capturedRequest = request;
-        return validSummaryStream();
-      }),
-      { timeoutMs: 0 },
-    );
-
-    await manager.compact(makeMessages(8), {
-      trigger: 'manual',
-      originalUserMessages: ['原始需求'],
-    });
-
-    expect(capturedRequest).not.toHaveProperty('signal');
-  });
 
   it('裁剪后没有 turn 时停止，不发送只有摘要指令的请求', async () => {
     const stream = vi.fn((_request: ProviderRequest) =>
