@@ -38,6 +38,11 @@ interface FileAccessRecord {
   sequence: number;
 }
 
+interface PendingFileAccessCall {
+  source: FileAccessSource;
+  argumentsText: string;
+}
+
 const EMPTY_SKILL_CONTEXT_SOURCE: SkillContextSource = {
   async getUsedSkillDefinitions() {
     return [];
@@ -462,13 +467,13 @@ export class ContextManager {
   }
 
   private recordFileAccesses(messages: readonly ChatMessage[]): void {
-    const pendingCalls = new Map<string, FileAccessSource>();
+    const pendingCalls = new Map<string, PendingFileAccessCall>();
 
     for (const message of messages) {
       if (message.role === 'assistant' && 'toolCalls' in message) {
         for (const call of message.toolCalls) {
           if (this.isFileAccessSource(call.name)) {
-            pendingCalls.set(call.id, call.name);
+            pendingCalls.set(call.id, { source: call.name, argumentsText: call.argumentsText });
           }
         }
         continue;
@@ -478,17 +483,17 @@ export class ContextManager {
         continue;
       }
 
-      const source = pendingCalls.get(message.toolCallId);
-      if (source === undefined) {
+      const pendingCall = pendingCalls.get(message.toolCallId);
+      if (pendingCall === undefined) {
         continue;
       }
       pendingCalls.delete(message.toolCallId);
-      if (message.isError !== false || message.toolName !== source) {
+      if (message.isError !== false || message.toolName !== pendingCall.source) {
         continue;
       }
 
-      for (const path of this.extractStructuredPaths(source, message.content)) {
-        this.recordFileAccess(source, path);
+      for (const path of this.extractStructuredPaths(pendingCall, message.content)) {
+        this.recordFileAccess(pendingCall.source, path);
       }
     }
   }
@@ -497,27 +502,31 @@ export class ContextManager {
     return FILE_ACCESS_SOURCES.some((source) => source === name);
   }
 
-  private extractStructuredPaths(source: FileAccessSource, content: string): string[] {
+  private extractStructuredPaths(call: PendingFileAccessCall, content: string): string[] {
     let parsed: unknown;
     try {
       parsed = JSON.parse(content);
     } catch {
       return [];
     }
-    if (typeof parsed !== 'object' || parsed === null) {
-      return [];
+
+    if (call.source === 'read_file') {
+      const path = typeof parsed === 'object' && parsed !== null ? (parsed as { path?: unknown }).path : undefined;
+      if (typeof path === 'string' && this.normalizeFilePath(path) !== undefined) {
+        return [path];
+      }
+      return this.extractReadFileArgumentPath(call.argumentsText);
     }
 
-    if (source === 'read_file') {
-      const path = (parsed as { path?: unknown }).path;
-      return typeof path === 'string' ? [path] : [];
+    if (typeof parsed !== 'object' || parsed === null) {
+      return [];
     }
 
     const matches = (parsed as { matches?: unknown }).matches;
     if (!Array.isArray(matches)) {
       return [];
     }
-    if (source === 'glob_files') {
+    if (call.source === 'glob_files') {
       return matches.filter((path): path is string => typeof path === 'string');
     }
     return matches.flatMap((match) => {
@@ -527,6 +536,20 @@ export class ContextManager {
       const path = (match as { path?: unknown }).path;
       return typeof path === 'string' ? [path] : [];
     });
+  }
+
+  private extractReadFileArgumentPath(argumentsText: string): string[] {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(argumentsText);
+    } catch {
+      return [];
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      return [];
+    }
+    const path = (parsed as { path?: unknown }).path;
+    return typeof path === 'string' && this.normalizeFilePath(path) !== undefined ? [path] : [];
   }
 
   private recordFileAccess(source: FileAccessSource, rawPath: string): void {
@@ -559,10 +582,30 @@ export class ContextManager {
   }
 
   private normalizeFilePath(path: string): string | undefined {
-    if (path.length === 0) {
+    if (path.length === 0 || this.containsControlCharacters(path)) {
       return undefined;
     }
-    return posix.normalize(path.replaceAll('\\', '/'));
+    const normalized = posix.normalize(path.replaceAll('\\', '/'));
+    if (
+      normalized === '.' ||
+      normalized === '..' ||
+      normalized.startsWith('../') ||
+      posix.isAbsolute(normalized) ||
+      /^[a-z]:/iu.test(normalized)
+    ) {
+      return undefined;
+    }
+    return normalized;
+  }
+
+  private containsControlCharacters(value: string): boolean {
+    for (let index = 0; index < value.length; index++) {
+      const codeUnit = value.charCodeAt(index);
+      if (codeUnit <= 0x1f || (codeUnit >= 0x7f && codeUnit <= 0x9f)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private selectRecentFilePaths(): string[] {
@@ -601,17 +644,44 @@ export class ContextManager {
       if (snapshot.renderedContent.length === 0) {
         continue;
       }
-      if (snapshot.renderedContent.length <= remainingChars) {
+      const separatorChars = selected.length === 0 ? 0 : 2;
+      if (remainingChars <= separatorChars) {
+        break;
+      }
+      const contentCapacity = remainingChars - separatorChars;
+      if (snapshot.renderedContent.length <= contentCapacity) {
         selected.push(snapshot.renderedContent);
-        remainingChars -= snapshot.renderedContent.length;
+        remainingChars -= separatorChars + snapshot.renderedContent.length;
         continue;
       }
-      if (remainingChars > 0) {
-        selected.push(snapshot.renderedContent.slice(0, remainingChars));
+      const truncated = this.truncateAtUnicodeBoundary(snapshot.renderedContent, contentCapacity);
+      if (truncated.length > 0) {
+        selected.push(truncated);
       }
       break;
     }
     return selected;
+  }
+
+  private truncateAtUnicodeBoundary(content: string, maxChars: number): string {
+    let end = Math.min(content.length, maxChars);
+    if (
+      end > 0 &&
+      end < content.length &&
+      this.isHighSurrogate(content.charCodeAt(end - 1)) &&
+      this.isLowSurrogate(content.charCodeAt(end))
+    ) {
+      end--;
+    }
+    return content.slice(0, end);
+  }
+
+  private isHighSurrogate(codeUnit: number): boolean {
+    return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+  }
+
+  private isLowSurrogate(codeUnit: number): boolean {
+    return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
   }
 
   private isSkillDefinitionSnapshot(value: unknown): value is SkillDefinitionSnapshot {
