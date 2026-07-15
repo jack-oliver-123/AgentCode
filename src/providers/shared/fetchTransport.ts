@@ -6,7 +6,7 @@ import {
   createProviderStatusError,
 } from './errors.js';
 
-const MAX_ERROR_BODY_CHARS = 64 * 1024;
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
 
 export interface FetchTransportOptions {
   fetch?: typeof fetch;
@@ -54,13 +54,11 @@ export async function fetchJsonStream(
     const response = await fetchImpl(request.url, init);
 
     if (!response.ok) {
-      if ((response.status === 400 || response.status === 413) && (await responseIndicatesInputTooLong(response))) {
-        throw new AgentCodeError({
-          code: 'provider_error',
-          message: 'Provider input too long.',
-          retryable: false,
-          status: response.status,
-        });
+      if (response.status === 413) {
+        throw createInputTooLongError(response.status);
+      }
+      if (response.status === 400 && (await responseIndicatesInputTooLong(response))) {
+        throw createInputTooLongError(response.status);
       }
       throw createProviderStatusError(response.status);
     }
@@ -95,6 +93,15 @@ export async function fetchJsonStream(
 
 function isEventStreamResponse(response: Response): boolean {
   return response.headers.get('content-type')?.toLowerCase().includes('text/event-stream') ?? false;
+}
+
+function createInputTooLongError(status: number): AgentCodeError {
+  return new AgentCodeError({
+    code: 'provider_error',
+    message: 'Provider input too long.',
+    retryable: false,
+    status,
+  });
 }
 
 async function responseIndicatesInputTooLong(response: Response): Promise<boolean> {
@@ -137,11 +144,56 @@ async function responseIndicatesInputTooLong(response: Response): Promise<boolea
 }
 
 async function readErrorBodySafely(response: Response): Promise<string | undefined> {
+  if (response.body === null) {
+    return '';
+  }
+
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let totalBytes = 0;
+  let body = '';
+
   try {
-    const body = await response.text();
-    return body.length <= MAX_ERROR_BODY_CHARS ? body : undefined;
+    reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        body += decoder.decode();
+        return body;
+      }
+
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_ERROR_BODY_BYTES) {
+        await cancelReaderSafely(reader);
+        return undefined;
+      }
+      body += decoder.decode(value, { stream: true });
+    }
   } catch {
+    if (reader !== undefined) {
+      await cancelReaderSafely(reader);
+    }
     return undefined;
+  } finally {
+    if (reader !== undefined) {
+      releaseReaderSafely(reader);
+    }
+  }
+}
+
+async function cancelReaderSafely(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+  try {
+    await reader.cancel();
+  } catch {
+    // A broken error body must fall back to the generic status error.
+  }
+}
+
+function releaseReaderSafely(reader: ReadableStreamDefaultReader<Uint8Array>): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    // Reader cleanup must not replace the generic status error.
   }
 }
 

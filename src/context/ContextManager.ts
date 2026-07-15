@@ -21,6 +21,7 @@ import {
 
 const DEFAULT_FORCE_MARGIN = 5_000;
 const DEFAULT_EMERGENCY_MARGIN = 2_000;
+const MAX_TIMEOUT_MS = 2_147_483_647;
 
 const EMPTY_SKILL_CONTEXT_SOURCE: SkillContextSource = {
   async getUsedSkillDefinitions() {
@@ -128,8 +129,8 @@ export class ContextManager {
     this.emergencyMargin = options.emergencyMargin ?? DEFAULT_EMERGENCY_MARGIN;
     this.skillContextSource = options.skillContextSource ?? EMPTY_SKILL_CONTEXT_SOURCE;
 
-    if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
-      throw new RangeError('timeoutMs 必须是大于 0 的有限数值');
+    if (!Number.isInteger(options.timeoutMs) || options.timeoutMs <= 0 || options.timeoutMs > MAX_TIMEOUT_MS) {
+      throw new RangeError(`timeoutMs 必须是 1 到 ${MAX_TIMEOUT_MS} 之间的整数`);
     }
 
     if (!(NORMAL_MARGIN > this.forceMargin && this.forceMargin > this.emergencyMargin && this.emergencyMargin >= 0)) {

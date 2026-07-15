@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfig } from '../../../src/config/schema.js';
 import { ContextManager } from '../../../src/context/ContextManager.js';
 import { USER_MESSAGES_PLACEHOLDER } from '../../../src/context/compaction.js';
+import { AnthropicProvider } from '../../../src/providers/anthropic/AnthropicProvider.js';
 import { OpenAIProvider } from '../../../src/providers/openai/OpenAIProvider.js';
 import type { ChatModelProvider, ChatMessage, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
 
@@ -285,11 +286,36 @@ function makeOpenAIConfig(): AgentConfig {
   };
 }
 
+function makeAnthropicConfig(): AgentConfig {
+  return {
+    ...makeOpenAIConfig(),
+    protocol: 'anthropic',
+    model: 'claude-opus-4-8',
+    baseUrl: 'https://api.anthropic.test/v1',
+  };
+}
+
 function makeOpenAISummaryResponse(): Response {
   const chunks = [
     `data: ${JSON.stringify({ choices: [{ delta: { content: VALID_SUMMARY_RESPONSE }, finish_reason: null }] })}\n\n`,
     `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] })}\n\n`,
     'data: [DONE]\n\n',
+  ];
+  return new Response(chunks.join(''), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+function makeAnthropicSummaryResponse(): Response {
+  const chunks = [
+    `event: content_block_delta\ndata: ${JSON.stringify({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: VALID_SUMMARY_RESPONSE },
+    })}\n\n`,
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n',
   ];
   return new Response(chunks.join(''), {
     status: 200,
@@ -339,9 +365,12 @@ describe('ContextManager - F3-F6/F9 compact', () => {
     ).toThrow(RangeError);
   });
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('拒绝非法 timeoutMs=%s', (timeoutMs) => {
-    expect(() => makeCompactManager(mockProvider, { timeoutMs })).toThrow(RangeError);
-  });
+  it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648, 4_294_967_296])(
+    '拒绝非法 timeoutMs=%s',
+    (timeoutMs) => {
+      expect(() => makeCompactManager(mockProvider, { timeoutMs })).toThrow(RangeError);
+    },
+  );
 
   it('auto 位于 normal 严格边界时返回 below_threshold 且不调用 Provider', async () => {
     const stream = vi.fn<ChatModelProvider['stream']>();
@@ -474,6 +503,34 @@ describe('ContextManager - F3-F6/F9 compact', () => {
       return makeOpenAISummaryResponse();
     });
     const provider = new OpenAIProvider({ config: makeOpenAIConfig(), fetch: fetchMock });
+    const manager = makeCompactManager(provider);
+
+    await expect(
+      manager.compact(makeMessages(25), {
+        trigger: 'manual',
+        originalUserMessages: ['所有原始用户消息'],
+      }),
+    ).resolves.toEqual({ outcome: 'compacted', level: 'normal', attempts: 5 });
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('真实 AnthropicProvider 将 HTTP 413 request_too_large 穿透为五次降级并最终成功', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => {
+      if (fetchMock.mock.calls.length <= 4) {
+        return new Response(
+          JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'request_too_large',
+              message: 'Request exceeds the maximum allowed number of bytes',
+            },
+          }),
+          { status: 413, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return makeAnthropicSummaryResponse();
+    });
+    const provider = new AnthropicProvider({ config: makeAnthropicConfig(), fetch: fetchMock });
     const manager = makeCompactManager(provider);
 
     await expect(

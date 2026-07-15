@@ -83,6 +83,41 @@ describe('fetchJsonStream', () => {
   });
 
   it.each([
+    ['empty', () => new Response(null, { status: 413 })],
+    ['HTML', () => new Response('<html>request entity too large</html>', { status: 413 })],
+    [
+      'Anthropic request_too_large',
+      () =>
+        new Response(
+          JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'request_too_large',
+              message: 'Request exceeds the maximum allowed number of bytes',
+            },
+          }),
+          { status: 413, headers: { 'content-type': 'application/json' } },
+        ),
+    ],
+  ] as const)('normalizes an %s HTTP 413 without reading its body', async (_name, createResponse) => {
+    const response = createResponse();
+    const textSpy = vi.spyOn(response, 'text');
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider input too long.',
+        retryable: false,
+        status: 413,
+      },
+    });
+    expect(textSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
     [
       400,
       {
@@ -192,6 +227,73 @@ describe('fetchJsonStream', () => {
         status: 400,
       },
     });
+  });
+
+  it('cancels an oversized HTTP 400 body before pulling all chunks', async () => {
+    const chunk = encoder.encode('x'.repeat(1024));
+    const totalChunks = 100;
+    let pullCount = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pullCount++;
+          if (pullCount <= totalChunks) {
+            controller.enqueue(chunk);
+          } else {
+            controller.close();
+          }
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(body, {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider request failed with HTTP 400.',
+        retryable: false,
+        status: 400,
+      },
+    });
+    expect(cancelled).toBe(true);
+    expect(pullCount).toBeLessThan(totalChunks);
+  });
+
+  it('falls back to the generic HTTP 400 error when the body reader cannot be acquired', async () => {
+    const response = new Response('locked', { status: 400 });
+    const heldReader = response.body!.getReader();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    try {
+      await expect(
+        fetchJsonStream(
+          { url: 'https://api.example.com/v1/messages', body: {} },
+          { fetch: fetchMock, timeoutMs: 1000 },
+        ),
+      ).rejects.toMatchObject({
+        publicError: {
+          code: 'provider_error',
+          message: 'Provider request failed with HTTP 400.',
+          retryable: false,
+          status: 400,
+        },
+      });
+    } finally {
+      await heldReader.cancel();
+      heldReader.releaseLock();
+    }
   });
 
   it('rejects successful responses that are not event streams', async () => {
