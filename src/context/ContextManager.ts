@@ -591,7 +591,7 @@ export class ContextManager {
       normalized === '..' ||
       normalized.startsWith('../') ||
       posix.isAbsolute(normalized) ||
-      /^[a-z]:/iu.test(normalized)
+      /^[A-Za-z]:\//u.test(normalized)
     ) {
       return undefined;
     }
@@ -601,7 +601,12 @@ export class ContextManager {
   private containsControlCharacters(value: string): boolean {
     for (let index = 0; index < value.length; index++) {
       const codeUnit = value.charCodeAt(index);
-      if (codeUnit <= 0x1f || (codeUnit >= 0x7f && codeUnit <= 0x9f)) {
+      if (
+        codeUnit <= 0x1f ||
+        (codeUnit >= 0x7f && codeUnit <= 0x9f) ||
+        codeUnit === 0x2028 ||
+        codeUnit === 0x2029
+      ) {
         return true;
       }
     }

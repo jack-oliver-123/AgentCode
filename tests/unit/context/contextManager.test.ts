@@ -523,7 +523,7 @@ describe('ContextManager - F3-F6/F9 compact', () => {
     expect(messages[2]!.content).not.toContain('glob-args');
   });
 
-  it('只恢复安全的工作区相对路径，拒绝控制字符、遍历和绝对路径', async () => {
+  it('拒绝控制字符、遍历和绝对路径，但保留 POSIX 合法冒号相对路径', async () => {
     const manager = makeCompactManager(makeStreamProvider(() => validSummaryStream()));
     manager.onMessagesAppended(
       makeObservedToolBatch([
@@ -543,6 +543,10 @@ describe('ContextManager - F3-F6/F9 compact', () => {
               '/etc/passwd',
               'C:\\outside.ts',
               'D:/outside.ts',
+              'a:b',
+              '\u017f:file',
+              '\u212a:file',
+              'C:foo',
             ],
           },
         },
@@ -552,8 +556,34 @@ describe('ContextManager - F3-F6/F9 compact', () => {
 
     await manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] });
 
-    expect(messages[2]!.content.split('\n').slice(1)).toEqual(['src/safe/file.ts']);
+    expect(messages[2]!.content.split('\n').slice(1)).toEqual([
+      'C:foo',
+      '\u212a:file',
+      '\u017f:file',
+      'a:b',
+      'src/safe/file.ts',
+    ]);
     expect(messages[2]!.content).not.toContain('[技能定义恢复]');
+  });
+
+  it('拒绝包含 U+2028 和 U+2029 行分隔符的恢复路径', async () => {
+    const manager = makeCompactManager(makeStreamProvider(() => validSummaryStream()));
+    manager.onMessagesAppended(
+      makeObservedToolBatch([
+        {
+          id: 'unicode-separators',
+          name: 'glob_files',
+          data: { matches: ['src/safe.ts', 'src/line\u2028separator.ts', 'src/paragraph\u2029separator.ts'] },
+        },
+      ]),
+    );
+    const messages = makeMessages(8);
+
+    await manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] });
+
+    expect(messages[2]!.content.split('\n').slice(1)).toEqual(['src/safe.ts']);
+    expect(messages[2]!.content).not.toContain('\u2028');
+    expect(messages[2]!.content).not.toContain('\u2029');
   });
 
   it('忽略失败、畸形、孤立、名称不匹配、卸载预览及跨批次工具结果', async () => {
