@@ -267,11 +267,38 @@ function makeStreamProvider(stream: ChatModelProvider['stream']): ChatModelProvi
 }
 
 /** 构造 n 个完整 user turn。 */
-function makeMessages(n: number): ChatMessage[] {
+function makeMessages(n: number, startIndex = 0): ChatMessage[] {
   const messages: ChatMessage[] = [];
-  for (let index = 0; index < n; index++) {
+  for (let offset = 0; offset < n; offset++) {
+    const index = startIndex + offset;
     messages.push({ role: 'user', content: `turn user ${index}` });
     messages.push({ role: 'assistant', content: `turn assistant ${index}` });
+  }
+  return messages;
+}
+
+/** 构造带完整 tool call/result 配对的 user turns。 */
+function makeToolMessages(n: number, startIndex = 0): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (let offset = 0; offset < n; offset++) {
+    const index = startIndex + offset;
+    const toolCallId = `tool-call-${index}`;
+    messages.push(
+      { role: 'user', content: `tool turn user ${index}` },
+      {
+        role: 'assistant',
+        content: `tool call ${index}`,
+        toolCalls: [{ id: toolCallId, name: 'read_file', argumentsText: JSON.stringify({ path: `src/${index}.ts` }) }],
+      },
+      {
+        role: 'tool',
+        toolCallId,
+        toolName: 'read_file',
+        content: `tool result ${index}`,
+        isError: false,
+      },
+      { role: 'assistant', content: `tool done ${index}` },
+    );
   }
   return messages;
 }
@@ -1172,6 +1199,341 @@ describe('ContextManager - F3-F6/F9 compact', () => {
     expect(messages).toEqual(snapshot);
   });
 
+  it('emergency 摘要普通失败后机械保留全部用户原文、恢复块和最近 5 个完整工具 turn', async () => {
+    const getUsedSkillDefinitions = vi.fn(async () => [
+      { id: 'emergency-skill', renderedContent: 'EMERGENCY-SKILL', lastUsedOrder: 1 },
+    ]);
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        { type: 'content.delta', delta: '<summary>非法</summary>' },
+        { type: 'response.complete' },
+      ]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream), {
+      skillContextSource: { getUsedSkillDefinitions },
+    });
+    manager.onMessagesAppended(
+      makeObservedToolBatch([
+        { id: 'emergency-file', name: 'read_file', data: { path: 'src/emergency.ts', content: 'ignore' } },
+      ]),
+    );
+    manager.onTokenUsage(18_001);
+    const messages = makeToolMessages(8);
+    const originalMessages = structuredClone(messages);
+    const originalUserMessages = ['  第一条  ', '', '<xml>&', '第四条', '第五条', '第六条', '第七条', '第八条'];
+
+    await expect(manager.compact(messages, { trigger: 'auto', originalUserMessages })).resolves.toEqual({
+      outcome: 'emergency_fallback',
+      level: 'emergency',
+      attempts: 1,
+    });
+
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(getUsedSkillDefinitions).toHaveBeenCalledTimes(1);
+    expect(messages[0]).toMatchObject({ role: 'user' });
+    for (const [index, content] of originalUserMessages.entries()) {
+      expect(messages[0]!.content).toContain(
+        `<user_message index="${index + 1}" length="${content.length}">\n${content}\n</user_message>`,
+      );
+    }
+    expect(messages[0]!.content).not.toContain('[会话历史摘要]');
+    expect(messages[1]!.content).toContain('未生成摘要');
+    expect(messages[1]!.content).toMatch(/较早.*assistant\/tool.*丢失/);
+    expect(messages[1]!.content).not.toContain('摘要替代');
+    expect(messages[2]!.content).toContain('[文件恢复提示]');
+    expect(messages[2]!.content).toContain('src/emergency.ts');
+    expect(messages[3]!.content).toBe('[技能定义恢复]\nEMERGENCY-SKILL');
+    expect(messages.slice(4)).toEqual(originalMessages.slice(3 * 4));
+    expect(messages.some((message) => message.content.includes('tool turn user 2'))).toBe(false);
+
+    const toolCalls = new Set(
+      messages.flatMap((message) =>
+        message.role === 'assistant' && 'toolCalls' in message ? message.toolCalls.map((call) => call.id) : [],
+      ),
+    );
+    const toolResults = messages.filter((message) => message.role === 'tool');
+    expect(toolResults).toHaveLength(5);
+    expect(toolResults.every((message) => toolCalls.has(message.toolCallId))).toBe(true);
+    expect((manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength).toBe(4);
+    const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+    expect(manager.estimated).toBe(Math.ceil(totalChars / 4));
+  });
+
+  it('emergency 五次 prompt-too-long 后仍从未裁剪的原 turns 尾部执行机械兜底', async () => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        {
+          type: 'response.error',
+          error: { code: 'provider_error', message: 'context window exceeded', retryable: false },
+        },
+      ]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream));
+    manager.onTokenUsage(18_001);
+    const messages = makeToolMessages(25);
+    const originalMessages = structuredClone(messages);
+
+    await expect(
+      manager.compact(messages, { trigger: 'auto', originalUserMessages: ['所有原始用户消息'] }),
+    ).resolves.toEqual({ outcome: 'emergency_fallback', level: 'emergency', attempts: 5 });
+
+    expect(stream).toHaveBeenCalledTimes(5);
+    expect(messages.slice(2)).toEqual(originalMessages.slice(-5 * 4));
+    expect(messages[0]!.content).toContain('所有原始用户消息');
+  });
+
+  it.each([
+    [
+      'reject',
+      async (): Promise<unknown> => {
+        throw new Error('skill unavailable');
+      },
+    ],
+    ['异常结构', async (): Promise<unknown> => [{ id: 'bad', renderedContent: 42, lastUsedOrder: 1 }]],
+  ])('emergency 在 Skill source %s 时以空 Skill 继续摘要和机械兜底', async (_name, loadSnapshots) => {
+    const getUsedSkillDefinitions = vi.fn(loadSnapshots);
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        { type: 'content.delta', delta: '<summary>非法</summary>' },
+        { type: 'response.complete' },
+      ]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream), {
+      skillContextSource: { getUsedSkillDefinitions } as unknown as SkillContextSource,
+    });
+    manager.onMessagesAppended(
+      makeObservedToolBatch([{ id: 'skill-error-file', name: 'read_file', data: { path: 'src/still-restored.ts' } }]),
+    );
+    manager.onTokenUsage(18_001);
+    const messages = makeMessages(8);
+
+    await expect(
+      manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'emergency_fallback', level: 'emergency', attempts: 1 });
+
+    expect(getUsedSkillDefinitions).toHaveBeenCalledTimes(1);
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(messages[2]!.content).toContain('[文件恢复提示]');
+    expect(messages[2]!.content).toContain('src/still-restored.ts');
+    expect(messages.some((message) => message.content.includes('[技能定义恢复]'))).toBe(false);
+    expect((manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength).toBe(3);
+  });
+
+  it('emergency 自动兜底将摘要失败整组只加 1，手动兜底不增不减', async () => {
+    const provider = makeStreamProvider(() =>
+      streamEvents([
+        { type: 'content.delta', delta: '<summary>非法</summary>' },
+        { type: 'response.complete' },
+      ]),
+    );
+    const autoManager = makeCompactManager(provider);
+    const autoMessages = makeMessages(8);
+    autoManager.onTokenUsage(7_001);
+    await autoManager.compact(autoMessages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    await autoManager.compact(autoMessages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    autoManager.onTokenUsage(18_001);
+
+    await expect(
+      autoManager.compact(autoMessages, { trigger: 'auto', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'emergency_fallback', level: 'emergency', attempts: 1 });
+    expect(
+      (autoManager as unknown as { _consecutiveSummaryFailures: number })._consecutiveSummaryFailures,
+    ).toBe(3);
+    expect(autoManager.circuitOpen).toBe(true);
+
+    const manualManager = makeCompactManager(provider);
+    const manualMessages = makeMessages(8);
+    manualManager.onTokenUsage(7_001);
+    await manualManager.compact(manualMessages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    await manualManager.compact(manualMessages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    manualManager.onTokenUsage(18_001);
+
+    await expect(
+      manualManager.compact(manualMessages, { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'emergency_fallback', level: 'emergency', attempts: 1 });
+    expect(
+      (manualManager as unknown as { _consecutiveSummaryFailures: number })._consecutiveSummaryFailures,
+    ).toBe(2);
+    expect(manualManager.circuitOpen).toBe(false);
+  });
+
+  it('重复 compact 只保留一代合成前缀，并用无用户原文的上一代摘要生成新摘要', async () => {
+    const requests: ProviderRequest[] = [];
+    const stream = vi.fn((request: ProviderRequest) => {
+      requests.push(request);
+      return requests.length === 2
+        ? streamEvents([
+            {
+              type: 'response.error',
+              error: { code: 'provider_error', message: 'context window exceeded', retryable: false },
+            },
+          ])
+        : validSummaryStream();
+    });
+    const getUsedSkillDefinitions = vi.fn(async () => [
+      { id: 'repeat-skill', renderedContent: 'REPEAT-SKILL', lastUsedOrder: 1 },
+    ]);
+    const manager = makeCompactManager(makeStreamProvider(stream), {
+      skillContextSource: { getUsedSkillDefinitions },
+    });
+    manager.onMessagesAppended(
+      makeObservedToolBatch([{ id: 'repeat-file', name: 'read_file', data: { path: 'src/repeat.ts' } }]),
+    );
+    const messages = makeMessages(8);
+
+    await manager.compact(messages, {
+      trigger: 'manual',
+      originalUserMessages: Array.from({ length: 8 }, (_, index) => `original ${index}`),
+    });
+    const appended = makeMessages(6, 8);
+    messages.push(...appended);
+    manager.onMessagesAppended(appended);
+    const allOriginalUsers = Array.from({ length: 14 }, (_, index) => `original ${index}`);
+
+    await expect(
+      manager.compact(messages, { trigger: 'manual', originalUserMessages: allOriginalUsers }),
+    ).resolves.toEqual({ outcome: 'compacted', level: 'normal', attempts: 2 });
+
+    expect(requests).toHaveLength(3);
+    for (const request of requests.slice(1)) {
+      const history = request.messages.slice(0, -1);
+      const reusableSummaries = history.filter((message) => message.content.includes('## 1. 主要请求和意图'));
+      expect(reusableSummaries).toHaveLength(1);
+      expect(reusableSummaries[0]).toMatchObject({ role: 'user' });
+      expect(reusableSummaries[0]!.content).toContain('这是最详细的当前工作。');
+      expect(reusableSummaries[0]!.content).toMatch(/## 6\. 所有用户消息\n\s*## 7\. 待办任务/u);
+      expect(reusableSummaries[0]!.content).not.toContain('<user_message');
+      expect(history.some((message) => message.content.includes('[文件恢复提示]'))).toBe(false);
+      expect(history.some((message) => message.content.includes('[技能定义恢复]'))).toBe(false);
+    }
+    expect(messages.filter((message) => message.content.includes('[会话历史摘要]'))).toHaveLength(1);
+    expect(messages.filter((message) => message.content.includes('[文件恢复提示]'))).toHaveLength(1);
+    expect(messages.filter((message) => message.content.includes('[技能定义恢复]'))).toHaveLength(1);
+    expect(messages[0]!.content.match(/<user_message index="/g)).toHaveLength(allOriginalUsers.length);
+    for (const [index, content] of allOriginalUsers.entries()) {
+      expect(messages[0]!.content).toContain(
+        `<user_message index="${index + 1}" length="${content.length}">\n${content}\n</user_message>`,
+      );
+    }
+    expect((manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength).toBe(4);
+    expect(getUsedSkillDefinitions).toHaveBeenCalledTimes(2);
+  });
+
+  it('重复 compact 第二次失败保留数组、估算和上一代摘要，后续可重试成功', async () => {
+    const requests: ProviderRequest[] = [];
+    const stream = vi.fn((request: ProviderRequest) => {
+      requests.push(request);
+      return requests.length === 2
+        ? streamEvents([
+            { type: 'content.delta', delta: '<summary>非法</summary>' },
+            { type: 'response.complete' },
+          ])
+        : validSummaryStream();
+    });
+    const manager = makeCompactManager(makeStreamProvider(stream));
+    const messages = makeMessages(8);
+    await manager.compact(messages, {
+      trigger: 'manual',
+      originalUserMessages: Array.from({ length: 8 }, (_, index) => `original ${index}`),
+    });
+    const appended = makeMessages(6, 8);
+    messages.push(...appended);
+    manager.onMessagesAppended(appended);
+    const beforeFailure = structuredClone(messages);
+    const estimateBeforeFailure = manager.estimated;
+    const prefixBeforeFailure = (manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength;
+    const allOriginalUsers = Array.from({ length: 14 }, (_, index) => `original ${index}`);
+
+    await expect(
+      manager.compact(messages, { trigger: 'manual', originalUserMessages: allOriginalUsers }),
+    ).resolves.toEqual({ outcome: 'failed', level: 'normal', attempts: 1 });
+    expect(messages).toEqual(beforeFailure);
+    expect(manager.estimated).toBe(estimateBeforeFailure);
+    expect((manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength).toBe(
+      prefixBeforeFailure,
+    );
+
+    await expect(
+      manager.compact(messages, { trigger: 'manual', originalUserMessages: allOriginalUsers }),
+    ).resolves.toEqual({ outcome: 'compacted', level: 'normal', attempts: 1 });
+    expect(requests).toHaveLength(3);
+    expect(requests[2]!.messages.some((message) => message.content.includes('这是最详细的当前工作。'))).toBe(
+      true,
+    );
+  });
+
+  it('重复 compact 进入 emergency 机械兜底时移除旧前缀并清空可复用摘要', async () => {
+    const requests: ProviderRequest[] = [];
+    const stream = vi.fn((request: ProviderRequest) => {
+      requests.push(request);
+      return requests.length === 2
+        ? streamEvents([
+            { type: 'content.delta', delta: '<summary>非法</summary>' },
+            { type: 'response.complete' },
+          ])
+        : validSummaryStream();
+    });
+    const manager = makeCompactManager(makeStreamProvider(stream));
+    const messages = makeMessages(8);
+    await manager.compact(messages, {
+      trigger: 'manual',
+      originalUserMessages: Array.from({ length: 8 }, (_, index) => `original ${index}`),
+    });
+    const firstAppend = makeMessages(6, 8);
+    messages.push(...firstAppend);
+    manager.onMessagesAppended(firstAppend);
+    manager.onTokenUsage(18_001);
+
+    await expect(
+      manager.compact(messages, {
+        trigger: 'manual',
+        originalUserMessages: Array.from({ length: 14 }, (_, index) => `original ${index}`),
+      }),
+    ).resolves.toEqual({ outcome: 'emergency_fallback', level: 'emergency', attempts: 1 });
+    expect(messages.some((message) => message.content.includes('[会话历史摘要]'))).toBe(false);
+    expect(messages[0]!.content).toContain('[紧急上下文恢复]');
+    expect((manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength).toBe(2);
+
+    const secondAppend = makeMessages(6, 14);
+    messages.push(...secondAppend);
+    manager.onMessagesAppended(secondAppend);
+    await expect(
+      manager.compact(messages, {
+        trigger: 'manual',
+        originalUserMessages: Array.from({ length: 20 }, (_, index) => `original ${index}`),
+      }),
+    ).resolves.toEqual({ outcome: 'compacted', level: 'normal', attempts: 1 });
+
+    expect(requests).toHaveLength(3);
+    const postEmergencyHistory = requests[2]!.messages.slice(0, -1);
+    expect(postEmergencyHistory.some((message) => message.content.includes('[上一代会话摘要]'))).toBe(false);
+    expect(postEmergencyHistory.some((message) => message.content.includes('这是最详细的当前工作。'))).toBe(false);
+  });
+
+  it.each([
+    [7_001, 'normal'],
+    [15_001, 'force'],
+  ] as const)('%s 水位的 %s 摘要失败保持数组和估算原子性', async (estimated, level) => {
+    const manager = makeCompactManager(
+      makeStreamProvider(() =>
+        streamEvents([
+          { type: 'content.delta', delta: '<summary>非法</summary>' },
+          { type: 'response.complete' },
+        ]),
+      ),
+    );
+    manager.onTokenUsage(estimated);
+    const messages = makeMessages(8);
+    const snapshot = structuredClone(messages);
+    const estimate = manager.estimated;
+
+    await expect(
+      manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'failed', level, attempts: 1 });
+    expect(messages).toEqual(snapshot);
+    expect(manager.estimated).toBe(estimate);
+  });
+
   it('一整组五次重试最终失败只增加一次自动失败计数', async () => {
     const stream = vi.fn((_request: ProviderRequest) =>
       streamEvents([
@@ -1229,11 +1591,12 @@ describe('ContextManager - F3-F6/F9 compact', () => {
 
     manager.onTokenUsage(18_001);
     await expect(manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] })).resolves.toEqual({
-      outcome: 'failed',
+      outcome: 'emergency_fallback',
       level: 'emergency',
       attempts: 1,
     });
 
+    messages.push(...makeMessages(6, 100));
     manager.onTokenUsage(7_001);
     await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
       { outcome: 'failed', level: 'normal', attempts: 1 },

@@ -7,6 +7,7 @@ import { AgentCodeError, type PublicError } from '../shared/errors.js';
 import {
   NORMAL_MARGIN,
   countSummaryTurns,
+  createEmergencyMessages,
   createFileRecoveryMessage,
   createSkillRecoveryMessage,
   createSummaryMessages,
@@ -93,10 +94,13 @@ const SUMMARY_INSTRUCTION = [
   '</summary>',
 ].join('\n');
 
-type SummaryAttemptResult = { kind: 'success'; summary: string } | { kind: 'prompt_too_long' } | { kind: 'failure' };
+type SummaryAttemptResult =
+  | { kind: 'success'; summary: string; reusableSummary: string }
+  | { kind: 'prompt_too_long' }
+  | { kind: 'failure' };
 
 type SummaryFallbackResult =
-  | { kind: 'success'; summary: string; attempts: number }
+  | { kind: 'success'; summary: string; reusableSummary: string; attempts: number }
   | { kind: 'failure'; attempts: number };
 
 export interface ContextManagerOptions {
@@ -140,6 +144,8 @@ export class ContextManager {
   private _consecutiveSummaryFailures = 0;
   /** 上一次成功压缩生成的合成前缀长度。 */
   private _compactedPrefixLength = 0;
+  /** 上一代不含用户原文的摘要，用于重复 compact。 */
+  private _reusableSummary: string | undefined;
   /** 文件访问账本只保存规范化路径、来源和最近访问顺序。 */
   private _fileAccessSequence = 0;
   private readonly recentFileAccesses: FileAccessRecord[] = [];
@@ -324,12 +330,41 @@ export class ContextManager {
     try {
       skillRecoveryContents = await this.getSkillRecoveryContents();
     } catch {
-      return { outcome: 'failed', level, attempts: 0 };
+      if (level !== 'emergency') {
+        return { outcome: 'failed', level, attempts: 0 };
+      }
+      skillRecoveryContents = [];
     }
 
-    const summaryResult = await this.callSummaryWithFallback(summaryTurns, request.originalUserMessages);
+    const summaryResult = await this.callSummaryWithFallback(
+      summaryTurns,
+      request.originalUserMessages,
+      this._reusableSummary,
+    );
 
     if (summaryResult.kind === 'failure') {
+      if (level === 'emergency') {
+        const compactedPrefix = createEmergencyMessages(request.originalUserMessages);
+        const fileRecoveryMessage = createFileRecoveryMessage(recentFilePaths);
+        const skillRecoveryMessage = createSkillRecoveryMessage(skillRecoveryContents);
+        if (fileRecoveryMessage !== undefined) {
+          compactedPrefix.push(fileRecoveryMessage);
+        }
+        if (skillRecoveryMessage !== undefined) {
+          compactedPrefix.push(skillRecoveryMessage);
+        }
+        const retainedMessages = turns.slice(-5).flatMap((turn) => turn.messages);
+        const replacement = [...compactedPrefix, ...retainedMessages];
+
+        messages.splice(0, messages.length, ...replacement);
+        this._compactedPrefixLength = compactedPrefix.length;
+        this._reusableSummary = undefined;
+        this.resetEstimate(messages);
+        if (request.trigger === 'auto') {
+          this._consecutiveSummaryFailures++;
+        }
+        return { outcome: 'emergency_fallback', level, attempts: summaryResult.attempts };
+      }
       if (request.trigger === 'auto') {
         this._consecutiveSummaryFailures++;
       }
@@ -350,6 +385,7 @@ export class ContextManager {
 
     messages.splice(0, messages.length, ...replacement);
     this._compactedPrefixLength = compactedPrefix.length;
+    this._reusableSummary = summaryResult.reusableSummary;
     this.resetEstimate(messages);
     this._consecutiveSummaryFailures = 0;
 
@@ -359,6 +395,7 @@ export class ContextManager {
   private async callSummaryWithFallback(
     turns: readonly CompleteTurn[],
     originalUserMessages: readonly string[],
+    reusableSummary: string | undefined,
   ): Promise<SummaryFallbackResult> {
     let currentTurns = [...turns];
     let attempts = 0;
@@ -373,12 +410,22 @@ export class ContextManager {
       }
 
       attempts++;
+      const summaryHistory: ChatMessage[] = [];
+      if (reusableSummary !== undefined) {
+        summaryHistory.push({ role: 'user', content: `[上一代会话摘要]\n${reusableSummary}` });
+      }
+      summaryHistory.push(...currentTurns.flatMap((turn) => turn.messages));
       const attempt = await this.requestSummaryOnce(
-        currentTurns.flatMap((turn) => turn.messages),
+        summaryHistory,
         originalUserMessages,
       );
       if (attempt.kind === 'success') {
-        return { kind: 'success', summary: attempt.summary, attempts };
+        return {
+          kind: 'success',
+          summary: attempt.summary,
+          reusableSummary: attempt.reusableSummary,
+          attempts,
+        };
       }
       if (attempt.kind === 'failure') {
         break;
@@ -427,7 +474,10 @@ export class ContextManager {
     }
 
     const summary = finalizeSummary(fullText, originalUserMessages);
-    return summary === undefined ? { kind: 'failure' } : { kind: 'success', summary };
+    const reusableSummary = finalizeSummary(fullText, []);
+    return summary === undefined || reusableSummary === undefined
+      ? { kind: 'failure' }
+      : { kind: 'success', summary, reusableSummary };
   }
 
   private classifySummaryError(error: PublicError | string): SummaryAttemptResult {
