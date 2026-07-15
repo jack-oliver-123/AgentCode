@@ -3,21 +3,19 @@ import type { ChatMessage } from '../providers/types.js';
 export const NORMAL_MARGIN = 13_000;
 export const USER_MESSAGES_PLACEHOLDER = '{{ALL_USER_MESSAGES_VERBATIM}}';
 
-const FORCE_RATIO = 0.75;
-const EMERGENCY_RATIO = 0.9;
 const RETAIN_TOKEN_TARGET = 10_000;
 const RETAIN_TURN_TARGET = 5;
 
 const SUMMARY_HEADINGS = [
-  '主要请求和意图',
-  '关键技术概念',
-  '文件和代码段',
-  '错误和修复',
-  '问题解决过程',
-  '所有用户消息',
-  '待办任务',
-  '当前工作',
-  '可能的下一步',
+  '## 1. 主要请求和意图',
+  '## 2. 关键技术概念',
+  '## 3. 文件和代码段',
+  '## 4. 错误和修复',
+  '## 5. 问题解决过程',
+  '## 6. 所有用户消息',
+  '## 7. 待办任务',
+  '## 8. 当前工作',
+  '## 9. 可能的下一步',
 ] as const;
 
 export type CompactionTrigger = 'auto' | 'manual';
@@ -25,58 +23,57 @@ export type CompactionLevel = 'normal' | 'force' | 'emergency';
 
 export interface CompactionRequest {
   trigger: CompactionTrigger;
-  messages: readonly ChatMessage[];
-  estimatedTokens: number;
-  contextWindow: number;
-  prefixLength?: number;
-  level?: CompactionLevel;
-}
-
-interface CompactionResultBase {
-  messages?: ChatMessage[];
-  level?: CompactionLevel;
-  reason?: string;
-  error?: unknown;
+  originalUserMessages: readonly string[];
 }
 
 export type CompactionResult =
-  | (CompactionResultBase & { outcome: 'compacted' })
-  | (CompactionResultBase & { outcome: 'emergency_fallback' })
-  | (CompactionResultBase & { outcome: 'skipped' })
-  | (CompactionResultBase & { outcome: 'failed' });
+  | { outcome: 'compacted'; level: CompactionLevel; attempts: number }
+  | { outcome: 'emergency_fallback'; level: 'emergency'; attempts: number }
+  | {
+      outcome: 'skipped';
+      reason: 'below_threshold' | 'circuit_open' | 'no_history';
+      level?: CompactionLevel;
+      attempts: 0;
+    }
+  | { outcome: 'failed'; level: CompactionLevel; attempts: number };
 
 export interface CompleteTurn {
-  messages: ChatMessage[];
+  start: number;
+  endExclusive: number;
+  messages: readonly ChatMessage[];
   estimatedTokens: number;
 }
 
-export type SkillContextSource = string;
-
 export interface SkillDefinitionSnapshot {
-  name: string;
-  content: string;
-  source?: SkillContextSource;
+  id: string;
+  renderedContent: string;
+  lastUsedOrder: number;
 }
 
-type UserMessageInput = string | ChatMessage;
+export interface SkillContextSource {
+  getUsedSkillDefinitions(): Promise<readonly SkillDefinitionSnapshot[]>;
+}
 
-/** Selects the most urgent level whose watermark has been crossed. */
-export function selectCompactionLevel(estimatedTokens: number, contextWindow: number): CompactionLevel | undefined {
-  if (estimatedTokens > contextWindow * EMERGENCY_RATIO) {
+/** Selects the most urgent level whose fixed-margin watermark has been crossed. */
+export function selectCompactionLevel(input: {
+  estimated: number;
+  contextWindow: number;
+  forceMargin: number;
+  emergencyMargin: number;
+}): CompactionLevel | undefined {
+  if (input.estimated > input.contextWindow - input.emergencyMargin) {
     return 'emergency';
   }
-  if (estimatedTokens > contextWindow * FORCE_RATIO) {
+  if (input.estimated > input.contextWindow - input.forceMargin) {
     return 'force';
   }
-  if (estimatedTokens > contextWindow - NORMAL_MARGIN) {
+  if (input.estimated > input.contextWindow - NORMAL_MARGIN) {
     return 'normal';
   }
   return undefined;
 }
 
-/**
- * Splits the non-prefix portion into user turns and validates tool-call integrity.
- */
+/** Splits the non-prefix portion into user turns and validates tool-call integrity. */
 export function splitCompleteTurns(messages: readonly ChatMessage[], prefixLength: number): CompleteTurn[] {
   if (!Number.isInteger(prefixLength) || prefixLength < 0 || prefixLength > messages.length) {
     throw new RangeError('prefixLength 必须是消息范围内的整数');
@@ -97,6 +94,8 @@ export function splitCompleteTurns(messages: readonly ChatMessage[], prefixLengt
       validateToolPairs(turnMessages);
       const characterCount = turnMessages.reduce((total, current) => total + current.content.length, 0);
       turns.push({
+        start,
+        endExclusive: index,
         messages: turnMessages,
         estimatedTokens: Math.ceil(characterCount / 4),
       });
@@ -121,10 +120,8 @@ function validateToolPairs(messages: readonly ChatMessage[]): void {
       continue;
     }
 
-    if (current.role === 'tool') {
-      if (!outstanding.delete(current.toolCallId)) {
-        throw new Error(`孤立的工具结果: ${current.toolCallId}`);
-      }
+    if (current.role === 'tool' && !outstanding.delete(current.toolCallId)) {
+      throw new Error(`孤立的工具结果: ${current.toolCallId}`);
     }
   }
 
@@ -134,14 +131,18 @@ function validateToolPairs(messages: readonly ChatMessage[]): void {
 }
 
 /** Returns how many oldest turns are outside the retained tail window. */
-export function countSummaryTurns(turns: readonly CompleteTurn[]): number {
+export function countSummaryTurns(
+  turns: readonly CompleteTurn[],
+  retainTokens = RETAIN_TOKEN_TARGET,
+  retainTurns = RETAIN_TURN_TARGET,
+): number {
   let retainedTokens = 0;
   let retainedTurns = 0;
 
   for (let index = turns.length - 1; index >= 0; index--) {
     retainedTokens += turns[index]!.estimatedTokens;
     retainedTurns++;
-    if (retainedTokens >= RETAIN_TOKEN_TARGET || retainedTurns >= RETAIN_TURN_TARGET) {
+    if (retainedTokens >= retainTokens || retainedTurns >= retainTurns) {
       break;
     }
   }
@@ -163,25 +164,17 @@ export function dropOldestTurns(turns: readonly CompleteTurn[], ratio: number): 
 }
 
 /** Serializes user content without normalizing or escaping it. */
-export function renderVerbatimUserMessages(messages: readonly UserMessageInput[]): string {
-  const contents = messages.flatMap((current) => {
-    if (typeof current === 'string') {
-      return [current];
-    }
-    return current.role === 'user' ? [current.content] : [];
-  });
-
-  return contents
-    .map((content, index) => `<user_message index="${index + 1}" length="${content.length}">${content}</user_message>`)
+export function renderVerbatimUserMessages(messages: readonly string[]): string {
+  return messages
+    .map(
+      (content, index) =>
+        `<user_message index="${index + 1}" length="${content.length}">\n${content}\n</user_message>`,
+    )
     .join('\n');
 }
 
 /** Validates the model response and injects the original user messages. */
-export function finalizeSummary(response: string, userMessages: readonly UserMessageInput[]): string | undefined {
-  if (typeof response !== 'string') {
-    return undefined;
-  }
-
+export function finalizeSummary(response: string, userMessages: readonly string[]): string | undefined {
   const openingTags = response.match(/<summary>/g) ?? [];
   const closingTags = response.match(/<\/summary>/g) ?? [];
   const match = response.match(/<summary>([\s\S]*?)<\/summary>/);
@@ -193,15 +186,11 @@ export function finalizeSummary(response: string, userMessages: readonly UserMes
   if (/<\/?analysis\b/i.test(body)) {
     return undefined;
   }
-  if (/\bundefined\b/.test(body)) {
-    return undefined;
-  }
 
-  const headingMatches = [...body.matchAll(/^##\s+(.+?)\s*$/gm)];
-  const headings = headingMatches.map((heading) => heading[1]);
+  const headingMatches = [...body.matchAll(/^##[^\r\n]*$/gm)];
   if (
-    headings.length !== SUMMARY_HEADINGS.length ||
-    headings.some((heading, index) => heading !== SUMMARY_HEADINGS[index])
+    headingMatches.length !== SUMMARY_HEADINGS.length ||
+    headingMatches.some((heading, index) => heading[0] !== SUMMARY_HEADINGS[index])
   ) {
     return undefined;
   }
@@ -215,12 +204,13 @@ export function finalizeSummary(response: string, userMessages: readonly UserMes
   const nextHeading = headingMatches[6]!;
   const userSectionStart = userHeading.index! + userHeading[0].length;
   const userSectionEnd = nextHeading.index!;
-  const placeholder = body.indexOf(USER_MESSAGES_PLACEHOLDER);
-  if (placeholder < userSectionStart || placeholder >= userSectionEnd) {
+  if (body.slice(userSectionStart, userSectionEnd).trim() !== USER_MESSAGES_PLACEHOLDER) {
     return undefined;
   }
 
-  return body.replace(USER_MESSAGES_PLACEHOLDER, renderVerbatimUserMessages(userMessages)).trim();
+  return body
+    .replace(USER_MESSAGES_PLACEHOLDER, () => renderVerbatimUserMessages(userMessages))
+    .trim();
 }
 
 export function createSummaryMessages(summary: string): ChatMessage[] {
@@ -231,7 +221,7 @@ export function createSummaryMessages(summary: string): ChatMessage[] {
     },
     {
       role: 'assistant',
-      content: '[上下文压缩边界] 较早的会话历史已由摘要替代。需要文件或代码细节时请重新读取，不要根据摘要猜测。',
+      content: '[上下文已压缩] 较早的会话历史已由摘要替代。需要文件或代码细节时请重新读取，不要根据摘要猜测。',
     },
   ];
 }
@@ -247,26 +237,26 @@ export function createFileRecoveryMessage(paths: readonly string[]): ChatMessage
   };
 }
 
-export function createSkillRecoveryMessage(definitions: readonly SkillDefinitionSnapshot[]): ChatMessage | undefined {
-  if (definitions.length === 0) {
+export function createSkillRecoveryMessage(contents: readonly string[]): ChatMessage | undefined {
+  if (contents.length === 0) {
     return undefined;
   }
 
   return {
     role: 'user',
-    content: `[技能定义恢复]\n${definitions.map((definition) => definition.content).join('\n\n')}`,
+    content: `[技能定义恢复]\n${contents.join('\n\n')}`,
   };
 }
 
-export function createEmergencyMessages(userMessages: readonly UserMessageInput[]): ChatMessage[] {
+export function createEmergencyMessages(userMessages: readonly string[]): ChatMessage[] {
   return [
     {
       role: 'user',
-      content: `[紧急恢复的用户原文]\n${renderVerbatimUserMessages(userMessages)}`,
+      content: `[紧急上下文恢复]\n${renderVerbatimUserMessages(userMessages)}`,
     },
     {
       role: 'assistant',
-      content: '[紧急压缩边界] 摘要失败，较早的 assistant/tool 消息已丢失；以上仅保留全部用户原文。',
+      content: '[上下文已紧急压缩] 未生成摘要，较早的 assistant/tool 信息已丢失；以上仅保留全部用户原文。',
     },
   ];
 }
