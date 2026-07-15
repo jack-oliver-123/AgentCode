@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentConfig } from '../../../src/config/schema.js';
 import { ContextManager } from '../../../src/context/ContextManager.js';
-import { USER_MESSAGES_PLACEHOLDER } from '../../../src/context/compaction.js';
+import { USER_MESSAGES_PLACEHOLDER, type SkillContextSource } from '../../../src/context/compaction.js';
 import { AnthropicProvider } from '../../../src/providers/anthropic/AnthropicProvider.js';
 import { OpenAIProvider } from '../../../src/providers/openai/OpenAIProvider.js';
 import type { ChatModelProvider, ChatMessage, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
@@ -30,26 +30,29 @@ describe('ContextManager - F1 token 估算', () => {
     expect(mgr.estimated).toBe(0);
   });
 
-  it('onMessagesAppended(400) 后 estimated === 100', () => {
+  it('onMessagesAppended 累计所有追加消息的 content 字符数', () => {
     const mgr = makeManager('/tmp/test-cache');
-    mgr.onMessagesAppended(400);
+    mgr.onMessagesAppended([
+      { role: 'user', content: 'x'.repeat(160) },
+      { role: 'assistant', content: 'y'.repeat(240) },
+    ]);
     expect(mgr.estimated).toBe(100);
   });
 
   it('onTokenUsage(5000) 后 estimated === 5000，pendingChars 清零', () => {
     const mgr = makeManager('/tmp/test-cache');
-    mgr.onMessagesAppended(400); // pendingChars = 400
+    mgr.onMessagesAppended([{ role: 'user', content: 'x'.repeat(400) }]); // pendingChars = 400
     mgr.onTokenUsage(5000);
     expect(mgr.estimated).toBe(5000);
-    // pendingChars 已清零，再 append 0 chars estimated 仍为 5000
-    mgr.onMessagesAppended(0);
+    // pendingChars 已清零，再 append 空数组 estimated 仍为 5000
+    mgr.onMessagesAppended([]);
     expect(mgr.estimated).toBe(5000);
   });
 
   it('onTokenUsage(5000) 后再 onMessagesAppended(800) → estimated === 5200', () => {
     const mgr = makeManager('/tmp/test-cache');
     mgr.onTokenUsage(5000);
-    mgr.onMessagesAppended(800);
+    mgr.onMessagesAppended([{ role: 'assistant', content: 'x'.repeat(800) }]);
     expect(mgr.estimated).toBe(5200); // 5000 + ceil(800/4)
   });
 });
@@ -273,6 +276,32 @@ function makeMessages(n: number): ChatMessage[] {
   return messages;
 }
 
+function makeObservedToolBatch(
+  results: readonly {
+    id: string;
+    name: string;
+    data: unknown;
+    isError?: boolean;
+  }[],
+): ChatMessage[] {
+  return [
+    {
+      role: 'assistant',
+      content: '',
+      toolCalls: results.map((result) => ({ id: result.id, name: result.name, argumentsText: '{}' })),
+    },
+    ...results.map(
+      (result): ChatMessage => ({
+        role: 'tool',
+        toolCallId: result.id,
+        toolName: result.name,
+        content: typeof result.data === 'string' ? result.data : JSON.stringify(result.data),
+        isError: result.isError ?? false,
+      }),
+    ),
+  ];
+}
+
 function makeOpenAIConfig(): AgentConfig {
   return {
     protocol: 'openai',
@@ -337,7 +366,12 @@ describe('ContextManager - F3-F6/F9 compact', () => {
 
   function makeCompactManager(
     provider: ChatModelProvider,
-    options: { timeoutMs?: number; forceMargin?: number; emergencyMargin?: number } = {},
+    options: {
+      timeoutMs?: number;
+      forceMargin?: number;
+      emergencyMargin?: number;
+      skillContextSource?: SkillContextSource;
+    } = {},
   ): ContextManager {
     return new ContextManager(provider, 'test-model', {
       contextWindow: CONTEXT_WINDOW,
@@ -347,6 +381,7 @@ describe('ContextManager - F3-F6/F9 compact', () => {
       timeoutMs: options.timeoutMs ?? 5000,
       ...(options.forceMargin === undefined ? {} : { forceMargin: options.forceMargin }),
       ...(options.emergencyMargin === undefined ? {} : { emergencyMargin: options.emergencyMargin }),
+      ...(options.skillContextSource === undefined ? {} : { skillContextSource: options.skillContextSource }),
     });
   }
 
@@ -371,6 +406,287 @@ describe('ContextManager - F3-F6/F9 compact', () => {
       expect(() => makeCompactManager(mockProvider, { timeoutMs })).toThrow(RangeError);
     },
   );
+
+  it('按 read_file > search_code > glob_files 恢复最多 5 个规范化路径，不泄露文件正文', async () => {
+    const manager = makeCompactManager(makeStreamProvider(() => validSummaryStream()));
+    manager.onMessagesAppended(
+      makeObservedToolBatch([
+        {
+          id: 'glob',
+          name: 'glob_files',
+          data: {
+            matches: [
+              'src\\shared.ts',
+              'glob/one.ts',
+              'glob/two.ts',
+              'glob/three.ts',
+              'glob/four.ts',
+              'glob/five.ts',
+            ],
+          },
+        },
+        {
+          id: 'search',
+          name: 'search_code',
+          data: {
+            matches: [{ path: 'src/./shared.ts' }, { path: 'search/new.ts' }, { path: 'glob/one.ts' }],
+          },
+        },
+        {
+          id: 'read-shared',
+          name: 'read_file',
+          data: { path: 'src/shared.ts', content: 'SECRET_FILE_BODY' },
+        },
+        {
+          id: 'read-latest',
+          name: 'read_file',
+          data: { path: 'read/latest.ts', content: 'LATEST_SECRET_BODY' },
+        },
+      ]),
+    );
+    const messages = makeMessages(8);
+
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'compacted', level: 'normal', attempts: 1 },
+    );
+
+    expect(messages[2]).toMatchObject({ role: 'user' });
+    expect(messages[2]!.content.split('\n').slice(1)).toEqual([
+      'read/latest.ts',
+      'src/shared.ts',
+      'glob/one.ts',
+      'search/new.ts',
+      'glob/five.ts',
+    ]);
+    expect(messages[2]!.content).not.toContain('SECRET_FILE_BODY');
+    expect(messages[2]!.content).not.toContain('LATEST_SECRET_BODY');
+  });
+
+  it('忽略失败、畸形、孤立、名称不匹配、卸载预览及跨批次工具结果', async () => {
+    const manager = makeCompactManager(makeStreamProvider(() => validSummaryStream()));
+    manager.onMessagesAppended([
+      {
+        role: 'tool',
+        toolCallId: 'before-call',
+        toolName: 'read_file',
+        content: JSON.stringify({ path: 'ignored/before.ts' }),
+        isError: false,
+      },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'before-call', name: 'read_file', argumentsText: '{}' },
+          { id: 'failed', name: 'read_file', argumentsText: '{}' },
+          { id: 'malformed', name: 'read_file', argumentsText: '{}' },
+          { id: 'plain', name: 'read_file', argumentsText: '{}' },
+          { id: 'preview', name: 'read_file', argumentsText: '{}' },
+          { id: 'wrong-name', name: 'read_file', argumentsText: '{}' },
+        ],
+      },
+      {
+        role: 'tool',
+        toolCallId: 'failed',
+        toolName: 'read_file',
+        content: JSON.stringify({ path: 'ignored/failed.ts' }),
+        isError: true,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'malformed',
+        toolName: 'read_file',
+        content: '{bad json',
+        isError: false,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'plain',
+        toolName: 'read_file',
+        content: 'read ignored/plain.ts',
+        isError: false,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'preview',
+        toolName: 'read_file',
+        content: '[内容已卸载至文件: C:/cache/result.txt]\n--- 内容预览（前 200 字符）---',
+        isError: false,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'wrong-name',
+        toolName: 'search_code',
+        content: JSON.stringify({ path: 'ignored/wrong-name.ts' }),
+        isError: false,
+      },
+      {
+        role: 'tool',
+        toolCallId: 'orphan',
+        toolName: 'read_file',
+        content: JSON.stringify({ path: 'ignored/orphan.ts' }),
+        isError: false,
+      },
+    ]);
+    manager.onMessagesAppended([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'cross-batch', name: 'read_file', argumentsText: '{}' }],
+      },
+    ]);
+    manager.onMessagesAppended([
+      {
+        role: 'tool',
+        toolCallId: 'cross-batch',
+        toolName: 'read_file',
+        content: JSON.stringify({ path: 'ignored/cross-batch.ts' }),
+        isError: false,
+      },
+    ]);
+    const messages = makeMessages(8);
+
+    await manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] });
+
+    expect(messages.some((message) => message.content.includes('[文件恢复提示]'))).toBe(false);
+  });
+
+  it('同源重复路径刷新最近顺序，账本按来源保持最多 50 条', async () => {
+    const manager = makeCompactManager(makeStreamProvider(() => validSummaryStream()));
+    manager.onMessagesAppended(
+      makeObservedToolBatch([
+        {
+          id: 'many-globs',
+          name: 'glob_files',
+          data: { matches: Array.from({ length: 55 }, (_, index) => `glob/${index}.ts`) },
+        },
+      ]),
+    );
+    manager.onMessagesAppended(
+      makeObservedToolBatch([{ id: 'refresh', name: 'glob_files', data: { matches: ['glob\\10.ts'] } }]),
+    );
+    const ledger = (
+      manager as unknown as {
+        recentFileAccesses: readonly unknown[];
+      }
+    ).recentFileAccesses;
+    expect(ledger).toHaveLength(50);
+
+    const messages = makeMessages(8);
+    await manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] });
+
+    expect(messages[2]!.content.split('\n').slice(1)).toEqual([
+      'glob/10.ts',
+      'glob/54.ts',
+      'glob/53.ts',
+      'glob/52.ts',
+      'glob/51.ts',
+    ]);
+  });
+
+  it('Skill 按最近使用顺序恢复、按 100000 字符预算截断，且文件块位于 Skill 前并只取一次快照', async () => {
+    const latest = 'LATEST';
+    const middle = `MID:${'m'.repeat(99_976)}`;
+    const older = 'OLDER-CONTENT-SHOULD-BE-PARTIAL';
+    const getUsedSkillDefinitions = vi.fn(async () => [
+      { id: 'middle', renderedContent: middle, lastUsedOrder: 20 },
+      { id: 'ancient', renderedContent: 'ANCIENT-MUST-NOT-APPEAR', lastUsedOrder: 1 },
+      { id: 'latest', renderedContent: latest, lastUsedOrder: 30 },
+      { id: 'older', renderedContent: older, lastUsedOrder: 10 },
+    ]);
+    let summaryCalls = 0;
+    const stream = vi.fn((_request: ProviderRequest) => {
+      summaryCalls++;
+      return summaryCalls === 1
+        ? streamEvents([
+            {
+              type: 'response.error',
+              error: { code: 'provider_error', message: 'context length exceeded', retryable: false },
+            },
+          ])
+        : validSummaryStream();
+    });
+    const manager = makeCompactManager(makeStreamProvider(stream), {
+      skillContextSource: { getUsedSkillDefinitions },
+    });
+    manager.onMessagesAppended(
+      makeObservedToolBatch([
+        { id: 'skill-file', name: 'read_file', data: { path: 'src/skill.ts', content: 'not recovered' } },
+      ]),
+    );
+    const messages = makeMessages(8);
+
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'compacted', level: 'normal', attempts: 2 },
+    );
+
+    expect(getUsedSkillDefinitions).toHaveBeenCalledTimes(1);
+    expect(messages[2]!.content).toContain('[文件恢复提示]');
+    expect(messages[3]!.content).toContain('[技能定义恢复]');
+    const restoredDefinitions = messages[3]!.content.slice('[技能定义恢复]\n'.length).split('\n\n');
+    expect(restoredDefinitions).toEqual([latest, middle, older.slice(0, 14)]);
+    expect(messages[3]!.content).not.toContain('ANCIENT-MUST-NOT-APPEAR');
+    expect(messages[4]).toEqual({ role: 'user', content: 'turn user 3' });
+    expect((manager as unknown as { _compactedPrefixLength: number })._compactedPrefixLength).toBe(4);
+  });
+
+  it.each([
+    [
+      'reject',
+      async (): Promise<unknown> => {
+        throw new Error('skill source unavailable');
+      },
+    ],
+    [
+      '返回异常结构',
+      async (): Promise<unknown> => [{ id: 'bad', renderedContent: 42, lastUsedOrder: 1 }],
+    ],
+  ])('Skill source %s 时返回 attempts=0 且不改写数组或估算', async (_name, loadSnapshots) => {
+    const getUsedSkillDefinitions = vi.fn(loadSnapshots);
+    const stream = vi.fn<ChatModelProvider['stream']>();
+    const manager = makeCompactManager(makeStreamProvider(stream), {
+      skillContextSource: { getUsedSkillDefinitions } as unknown as SkillContextSource,
+    });
+    manager.onTokenUsage(8_000);
+    const messages = makeMessages(8);
+    const snapshot = structuredClone(messages);
+    const estimate = manager.estimated;
+
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'failed', level: 'normal', attempts: 0 },
+    );
+    expect(getUsedSkillDefinitions).toHaveBeenCalledTimes(1);
+    expect(stream).not.toHaveBeenCalled();
+    expect(messages).toEqual(snapshot);
+    expect(manager.estimated).toBe(estimate);
+  });
+
+  it('摘要失败时不插入已获取的文件或 Skill 恢复块', async () => {
+    const getUsedSkillDefinitions = vi.fn(async () => [
+      { id: 'skill', renderedContent: 'SKILL-CONTENT', lastUsedOrder: 1 },
+    ]);
+    const manager = makeCompactManager(
+      makeStreamProvider(() =>
+        streamEvents([
+          { type: 'content.delta', delta: '<summary>非法</summary>' },
+          { type: 'response.complete' },
+        ]),
+      ),
+      { skillContextSource: { getUsedSkillDefinitions } },
+    );
+    manager.onMessagesAppended(
+      makeObservedToolBatch([{ id: 'failed-summary-file', name: 'read_file', data: { path: 'src/failure.ts' } }]),
+    );
+    const messages = makeMessages(8);
+    const snapshot = structuredClone(messages);
+    const estimate = manager.estimated;
+
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'failed', level: 'normal', attempts: 1 },
+    );
+    expect(getUsedSkillDefinitions).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual(snapshot);
+    expect(manager.estimated).toBe(estimate);
+  });
 
   it('auto 位于 normal 严格边界时返回 below_threshold 且不调用 Provider', async () => {
     const stream = vi.fn<ChatModelProvider['stream']>();
@@ -421,6 +737,7 @@ describe('ContextManager - F3-F6/F9 compact', () => {
     expect(messages[1]).toMatchObject({ role: 'assistant' });
     expect(messages[1]!.content).toContain('[上下文已压缩]');
     expect(messages.slice(2)).toEqual(originalTail);
+    expect(messages.some((message) => message.content.includes('[技能定义恢复]'))).toBe(false);
     const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
     expect(manager.estimated).toBe(Math.ceil(totalChars / 4));
   });
@@ -660,12 +977,16 @@ describe('ContextManager - F3-F6/F9 compact', () => {
 
   it('没有较早完整 turn 时返回 no_history 且不调用 Provider', async () => {
     const stream = vi.fn<ChatModelProvider['stream']>();
-    const manager = makeCompactManager(makeStreamProvider(stream));
+    const getUsedSkillDefinitions = vi.fn(async () => []);
+    const manager = makeCompactManager(makeStreamProvider(stream), {
+      skillContextSource: { getUsedSkillDefinitions },
+    });
 
     await expect(
       manager.compact(makeMessages(5), { trigger: 'manual', originalUserMessages: ['原始需求'] }),
     ).resolves.toEqual({ outcome: 'skipped', reason: 'no_history', attempts: 0 });
     expect(stream).not.toHaveBeenCalled();
+    expect(getUsedSkillDefinitions).not.toHaveBeenCalled();
   });
 
   it('孤立工具结果在调用 Provider 前失败并保持上下文不变', async () => {

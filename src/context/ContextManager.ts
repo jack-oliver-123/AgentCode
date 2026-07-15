@@ -1,5 +1,5 @@
 import { mkdir, writeFile as fsWriteFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { Buffer } from 'node:buffer';
 
 import type { ChatModelProvider, ChatMessage, ProviderToolResultMessage } from '../providers/types.js';
@@ -7,6 +7,8 @@ import { AgentCodeError, type PublicError } from '../shared/errors.js';
 import {
   NORMAL_MARGIN,
   countSummaryTurns,
+  createFileRecoveryMessage,
+  createSkillRecoveryMessage,
   createSummaryMessages,
   dropOldestTurns,
   finalizeSummary,
@@ -16,12 +18,25 @@ import {
   type CompactionRequest,
   type CompactionResult,
   type CompleteTurn,
+  type SkillDefinitionSnapshot,
   type SkillContextSource,
 } from './compaction.js';
 
 const DEFAULT_FORCE_MARGIN = 5_000;
 const DEFAULT_EMERGENCY_MARGIN = 2_000;
 const MAX_TIMEOUT_MS = 2_147_483_647;
+const MAX_RECENT_FILES_PER_SOURCE = 50;
+const MAX_FILE_RECOVERY_PATHS = 5;
+const SKILL_RECOVERY_CHAR_BUDGET = 25_000 * 4;
+
+const FILE_ACCESS_SOURCES = ['read_file', 'search_code', 'glob_files'] as const;
+type FileAccessSource = (typeof FILE_ACCESS_SOURCES)[number];
+
+interface FileAccessRecord {
+  path: string;
+  source: FileAccessSource;
+  sequence: number;
+}
 
 const EMPTY_SKILL_CONTEXT_SOURCE: SkillContextSource = {
   async getUsedSkillDefinitions() {
@@ -120,6 +135,9 @@ export class ContextManager {
   private _consecutiveSummaryFailures = 0;
   /** 上一次成功压缩生成的合成前缀长度。 */
   private _compactedPrefixLength = 0;
+  /** 文件访问账本只保存规范化路径、来源和最近访问顺序。 */
+  private _fileAccessSequence = 0;
+  private readonly recentFileAccesses: FileAccessRecord[] = [];
 
   constructor(provider: ChatModelProvider, model: string, options: ContextManagerOptions) {
     this.provider = provider;
@@ -151,11 +169,10 @@ export class ContextManager {
     this._pendingChars = 0;
   }
 
-  /**
-   * 向 providerContext 追加消息后调用，传入追加的内容字符数之和。
-   */
-  onMessagesAppended(chars: number): void {
-    this._pendingChars += chars;
+  /** 向 providerContext 追加消息后调用，并观察尚未卸载的结构化工具结果。 */
+  onMessagesAppended(messages: readonly ChatMessage[]): void {
+    this._pendingChars += messages.reduce((sum, message) => sum + message.content.length, 0);
+    this.recordFileAccesses(messages);
   }
 
   /**
@@ -297,6 +314,14 @@ export class ContextManager {
 
     const summaryTurns = turns.slice(0, summaryTurnCount);
     const retainedTurns = turns.slice(summaryTurnCount);
+    const recentFilePaths = this.selectRecentFilePaths();
+    let skillRecoveryContents: string[];
+    try {
+      skillRecoveryContents = await this.getSkillRecoveryContents();
+    } catch {
+      return { outcome: 'failed', level, attempts: 0 };
+    }
+
     const summaryResult = await this.callSummaryWithFallback(summaryTurns, request.originalUserMessages);
 
     if (summaryResult.kind === 'failure') {
@@ -307,6 +332,14 @@ export class ContextManager {
     }
 
     const compactedPrefix = createSummaryMessages(summaryResult.summary);
+    const fileRecoveryMessage = createFileRecoveryMessage(recentFilePaths);
+    const skillRecoveryMessage = createSkillRecoveryMessage(skillRecoveryContents);
+    if (fileRecoveryMessage !== undefined) {
+      compactedPrefix.push(fileRecoveryMessage);
+    }
+    if (skillRecoveryMessage !== undefined) {
+      compactedPrefix.push(skillRecoveryMessage);
+    }
     const retainedMessages = retainedTurns.flatMap((turn) => turn.messages);
     const replacement = [...compactedPrefix, ...retainedMessages];
 
@@ -426,6 +459,172 @@ export class ContextManager {
       /\btokens?\s+limit\b/i.test(normalizedMessage);
 
     return isPromptTooLong ? { kind: 'prompt_too_long' } : { kind: 'failure' };
+  }
+
+  private recordFileAccesses(messages: readonly ChatMessage[]): void {
+    const pendingCalls = new Map<string, FileAccessSource>();
+
+    for (const message of messages) {
+      if (message.role === 'assistant' && 'toolCalls' in message) {
+        for (const call of message.toolCalls) {
+          if (this.isFileAccessSource(call.name)) {
+            pendingCalls.set(call.id, call.name);
+          }
+        }
+        continue;
+      }
+
+      if (message.role !== 'tool') {
+        continue;
+      }
+
+      const source = pendingCalls.get(message.toolCallId);
+      if (source === undefined) {
+        continue;
+      }
+      pendingCalls.delete(message.toolCallId);
+      if (message.isError !== false || message.toolName !== source) {
+        continue;
+      }
+
+      for (const path of this.extractStructuredPaths(source, message.content)) {
+        this.recordFileAccess(source, path);
+      }
+    }
+  }
+
+  private isFileAccessSource(name: string): name is FileAccessSource {
+    return FILE_ACCESS_SOURCES.some((source) => source === name);
+  }
+
+  private extractStructuredPaths(source: FileAccessSource, content: string): string[] {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content);
+    } catch {
+      return [];
+    }
+    if (typeof parsed !== 'object' || parsed === null) {
+      return [];
+    }
+
+    if (source === 'read_file') {
+      const path = (parsed as { path?: unknown }).path;
+      return typeof path === 'string' ? [path] : [];
+    }
+
+    const matches = (parsed as { matches?: unknown }).matches;
+    if (!Array.isArray(matches)) {
+      return [];
+    }
+    if (source === 'glob_files') {
+      return matches.filter((path): path is string => typeof path === 'string');
+    }
+    return matches.flatMap((match) => {
+      if (typeof match !== 'object' || match === null) {
+        return [];
+      }
+      const path = (match as { path?: unknown }).path;
+      return typeof path === 'string' ? [path] : [];
+    });
+  }
+
+  private recordFileAccess(source: FileAccessSource, rawPath: string): void {
+    const path = this.normalizeFilePath(rawPath);
+    if (path === undefined) {
+      return;
+    }
+
+    const existingIndex = this.recentFileAccesses.findIndex(
+      (record) => record.source === source && record.path === path,
+    );
+    if (existingIndex >= 0) {
+      this.recentFileAccesses.splice(existingIndex, 1);
+    }
+    this.recentFileAccesses.push({ path, source, sequence: ++this._fileAccessSequence });
+
+    const sourceRecords = this.recentFileAccesses
+      .filter((record) => record.source === source)
+      .sort((left, right) => left.sequence - right.sequence);
+    while (sourceRecords.length > MAX_RECENT_FILES_PER_SOURCE) {
+      const oldest = sourceRecords.shift();
+      if (oldest === undefined) {
+        break;
+      }
+      const oldestIndex = this.recentFileAccesses.indexOf(oldest);
+      if (oldestIndex >= 0) {
+        this.recentFileAccesses.splice(oldestIndex, 1);
+      }
+    }
+  }
+
+  private normalizeFilePath(path: string): string | undefined {
+    if (path.length === 0) {
+      return undefined;
+    }
+    return posix.normalize(path.replaceAll('\\', '/'));
+  }
+
+  private selectRecentFilePaths(): string[] {
+    const selected: string[] = [];
+    const seen = new Set<string>();
+
+    for (const source of FILE_ACCESS_SOURCES) {
+      const sourceRecords = this.recentFileAccesses
+        .filter((record) => record.source === source)
+        .sort((left, right) => right.sequence - left.sequence);
+      for (const record of sourceRecords) {
+        if (seen.has(record.path)) {
+          continue;
+        }
+        seen.add(record.path);
+        selected.push(record.path);
+        if (selected.length === MAX_FILE_RECOVERY_PATHS) {
+          return selected;
+        }
+      }
+    }
+
+    return selected;
+  }
+
+  private async getSkillRecoveryContents(): Promise<string[]> {
+    const snapshots = await this.skillContextSource.getUsedSkillDefinitions();
+    if (!Array.isArray(snapshots) || !snapshots.every(this.isSkillDefinitionSnapshot)) {
+      throw new TypeError('Skill context source 返回了无效快照');
+    }
+
+    const selected: string[] = [];
+    let remainingChars = SKILL_RECOVERY_CHAR_BUDGET;
+    const sorted = [...snapshots].sort((left, right) => right.lastUsedOrder - left.lastUsedOrder);
+    for (const snapshot of sorted) {
+      if (snapshot.renderedContent.length === 0) {
+        continue;
+      }
+      if (snapshot.renderedContent.length <= remainingChars) {
+        selected.push(snapshot.renderedContent);
+        remainingChars -= snapshot.renderedContent.length;
+        continue;
+      }
+      if (remainingChars > 0) {
+        selected.push(snapshot.renderedContent.slice(0, remainingChars));
+      }
+      break;
+    }
+    return selected;
+  }
+
+  private isSkillDefinitionSnapshot(value: unknown): value is SkillDefinitionSnapshot {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    const snapshot = value as Partial<SkillDefinitionSnapshot>;
+    return (
+      typeof snapshot.id === 'string' &&
+      typeof snapshot.renderedContent === 'string' &&
+      typeof snapshot.lastUsedOrder === 'number' &&
+      Number.isFinite(snapshot.lastUsedOrder)
+    );
   }
 
   private resetEstimate(messages: readonly ChatMessage[]): void {
