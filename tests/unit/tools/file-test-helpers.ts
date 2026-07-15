@@ -32,7 +32,7 @@ export async function executeFileTool(
   context: Partial<ToolExecutionContext> & { cwd: string },
 ): Promise<ToolExecutionResult> {
   return executeToolCall(createCall(tool.name, argumentsText), createRegistry([tool]), {
-    timeoutMs: 100,
+    timeoutMs: 1000,
     secrets: [],
     maxOutputBytes: 1024,
     ...context,

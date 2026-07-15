@@ -171,10 +171,10 @@
 - [x] npm run lint 通过，0 errors/warnings。
 - [x] npm test -- tests/unit/context/ 全部通过。
 - [x] npm test -- tests/unit/session/ChatSessionController.test.ts 通过。
-- [ ] npm test 全量通过。
+- [x] npm test 全量通过。
 - [x] npm run build 通过。
 - [x] git diff --check 通过。
-- [ ] npm run e2e:tmux 在 psmux/tmux 可用时通过；不可用时记录环境阻塞。
+- [x] npm run e2e:tmux 在 psmux/tmux 可用时通过；不可用时记录环境阻塞。
 
 ## 验证记录（2026-07-15）
 
@@ -186,7 +186,9 @@
 - `npm test -- tests/unit/context/`：通过；3 个测试文件、106 个测试全部通过。
 - `npm test -- tests/unit/context/ tests/unit/session/ChatSessionController.test.ts`：通过；4 个测试文件、139 个测试全部通过。
 - `npm test -- tests/unit/providers/ tests/integration/streaming/`：通过；6 个测试文件、83 个测试全部通过。
-- `npm test`：未通过；50 个测试文件中 46 通过、4 失败，677 个测试中 661 通过、14 失败、2 跳过。失败均位于未被本功能改动的 `tests/unit/tools/`：`edit-file` 2 项、`read-file` 1 项、`write-file` 3 项和 `run-command` 8 项；输出表现为 `command_timeout` 或 5 秒用例超时，当前分支未修改 `src/tools/` 或这些测试文件。
+- Issue #56 RED：Windows 全量并行测试曾在 `tests/unit/tools/` 出现 100 ms 文件 executor 超时，`run-command` 默认命中 WSL bash；E2E 脚本因 CRLF 无法解析，并在 psmux 的 cmd pane 中无法直接启动 `.sh` launcher。
+- Issue #56 GREEN `npm test -- tests/unit/tools/edit-file.test.ts tests/unit/tools/read-file.test.ts tests/unit/tools/write-file.test.ts tests/unit/tools/run-command.test.ts`：通过；4 个测试文件、40 个测试全部通过。
+- `npm test`：通过；50 个测试文件全部通过，677 个测试中 675 通过、2 跳过。Windows 下禁用测试文件级并行，避免 shell 与文件系统启动时序竞争；其他平台保持并行。
 - `npm run build`：通过；exit 0，`dist/cli/main.js` 存在。
-- `npm run e2e:tmux`：未通过；其内置 build 通过，随后 bash 报错 `tests/e2e/tmux/agentcode-smoke.sh: line 2: set: pipefail\r: invalid option name`，归类为 Windows CRLF/bash 环境阻塞。
+- `npm run e2e:tmux`：通过；内置 build、Git Bash、psmux Windows `.cmd` launcher、两轮会话记忆、工具调用与密钥不泄漏检查全部完成，输出 `tmux E2E smoke passed.`。
 - `git diff --check`：通过；无空白错误。

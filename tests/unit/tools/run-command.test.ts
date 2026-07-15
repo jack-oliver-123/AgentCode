@@ -1,12 +1,31 @@
-import { join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { delimiter, dirname, join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { createRunCommandTool } from '../../../src/tools/builtins/run-command.js';
 import type { ToolExecutionContext } from '../../../src/tools/types.js';
 import { createWorkspace, executeFileTool, readWorkspaceFile, writeWorkspaceFile } from './file-test-helpers.js';
 
 const SENTINEL_SECRET = 'sk-agentcode-e2e-secret-should-not-appear';
+const ORIGINAL_BASH_PATH = process.env.AGENTCODE_BASH_PATH;
+
+beforeAll(() => {
+  if (process.platform === 'win32' && process.env.AGENTCODE_BASH_PATH === undefined) {
+    const gitBashPath = findGitBashOnPath();
+    if (gitBashPath !== undefined) {
+      process.env.AGENTCODE_BASH_PATH = gitBashPath;
+    }
+  }
+});
+
+afterAll(() => {
+  if (ORIGINAL_BASH_PATH === undefined) {
+    delete process.env.AGENTCODE_BASH_PATH;
+  } else {
+    process.env.AGENTCODE_BASH_PATH = ORIGINAL_BASH_PATH;
+  }
+});
 
 describe('run_command', () => {
   it('runs a successful one-shot command in the workspace', async () => {
@@ -99,11 +118,11 @@ describe('run_command', () => {
 
   it('returns command timeout details before the executor timeout wins', async () => {
     const workspace = await createWorkspace();
-    const command = nodeCommand("require('node:fs').writeSync(1, 'before-timeout'); setTimeout(() => {}, 5000)");
+    const command = 'printf before-timeout; sleep 5';
 
     const result = await executeRunCommand(JSON.stringify({ command }), {
       cwd: workspace,
-      timeoutMs: 1000,
+      timeoutMs: 3000,
     });
 
     expect(result).toMatchObject({
@@ -320,4 +339,26 @@ function executeRunCommand(argumentsText: string, context: Partial<ToolExecution
 
 function nodeCommand(script: string): string {
   return `node -e ${JSON.stringify(script)}`;
+}
+
+function findGitBashOnPath(): string | undefined {
+  const pathValue = process.env.Path ?? process.env.PATH;
+  if (pathValue === undefined) {
+    return undefined;
+  }
+
+  for (const rawEntry of pathValue.split(delimiter)) {
+    const entry = rawEntry.replace(/^"(.*)"$/, '$1');
+    if (entry.length === 0 || !existsSync(join(entry, 'git.exe'))) {
+      continue;
+    }
+
+    const candidates = [join(entry, 'bash.exe'), join(dirname(entry), 'bin', 'bash.exe')];
+    const match = candidates.find((candidate) => existsSync(candidate));
+    if (match !== undefined) {
+      return match;
+    }
+  }
+
+  return undefined;
 }

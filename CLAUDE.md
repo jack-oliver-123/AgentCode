@@ -141,11 +141,12 @@ TUI 规范：
 - **教训：** 代理网关对复杂 JSON Schema 支持不可靠；用 string + 运行时解析更稳健
 - **参考：** `src/tools/builtins/submitPlan.ts`
 
-### 文件系统测试在并行运行时 flaky
+### Windows 工具测试与 E2E
 
-- **现象：** `write-file.test.ts`、`run-command.test.ts`、`edit-file.test.ts` 全量运行时偶尔失败，单独运行通过
-- **根因：** 文件系统操作有时间竞争，或 timeout 测试对系统负载敏感
-- **处理：** 非逻辑 bug；单独验证通过即可，全量运行的偶尔失败可忽略
+- Windows 下 Vitest 关闭文件级并行，避免 shell 与文件系统进程启动争用；其他平台保持并行。
+- `run-command.test.ts` 会从 Git 所在目录解析 Git Bash，避免误用启动较慢的 WSL bash。
+- `.gitattributes` 强制 `*.sh` 使用 LF；psmux 的 cmd pane 使用测试生成的 `.cmd` launcher。
+- 全量失败不能按 flaky 忽略；先运行失败文件定位，再修复或记录明确的环境阻塞。
 
 ## 源码结构
 
