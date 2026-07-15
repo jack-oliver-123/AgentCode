@@ -216,6 +216,7 @@ export class ContextManager {
     await mkdir(this.options.cacheDir, { recursive: true });
 
     const { offloadThresholdBytes, turnOffloadThresholdBytes, cacheDir } = this.options;
+    let didOffload = false;
 
     // 按 role:'user' 划分 turn 边界，找出每个 turn 的消息范围
     const turnRanges: Array<[number, number]> = [];
@@ -239,7 +240,7 @@ export class ContextManager {
         if (msg.role === 'tool') {
           const byteLen = Buffer.byteLength(msg.content, 'utf8');
           if (byteLen > offloadThresholdBytes) {
-            await this._offloadSingle(msg as ProviderToolResultMessage, cacheDir);
+            didOffload = (await this._offloadSingle(msg as ProviderToolResultMessage, cacheDir)) || didOffload;
           }
         }
       }
@@ -260,11 +261,19 @@ export class ContextManager {
           if (totalBytes <= turnOffloadThresholdBytes) break;
           // 只卸载尚未被卸载的（已卸载的 content 以固定前缀开头）
           if (!msg.content.startsWith('[内容已卸载至文件:')) {
-            await this._offloadSingle(msg, cacheDir);
-            totalBytes -= bytes;
+            const changed = await this._offloadSingle(msg, cacheDir);
+            if (changed) {
+              const afterBytes = Buffer.byteLength(msg.content, 'utf8');
+              totalBytes -= bytes - afterBytes;
+              didOffload = true;
+            }
           }
         }
       }
+    }
+
+    if (didOffload) {
+      this.resetEstimate(messages);
     }
   }
 
@@ -272,7 +281,7 @@ export class ContextManager {
    * 将单条 ProviderToolResultMessage 的 content 写入文件并替换为预览格式。
    * 写入失败时 console.warn 跳过，不抛异常。
    */
-  private async _offloadSingle(msg: ProviderToolResultMessage, cacheDir: string): Promise<void> {
+  private async _offloadSingle(msg: ProviderToolResultMessage, cacheDir: string): Promise<boolean> {
     const slug = msg.toolCallId.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 64);
     const fileName = `${slug}.txt`;
     const absolutePath = join(cacheDir, fileName);
@@ -284,9 +293,11 @@ export class ContextManager {
     try {
       await writeFile(absolutePath, originalContent, 'utf8');
       msg.content = `[内容已卸载至文件: ${absolutePath}，共 ${n} 字符]\n--- 内容预览（前 200 字符）---\n${preview}\n---\n如需完整内容，请用 read_file 重新读取原始路径。`;
+      return true;
     } catch (err) {
       console.warn(`[ContextManager] 卸载文件失败: ${absolutePath}`, err);
       // content 保持原值，不中断
+      return false;
     }
   }
 

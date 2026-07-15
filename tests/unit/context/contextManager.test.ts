@@ -181,6 +181,123 @@ describe('ContextManager - F2 offloadToolResults', () => {
     expect(messages[1]!.content).toBe(bigContent);
   });
 
+  it('成功卸载后按最终消息重建估算，并使紧随其后的自动压缩低于阈值', async () => {
+    const stream = vi.fn(() => validSummaryStream());
+    const provider = makeStreamProvider(stream);
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'q' },
+      {
+        role: 'tool',
+        toolCallId: 'call-rebuild-estimate',
+        toolName: 'read_file',
+        content: 'x'.repeat(9000),
+        isError: false,
+      },
+    ];
+    const mgr = new ContextManager(provider, 'test-model', {
+      contextWindow: 20_000,
+      offloadThresholdBytes: 8192,
+      turnOffloadThresholdBytes: 32768,
+      cacheDir,
+      timeoutMs: 30000,
+    });
+    mgr.onTokenUsage(7_001);
+
+    await mgr.offloadToolResults(messages);
+
+    const finalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+    expect(mgr.estimated).toBe(Math.ceil(finalChars / 4));
+    await expect(
+      mgr.compact(messages, { trigger: 'auto', originalUserMessages: ['q'] }),
+    ).resolves.toEqual({ outcome: 'skipped', reason: 'below_threshold', attempts: 0 });
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('卸载写入失败时保留 content 与已有 token 估算基准', async () => {
+    const bigContent = 'x'.repeat(9000);
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'q' },
+      { role: 'tool', toolCallId: 'call-estimate-fail', toolName: 'read_file', content: bigContent, isError: false },
+    ];
+    const mgr = new ContextManager(mockProvider, 'test-model', {
+      contextWindow: 128000,
+      offloadThresholdBytes: 8192,
+      turnOffloadThresholdBytes: 32768,
+      cacheDir,
+      timeoutMs: 30000,
+      _writeFile: async () => {
+        throw new Error('ENOSPC');
+      },
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mgr.onTokenUsage(5_000);
+
+    await mgr.offloadToolResults(messages);
+
+    expect(messages[1]!.content).toBe(bigContent);
+    expect(mgr.estimated).toBe(5_000);
+  });
+
+  it('轮级卸载最大消息写入失败后继续尝试次大消息', async () => {
+    const largest = 'a'.repeat(1200);
+    const secondLargest = 'b'.repeat(900);
+    const writeFile = vi.fn(async (path: string) => {
+      if (path.includes('call-largest')) {
+        throw new Error('ENOSPC');
+      }
+    });
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'q' },
+      { role: 'tool', toolCallId: 'call-largest', toolName: 'tool1', content: largest, isError: false },
+      { role: 'tool', toolCallId: 'call-second', toolName: 'tool2', content: secondLargest, isError: false },
+    ];
+    const mgr = new ContextManager(mockProvider, 'test-model', {
+      contextWindow: 128000,
+      offloadThresholdBytes: 100000,
+      turnOffloadThresholdBytes: 1800,
+      cacheDir,
+      timeoutMs: 30000,
+      _writeFile: writeFile,
+    });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await mgr.offloadToolResults(messages);
+
+    expect(writeFile).toHaveBeenCalledTimes(2);
+    expect(messages[1]!.content).toBe(largest);
+    expect(messages[2]!.content).toMatch(/^\[内容已卸载至文件:/);
+    const finalToolBytes = Buffer.byteLength(messages[1]!.content, 'utf8') + Buffer.byteLength(messages[2]!.content, 'utf8');
+    expect(finalToolBytes).toBeLessThanOrEqual(1800);
+  });
+
+  it('轮级卸载把预览字节计入总量，首条卸载后仍超限时继续卸载', async () => {
+    const largest = 'a'.repeat(1000);
+    const secondLargest = 'b'.repeat(800);
+    const turnThreshold = 950;
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'q' },
+      { role: 'tool', toolCallId: 'call-preview-largest', toolName: 'tool1', content: largest, isError: false },
+      { role: 'tool', toolCallId: 'call-preview-second', toolName: 'tool2', content: secondLargest, isError: false },
+    ];
+    const mgr = new ContextManager(mockProvider, 'test-model', {
+      contextWindow: 128000,
+      offloadThresholdBytes: 100000,
+      turnOffloadThresholdBytes: turnThreshold,
+      cacheDir,
+      timeoutMs: 30000,
+    });
+
+    await mgr.offloadToolResults(messages);
+
+    expect(messages[1]!.content).toMatch(/^\[内容已卸载至文件:/);
+    expect(Buffer.byteLength(messages[1]!.content, 'utf8') + Buffer.byteLength(secondLargest, 'utf8')).toBeGreaterThan(
+      turnThreshold,
+    );
+    expect(messages[2]!.content).toMatch(/^\[内容已卸载至文件:/);
+    const finalToolBytes = Buffer.byteLength(messages[1]!.content, 'utf8') + Buffer.byteLength(messages[2]!.content, 'utf8');
+    expect(finalToolBytes).toBeLessThanOrEqual(turnThreshold);
+  });
+
   it('N5：cacheDir 不存在时，offloadToolResults 调用后目录被自动创建', async () => {
     const bigContent = 'x'.repeat(9000);
     const messages: ChatMessage[] = [
