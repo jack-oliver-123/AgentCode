@@ -3,6 +3,79 @@ import { join } from 'node:path';
 import { Buffer } from 'node:buffer';
 
 import type { ChatModelProvider, ChatMessage, ProviderToolResultMessage } from '../providers/types.js';
+import {
+  NORMAL_MARGIN,
+  countSummaryTurns,
+  createSummaryMessages,
+  dropOldestTurns,
+  finalizeSummary,
+  selectCompactionLevel,
+  splitCompleteTurns,
+  type CompactionLevel,
+  type CompactionRequest,
+  type CompactionResult,
+  type CompleteTurn,
+  type SkillContextSource,
+} from './compaction.js';
+
+const DEFAULT_FORCE_MARGIN = 5_000;
+const DEFAULT_EMERGENCY_MARGIN = 2_000;
+
+const EMPTY_SKILL_CONTEXT_SOURCE: SkillContextSource = {
+  async getUsedSkillDefinitions() {
+    return [];
+  },
+};
+
+const SUMMARY_SYSTEM_PROMPT = [
+  '你是精确的会话历史摘要器。禁止调用任何工具，也不得捏造历史中未出现的事实。',
+  '必须在同一次响应中依次完成两个阶段：先在 <analysis> 标签中整理草稿，再在 <summary> 标签中输出正式摘要。',
+  '草稿需要梳理时间顺序、冲突、错误和修复、当前工作、待办与下一步。',
+  '正式摘要必须严格使用指令给出的九个二级标题，标题、顺序和数量都不能改变。',
+  '第 6 节只能放指令给出的唯一占位符，不要自行复制、改写或概括用户消息。',
+  '只输出一个 <summary> 块；第 8 节必须最详细。',
+].join('\n');
+
+const SUMMARY_INSTRUCTION = [
+  '请根据以上会话历史，在同一次响应中严格输出以下两阶段结构：',
+  '<analysis>',
+  '整理草稿：按时间顺序核对请求、技术点、文件与代码、错误和修复、当前工作、待办及下一步。',
+  '</analysis>',
+  '<summary>',
+  '## 1. 主要请求和意图',
+  '用户到底想做什么',
+  '',
+  '## 2. 关键技术概念',
+  '讨论过的重要技术点',
+  '',
+  '## 3. 文件和代码段',
+  '涉及哪些文件；只保留历史中确实出现过的关键代码片段',
+  '',
+  '## 4. 错误和修复',
+  '遇到了什么错误，如何解决',
+  '',
+  '## 5. 问题解决过程',
+  '解决问题的思路和方法',
+  '',
+  '## 6. 所有用户消息',
+  '{{ALL_USER_MESSAGES_VERBATIM}}',
+  '',
+  '## 7. 待办任务',
+  '尚未完成的事项',
+  '',
+  '## 8. 当前工作',
+  '最近正在做什么；第 8 节必须最详细',
+  '',
+  '## 9. 可能的下一步',
+  '接下来计划做什么',
+  '</summary>',
+].join('\n');
+
+type SummaryAttemptResult = { kind: 'success'; summary: string } | { kind: 'prompt_too_long' } | { kind: 'failure' };
+
+type SummaryFallbackResult =
+  | { kind: 'success'; summary: string; attempts: number }
+  | { kind: 'failure'; attempts: number };
 
 export interface ContextManagerOptions {
   /** 模型上下文窗口大小（tokens） */
@@ -15,6 +88,12 @@ export interface ContextManagerOptions {
   cacheDir: string;
   /** LLM 摘要调用超时（ms） */
   timeoutMs: number;
+  /** 强制压缩距上下文窗口的 token 余量，默认 5000 */
+  forceMargin?: number;
+  /** 紧急压缩距上下文窗口的 token 余量，默认 2000 */
+  emergencyMargin?: number;
+  /** 已使用 Skill 定义的可注入来源；T3 接入恢复消息 */
+  skillContextSource?: SkillContextSource;
   /**
    * 可注入的文件写入函数，用于测试。
    * 默认使用 node:fs/promises writeFile。
@@ -26,23 +105,31 @@ export class ContextManager {
   private readonly provider: ChatModelProvider;
   private readonly model: string;
   private readonly options: ContextManagerOptions;
+  private readonly forceMargin: number;
+  private readonly emergencyMargin: number;
+  private readonly skillContextSource: SkillContextSource;
 
   /** F1：上次已知的累计 prompt token 数 */
   private _lastKnownTotalPromptTokens = 0;
   /** F1：自上次 token 汇报后追加的字符数 */
   private _pendingChars = 0;
 
-  /** F5：连续摘要失败次数 */
+  /** F9：连续自动摘要失败次数 */
   private _consecutiveSummaryFailures = 0;
+  /** 上一次成功压缩生成的合成前缀长度。 */
+  private _compactedPrefixLength = 0;
 
-  constructor(
-    provider: ChatModelProvider,
-    model: string,
-    options: ContextManagerOptions,
-  ) {
+  constructor(provider: ChatModelProvider, model: string, options: ContextManagerOptions) {
     this.provider = provider;
     this.model = model;
     this.options = options;
+    this.forceMargin = options.forceMargin ?? DEFAULT_FORCE_MARGIN;
+    this.emergencyMargin = options.emergencyMargin ?? DEFAULT_EMERGENCY_MARGIN;
+    this.skillContextSource = options.skillContextSource ?? EMPTY_SKILL_CONTEXT_SOURCE;
+
+    if (!(NORMAL_MARGIN > this.forceMargin && this.forceMargin > this.emergencyMargin && this.emergencyMargin >= 0)) {
+      throw new RangeError('压缩水位必须满足 13000 > forceMargin > emergencyMargin >= 0');
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -128,7 +215,7 @@ export class ContextManager {
         .slice(start, end + 1)
         .filter((m): m is ProviderToolResultMessage => m.role === 'tool')
         // 只统计尚未被卸载的（已卸载的 content 已变短）
-        .map(m => ({ msg: m, bytes: Buffer.byteLength(m.content, 'utf8') }));
+        .map((m) => ({ msg: m, bytes: Buffer.byteLength(m.content, 'utf8') }));
 
       let totalBytes = toolMsgs.reduce((s, x) => s + x.bytes, 0);
 
@@ -151,10 +238,7 @@ export class ContextManager {
    * 将单条 ProviderToolResultMessage 的 content 写入文件并替换为预览格式。
    * 写入失败时 console.warn 跳过，不抛异常。
    */
-  private async _offloadSingle(
-    msg: ProviderToolResultMessage,
-    cacheDir: string,
-  ): Promise<void> {
+  private async _offloadSingle(msg: ProviderToolResultMessage, cacheDir: string): Promise<void> {
     const slug = msg.toolCallId.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 64);
     const fileName = `${slug}.txt`;
     const absolutePath = join(cacheDir, fileName);
@@ -173,183 +257,145 @@ export class ContextManager {
   }
 
   // ─────────────────────────────────────────────
-  // F3/F4/F5：LLM 摘要压缩（T4 实现）
+  // F3-F6/F9：统一 compact、摘要降级与熔断
   // ─────────────────────────────────────────────
 
-  /**
-   * 执行 LLM 摘要压缩。
-   * - manual=false（默认）：自动路径，safetyMargin=13000；熔断时跳过返回 true
-   * - manual=true：手动路径，safetyMargin=3000（由 Controller 层预先做水位检查）
-   * 返回 true 表示压缩成功或跳过（非失败），false 表示摘要失败。
-   */
-  async compress(
-    messages: ChatMessage[],
-    protectedIndices: Set<number>,
-    manual = false,
-  ): Promise<boolean> {
-    const safetyMargin = manual ? 3000 : 13000;
-    const threshold = this.options.contextWindow - safetyMargin;
+  async compact(messages: ChatMessage[], request: CompactionRequest): Promise<CompactionResult> {
+    const selectedLevel = selectCompactionLevel({
+      estimated: this.estimated,
+      contextWindow: this.options.contextWindow,
+      forceMargin: this.forceMargin,
+      emergencyMargin: this.emergencyMargin,
+    });
 
-    // 自动路径水位检查
-    if (!manual && this.estimated <= threshold) {
-      return true; // 未到阈值，跳过（非失败）
+    if (request.trigger === 'auto' && selectedLevel === undefined) {
+      return { outcome: 'skipped', reason: 'below_threshold', attempts: 0 };
     }
 
-    // F5：熔断检查（仅阻止自动触发）
-    if (!manual && this.circuitOpen) {
-      return true;
+    const level: CompactionLevel = selectedLevel ?? 'normal';
+    if (request.trigger === 'auto' && level === 'normal' && this.circuitOpen) {
+      return { outcome: 'skipped', reason: 'circuit_open', level, attempts: 0 };
     }
 
-    // 计算保留窗口（N 值）
-    let N = this._calcRetainFrom(messages);
-
-    // 受保护消息截断：若 protectedIndices 含小于 N 的下标，将 N 截断到最小受保护下标
-    for (const idx of protectedIndices) {
-      if (idx < N) {
-        N = idx;
-      }
-    }
-
-    // 待摘要区 < 2 条，跳过（非失败）
-    if (N < 2) {
-      return true;
-    }
-
-    // 发起 LLM 摘要调用
-    const summaryArea = messages.slice(0, N);
-    let summaryText: string | null = null;
+    let turns: CompleteTurn[];
     try {
-      summaryText = await this._callSummaryLLM(summaryArea);
+      turns = splitCompleteTurns(messages, this._compactedPrefixLength);
     } catch {
-      // 异常视为失败
+      return { outcome: 'failed', level, attempts: 0 };
     }
 
-    if (!summaryText) {
-      if (!manual) this._consecutiveSummaryFailures++;
-      return false;
+    const summaryTurnCount = countSummaryTurns(turns);
+    if (summaryTurnCount === 0) {
+      return { outcome: 'skipped', reason: 'no_history', attempts: 0 };
     }
 
-    // 应用摘要：替换 messages 头部
-    const userSummaryMsg: ChatMessage = {
-      role: 'user',
-      content: `[会话历史摘要]\n${summaryText}`,
-    };
-    const boundaryMsg: ChatMessage = {
-      role: 'assistant',
-      content:
-        '[上下文已压缩] 较早的会话历史已被摘要替代。\n' +
-        '如需文件具体内容或代码细节，请使用 read_file / search_code 重新读取，\n' +
-        '不要根据摘要推断代码内容。',
-    };
+    const summaryTurns = turns.slice(0, summaryTurnCount);
+    const retainedTurns = turns.slice(summaryTurnCount);
+    const summaryResult = await this.callSummaryWithFallback(summaryTurns, request.originalUserMessages);
 
-    messages.splice(0, N, userSummaryMsg, boundaryMsg);
-
-    // 重置估算（全量重扫）
-    this._lastKnownTotalPromptTokens = 0;
-    this._pendingChars = messages.reduce((s, m) => s + (m.content?.length ?? 0), 0) * 4;
-    // pendingChars 存字符数，estimated = ceil(pendingChars/4) = totalChars
-    // 实际：pendingChars = totalChars，estimated = ceil(totalChars/4)
-    const totalChars = messages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
-    this._lastKnownTotalPromptTokens = 0;
-    this._pendingChars = totalChars * 4; // estimated = ceil(totalChars*4/4) = totalChars
-
-    // 等等，spec 说"pendingChars = 全部消息 content 字段字符数之和"
-    // estimated = lastKnown + ceil(pendingChars/4) = 0 + ceil(totalChars/4)
-    // 所以 pendingChars 应该 = totalChars（字符数），而不是 *4
-    this._pendingChars = totalChars;
-
-    // 下标重映射
-    const newIndices = new Set<number>();
-    for (const i of protectedIndices) {
-      if (i >= N) {
-        newIndices.add(i - N + 2);
+    if (summaryResult.kind === 'failure') {
+      if (request.trigger === 'auto') {
+        this._consecutiveSummaryFailures++;
       }
-      // i < N 的被移除（随摘要区删除）
+      return { outcome: 'failed', level, attempts: summaryResult.attempts };
     }
-    protectedIndices.clear();
-    for (const i of newIndices) protectedIndices.add(i);
 
-    // 成功：重置熔断计数
+    const compactedPrefix = createSummaryMessages(summaryResult.summary);
+    const retainedMessages = retainedTurns.flatMap((turn) => turn.messages);
+    const replacement = [...compactedPrefix, ...retainedMessages];
+
+    messages.splice(0, messages.length, ...replacement);
+    this._compactedPrefixLength = compactedPrefix.length;
+    this.resetEstimate(messages);
     this._consecutiveSummaryFailures = 0;
-    return true;
+
+    return { outcome: 'compacted', level, attempts: summaryResult.attempts };
   }
 
-  /**
-   * 从尾部往前计算保留窗口，返回 retainFrom 下标（N）。
-   * 待摘要区 = messages[0..N-1]，保留区 = messages[N..]
-   */
-  private _calcRetainFrom(messages: ChatMessage[]): number {
-    let accChars = 0;
-    let turnCount = 0;
-    let retainFrom = messages.length; // 默认全部保留
+  private async callSummaryWithFallback(
+    turns: readonly CompleteTurn[],
+    originalUserMessages: readonly string[],
+  ): Promise<SummaryFallbackResult> {
+    let currentTurns = [...turns];
+    let attempts = 0;
+    const dropRatios = [undefined, 0.1, 0.1, 0.1, 0.2] as const;
 
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i]!;
-      accChars += msg.content?.length ?? 0;
-      if (msg.role === 'user') {
-        turnCount++;
+    for (const dropRatio of dropRatios) {
+      if (dropRatio !== undefined) {
+        currentTurns = dropOldestTurns(currentTurns, dropRatio);
       }
-      const accTokens = Math.ceil(accChars / 4);
-      if (accTokens >= 10000 || turnCount >= 5) {
-        retainFrom = i;
+      if (currentTurns.length === 0) {
+        break;
+      }
+
+      attempts++;
+      const attempt = await this.requestSummaryOnce(
+        currentTurns.flatMap((turn) => turn.messages),
+        originalUserMessages,
+      );
+      if (attempt.kind === 'success') {
+        return { kind: 'success', summary: attempt.summary, attempts };
+      }
+      if (attempt.kind === 'failure') {
         break;
       }
     }
 
-    return retainFrom;
+    return { kind: 'failure', attempts };
   }
 
-  /**
-   * 向 LLM 发起摘要请求，返回提取的摘要文本，失败返回 null。
-   */
-  private async _callSummaryLLM(summaryArea: ChatMessage[]): Promise<string | null> {
-    const SUMMARY_SYSTEM_PROMPT =
-      '你是精确的会话历史摘要器。严格遵守以下规则：\n' +
-      '1. 禁止调用任何工具。\n' +
-      '2. 先在 <analysis> 标签内写出思考草稿（只用于推理，不出现在最终摘要中）。\n' +
-      '3. 在 <summary> 标签内按四个固定章节输出正式摘要。\n' +
-      '4. 不捏造未明确出现在历史中的文件内容或代码。';
-
-    const SUMMARY_INSTRUCTION =
-      '以上是对话历史片段，请按如下格式生成摘要：\n' +
-      '<summary>\n' +
-      '## 目标与背景\n' +
-      '## 已完成操作\n' +
-      '## 关键发现（含重要文件路径、结论）\n' +
-      '## 未完成/待续\n' +
-      '</summary>';
-
+  private async requestSummaryOnce(
+    messages: readonly ChatMessage[],
+    originalUserMessages: readonly string[],
+  ): Promise<SummaryAttemptResult> {
     const request = {
       model: this.model,
       system: SUMMARY_SYSTEM_PROMPT,
-      tools: [] as any[],
+      tools: [],
       toolChoice: 'none' as const,
       thinking: { enabled: false },
-      messages: [
-        ...summaryArea,
-        { role: 'user' as const, content: SUMMARY_INSTRUCTION },
-      ],
-      ...(this.options.timeoutMs > 0
-        ? { signal: AbortSignal.timeout(this.options.timeoutMs) }
-        : {}),
+      messages: [...messages, { role: 'user' as const, content: SUMMARY_INSTRUCTION }],
+      ...(this.options.timeoutMs > 0 ? { signal: AbortSignal.timeout(this.options.timeoutMs) } : {}),
     };
 
     let fullText = '';
+    let completed = false;
     try {
-      for await (const event of this.provider.stream(request as any)) {
+      for await (const event of this.provider.stream(request)) {
         if (event.type === 'content.delta') {
           fullText += event.delta;
         } else if (event.type === 'response.error') {
-          return null;
+          return this.classifySummaryError(event.error.message);
         } else if (event.type === 'response.complete') {
+          completed = true;
           break;
         }
       }
-    } catch {
-      return null;
+    } catch (error) {
+      return error instanceof Error ? this.classifySummaryError(error.message) : { kind: 'failure' };
     }
 
-    const match = fullText.match(/<summary>([\s\S]*?)<\/summary>/);
-    return match ? match[1]!.trim() : null;
+    if (!completed) {
+      return { kind: 'failure' };
+    }
+
+    const summary = finalizeSummary(fullText, originalUserMessages);
+    return summary === undefined ? { kind: 'failure' } : { kind: 'success', summary };
+  }
+
+  private classifySummaryError(message: string): SummaryAttemptResult {
+    const isPromptTooLong =
+      /\bcontext\s+(?:window|length)\b/i.test(message) ||
+      /\bmaximum\b[^\r\n]{0,80}\btokens?\b/i.test(message) ||
+      /\btoken\s+limit\b/i.test(message) ||
+      /\bprompt\s+too\s+long\b/i.test(message) ||
+      /\binput\s+too\s+long\b/i.test(message);
+
+    return isPromptTooLong ? { kind: 'prompt_too_long' } : { kind: 'failure' };
+  }
+
+  private resetEstimate(messages: readonly ChatMessage[]): void {
+    this._lastKnownTotalPromptTokens = 0;
+    this._pendingChars = messages.reduce((sum, message) => sum + message.content.length, 0);
   }
 }

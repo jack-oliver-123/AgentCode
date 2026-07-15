@@ -1,11 +1,12 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ContextManager } from '../../../src/context/ContextManager.js';
-import type { ChatModelProvider, ChatMessage } from '../../../src/providers/types.js';
+import { USER_MESSAGES_PLACEHOLDER } from '../../../src/context/compaction.js';
+import type { ChatModelProvider, ChatMessage, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
 
 // 最小 mock provider，T2 阶段不使用 stream
 const mockProvider = {} as ChatModelProvider;
@@ -79,7 +80,7 @@ describe('ContextManager - F2 offloadToolResults', () => {
     // content 应包含预览段落标记
     expect(messages[1]!.content).toContain('--- 内容预览（前 200 字符）---');
     // 缓存文件存在且内容完整
-    const files = await import('node:fs/promises').then(fs => fs.readdir(cacheDir));
+    const files = await import('node:fs/promises').then((fs) => fs.readdir(cacheDir));
     expect(files.length).toBe(1);
     const fileContent = await readFile(join(cacheDir, files[0]!), 'utf8');
     expect(fileContent).toBe(bigContent);
@@ -96,11 +97,15 @@ describe('ContextManager - F2 offloadToolResults', () => {
 
     expect(messages[1]!.content).toBe(smallContent);
     // cacheDir 不存在或为空
-    const exists = await import('node:fs/promises')
-      .then(fs => fs.access(cacheDir).then(() => true).catch(() => false));
+    const exists = await import('node:fs/promises').then((fs) =>
+      fs
+        .access(cacheDir)
+        .then(() => true)
+        .catch(() => false),
+    );
     // 要么目录不存在，要么为空
     if (exists) {
-      const files = await import('node:fs/promises').then(fs => fs.readdir(cacheDir));
+      const files = await import('node:fs/promises').then((fs) => fs.readdir(cacheDir));
       expect(files.length).toBe(0);
     }
   });
@@ -141,10 +146,10 @@ describe('ContextManager - F2 offloadToolResults', () => {
     const mgr = makeManager(cacheDir);
     await mgr.offloadToolResults(messages);
 
-    const files = await import('node:fs/promises').then(fs => fs.readdir(cacheDir));
+    const files = await import('node:fs/promises').then((fs) => fs.readdir(cacheDir));
     expect(files.length).toBe(2);
-    expect(files.some(f => f.includes('call-turn1'))).toBe(true);
-    expect(files.some(f => f.includes('call-turn2'))).toBe(true);
+    expect(files.some((f) => f.includes('call-turn1'))).toBe(true);
+    expect(files.some((f) => f.includes('call-turn2'))).toBe(true);
   });
 
   it('写文件失败时 content 保持原值，不抛出异常，其他消息继续处理', async () => {
@@ -160,7 +165,9 @@ describe('ContextManager - F2 offloadToolResults', () => {
       turnOffloadThresholdBytes: 32768,
       cacheDir,
       timeoutMs: 30000,
-      _writeFile: async () => { throw new Error('ENOSPC'); },
+      _writeFile: async () => {
+        throw new Error('ENOSPC');
+      },
     });
 
     await expect(mgr.offloadToolResults(messages)).resolves.toBeUndefined();
@@ -178,282 +185,455 @@ describe('ContextManager - F2 offloadToolResults', () => {
 
     // 确认目录尚不存在
     const fs = await import('node:fs/promises');
-    const existsBefore = await fs.access(cacheDir).then(() => true).catch(() => false);
+    const existsBefore = await fs
+      .access(cacheDir)
+      .then(() => true)
+      .catch(() => false);
     expect(existsBefore).toBe(false);
 
     await mgr.offloadToolResults(messages);
 
     // 卸载后目录应已被自动创建
-    const existsAfter = await fs.access(cacheDir).then(() => true).catch(() => false);
+    const existsAfter = await fs
+      .access(cacheDir)
+      .then(() => true)
+      .catch(() => false);
     expect(existsAfter).toBe(true);
   });
 });
 
 // ─────────────────────────────────────────────
-// F3/F4/F5：LLM 摘要 + 边界消息 + 熔断
+// F3-F6/F9：统一 compact、九段摘要、降级重试与熔断
 // ─────────────────────────────────────────────
 
-type ProviderEvent = import('../../../src/providers/types.js').ProviderEvent;
+const VALID_SUMMARY_RESPONSE = [
+  '<analysis>',
+  '按时间顺序整理错误、当前工作和下一步。',
+  '</analysis>',
+  '<summary>',
+  '## 1. 主要请求和意图',
+  '请求',
+  '',
+  '## 2. 关键技术概念',
+  '概念',
+  '',
+  '## 3. 文件和代码段',
+  '文件',
+  '',
+  '## 4. 错误和修复',
+  '错误',
+  '',
+  '## 5. 问题解决过程',
+  '过程',
+  '',
+  '## 6. 所有用户消息',
+  USER_MESSAGES_PLACEHOLDER,
+  '',
+  '## 7. 待办任务',
+  '待办',
+  '',
+  '## 8. 当前工作',
+  '这是最详细的当前工作。',
+  '',
+  '## 9. 可能的下一步',
+  '下一步',
+  '</summary>',
+].join('\n');
 
-function makeStreamProvider(events: ProviderEvent[]): ChatModelProvider {
+function streamEvents(events: readonly ProviderEvent[]): AsyncIterable<ProviderEvent> {
+  return (async function* () {
+    for (const event of events) {
+      yield event;
+    }
+  })();
+}
+
+function validSummaryStream(): AsyncIterable<ProviderEvent> {
+  return streamEvents([{ type: 'content.delta', delta: VALID_SUMMARY_RESPONSE }, { type: 'response.complete' }]);
+}
+
+function makeStreamProvider(stream: ChatModelProvider['stream']): ChatModelProvider {
   return {
-    protocol: 'openai' as any,
+    protocol: 'openai',
     supportsExtendedThinking: false,
-    stream: (_req: any) =>
-      (async function* () {
-        for (const e of events) yield e;
-      })(),
+    stream,
   };
 }
 
-/** 构造 n 对 user+assistant 消息 */
+/** 构造 n 个完整 user turn。 */
 function makeMessages(n: number): ChatMessage[] {
-  const msgs: ChatMessage[] = [];
-  for (let i = 0; i < n; i++) {
-    msgs.push({ role: 'user', content: `user message ${i} `.repeat(20) });
-    msgs.push({ role: 'assistant', content: `assistant reply ${i} `.repeat(20) });
+  const messages: ChatMessage[] = [];
+  for (let index = 0; index < n; index++) {
+    messages.push({ role: 'user', content: `turn user ${index}` });
+    messages.push({ role: 'assistant', content: `turn assistant ${index}` });
   }
-  return msgs;
+  return messages;
 }
 
-describe('ContextManager - F3/F4/F5 compress', () => {
-  const CONTEXT_WINDOW = 20000;
+describe('ContextManager - F3-F6/F9 compact', () => {
+  const CONTEXT_WINDOW = 20_000;
   let cacheDir: string;
 
   beforeEach(() => {
-    cacheDir = join(tmpdir(), `ctx-compress-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    cacheDir = join(tmpdir(), `ctx-compact-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('estimated=6500（≤ 7000）时不触发摘要，返回 true', async () => {
-    const streamSpy = vi.fn();
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: streamSpy as any,
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
+  function makeCompactManager(
+    provider: ChatModelProvider,
+    options: { timeoutMs?: number; forceMargin?: number; emergencyMargin?: number } = {},
+  ): ContextManager {
+    return new ContextManager(provider, 'test-model', {
       contextWindow: CONTEXT_WINDOW,
       offloadThresholdBytes: 8192,
       turnOffloadThresholdBytes: 32768,
       cacheDir,
-      timeoutMs: 5000,
+      timeoutMs: options.timeoutMs ?? 5000,
+      ...(options.forceMargin === undefined ? {} : { forceMargin: options.forceMargin }),
+      ...(options.emergencyMargin === undefined ? {} : { emergencyMargin: options.emergencyMargin }),
     });
-    mgr.onTokenUsage(6500);
-    const result = await mgr.compress(makeMessages(3), new Set());
-    expect(result).toBe(true);
-    expect(streamSpy).not.toHaveBeenCalled();
+  }
+
+  it.each([
+    [13_000, 2_000],
+    [14_000, 2_000],
+    [5_000, 5_000],
+    [5_000, -1],
+    [Number.NaN, 0],
+  ])('拒绝非法水位 forceMargin=%s emergencyMargin=%s', (forceMargin, emergencyMargin) => {
+    expect(() =>
+      makeCompactManager(mockProvider, {
+        forceMargin,
+        emergencyMargin,
+      }),
+    ).toThrow(RangeError);
   });
 
-  it('estimated=7100（> 7000）触发摘要；消息头部替换、尾部保留、AC3/AC4/估算重置', async () => {
-    let capturedRequest: any = null;
-    const summaryText = '这是测试摘要内容';
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: (req: any) => {
-        capturedRequest = req;
-        return (async function* () {
-          yield { type: 'content.delta', delta: `<summary>${summaryText}</summary>` } as ProviderEvent;
-          yield { type: 'response.complete' } as ProviderEvent;
-        })();
-      },
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
-    });
-    mgr.onTokenUsage(7100);
-    const messages = makeMessages(8);
-    const tailMsg = messages[messages.length - 1]!;
-    const result = await mgr.compress(messages, new Set());
+  it('auto 位于 normal 严格边界时返回 below_threshold 且不调用 Provider', async () => {
+    const stream = vi.fn<ChatModelProvider['stream']>();
+    const manager = makeCompactManager(makeStreamProvider(stream));
+    manager.onTokenUsage(7_000);
 
-    expect(result).toBe(true);
-    // AC3：toolChoice==='none'，tools 为空数组
-    expect(capturedRequest.toolChoice).toBe('none');
-    expect(capturedRequest.tools).toHaveLength(0);
-    // AC4：messages[1] 是 assistant 边界消息，含 "[上下文已压缩]"
-    expect(messages[1]!.role).toBe('assistant');
+    await expect(
+      manager.compact(makeMessages(8), { trigger: 'auto', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'skipped', reason: 'below_threshold', attempts: 0 });
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('manual 在低水位仍按 normal 成功压缩，并使用九节两阶段单次请求', async () => {
+    let capturedRequest: ProviderRequest | undefined;
+    const provider = makeStreamProvider((request) => {
+      capturedRequest = request;
+      return validSummaryStream();
+    });
+    const manager = makeCompactManager(provider);
+    const messages = makeMessages(8);
+    const originalTail = messages.slice(6);
+    const originalUserMessages = ['  原始需求  ', '第二条'];
+
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages })).resolves.toEqual({
+      outcome: 'compacted',
+      level: 'normal',
+      attempts: 1,
+    });
+
+    expect(capturedRequest).toMatchObject({
+      model: 'test-model',
+      tools: [],
+      toolChoice: 'none',
+      thinking: { enabled: false },
+    });
+    const prompt = [
+      capturedRequest?.system ?? '',
+      ...(capturedRequest?.messages.map((message) => message.content) ?? []),
+    ].join('\n');
+    expect(prompt).toContain('<analysis>');
+    expect(prompt).toContain('<summary>');
+    expect(prompt.match(/## [1-9]\. /g)).toHaveLength(9);
+    expect(prompt.match(/\{\{ALL_USER_MESSAGES_VERBATIM\}\}/g)).toHaveLength(1);
+    expect(prompt).toContain('第 8 节必须最详细');
+    expect(messages[0]).toMatchObject({ role: 'user' });
+    expect(messages[0]!.content).toContain('<user_message index="1" length="8">\n  原始需求  \n</user_message>');
+    expect(messages[0]!.content).not.toContain('<analysis>');
+    expect(messages[1]).toMatchObject({ role: 'assistant' });
     expect(messages[1]!.content).toContain('[上下文已压缩]');
-    // 尾部保留区：原最后一条消息仍在
-    expect(messages[messages.length - 1]).toStrictEqual(tailMsg);
-    // 估算重置：lastKnownTotalPromptTokens=0，estimated = ceil(totalChars/4)
-    const totalChars = messages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
-    expect(mgr.estimated).toBe(Math.ceil(totalChars / 4));
+    expect(messages.slice(2)).toEqual(originalTail);
+    const totalChars = messages.reduce((sum, message) => sum + message.content.length, 0);
+    expect(manager.estimated).toBe(Math.ceil(totalChars / 4));
   });
 
-  it('stream 不含 <summary> 标签，compress 返回 false，circuitOpen 仍为 false', async () => {
-    const provider = makeStreamProvider([
-      { type: 'content.delta', delta: 'no summary tag here' },
-      { type: 'response.complete' },
-    ]);
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
+  it.each([
+    [7_001, 'normal'],
+    [15_000, 'normal'],
+    [15_001, 'force'],
+    [18_000, 'force'],
+    [18_001, 'emergency'],
+  ] as const)('estimated=%s 选择 %s 档位', async (estimated, level) => {
+    const manager = makeCompactManager(makeStreamProvider(() => validSummaryStream()));
+    manager.onTokenUsage(estimated);
+
+    const result = await manager.compact(makeMessages(8), {
+      trigger: 'auto',
+      originalUserMessages: ['原始需求'],
     });
-    mgr.onTokenUsage(7100);
-    const result = await mgr.compress(makeMessages(8), new Set());
-    expect(result).toBe(false);
-    expect(mgr.circuitOpen).toBe(false);
+
+    expect(result).toEqual({ outcome: 'compacted', level, attempts: 1 });
   });
 
-  it('连续失败 3 次后 circuitOpen=true；自动调用不触发 stream，返回 true', async () => {
-    const streamSpy = vi.fn().mockImplementation(() =>
-      (async function* () {
-        yield { type: 'content.delta', delta: 'no summary' } as ProviderEvent;
-        yield { type: 'response.complete' } as ProviderEvent;
-      })()
+  it('完整请求后连续裁剪当前 turns 的 10%、10%、10%、20%，并为每次请求创建独立 signal', async () => {
+    const requests: ProviderRequest[] = [];
+    const provider = makeStreamProvider((request) => {
+      requests.push(request);
+      const call = requests.length;
+      if (call === 2) {
+        return (async function* () {
+          throw new Error('input too long');
+        })();
+      }
+      if (call < 5) {
+        const messages = [
+          'context length exceeded',
+          '',
+          'maximum allowed prompt tokens exceeded',
+          'token limit exceeded',
+        ];
+        return streamEvents([
+          {
+            type: 'response.error',
+            error: { code: 'provider_error', message: messages[call - 1]!, retryable: false },
+          },
+        ]);
+      }
+      return validSummaryStream();
+    });
+    const manager = makeCompactManager(provider);
+
+    const result = await manager.compact(makeMessages(25), {
+      trigger: 'manual',
+      originalUserMessages: ['所有原始用户消息'],
+    });
+
+    expect(result).toEqual({ outcome: 'compacted', level: 'normal', attempts: 5 });
+    expect(requests).toHaveLength(5);
+    expect(
+      requests.map((request) => request.messages.filter((message) => message.content.startsWith('turn user ')).length),
+    ).toEqual([20, 18, 16, 14, 11]);
+    const signals = requests.map((request) => request.signal);
+    expect(signals.every((signal) => signal !== undefined)).toBe(true);
+    expect(new Set(signals).size).toBe(5);
+  });
+
+  it('认证 token 错误不是长度错误，只调用一次且不改写上下文', async () => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        {
+          type: 'response.error',
+          error: {
+            code: 'auth_error',
+            message: 'authentication token invalid',
+            retryable: false,
+          },
+        },
+      ]),
     );
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: streamSpy as any,
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
-    });
-    mgr.onTokenUsage(7100);
+    const manager = makeCompactManager(makeStreamProvider(stream));
     const messages = makeMessages(8);
-    await mgr.compress(messages, new Set());
-    await mgr.compress(messages, new Set());
-    await mgr.compress(messages, new Set());
-    expect(mgr.circuitOpen).toBe(true);
+    const snapshot = structuredClone(messages);
 
-    streamSpy.mockClear();
-    const result = await mgr.compress(messages, new Set());
-    expect(result).toBe(true);
-    expect(streamSpy).not.toHaveBeenCalled();
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'failed', level: 'normal', attempts: 1 },
+    );
+    expect(stream).toHaveBeenCalledTimes(1);
+    expect(messages).toEqual(snapshot);
   });
 
-  it('manual=true 失败不增加 consecutiveSummaryFailures，circuitOpen 保持 false', async () => {
-    const provider = makeStreamProvider([
-      { type: 'content.delta', delta: 'no summary' },
-      { type: 'response.complete' },
-    ]);
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
+  it.each([
+    ['stream 未 complete', [{ type: 'content.delta', delta: VALID_SUMMARY_RESPONSE }]],
+    [
+      '九节 summary 非法',
+      [
+        { type: 'content.delta', delta: '<analysis>草稿</analysis><summary>非法</summary>' },
+        { type: 'response.complete' },
+      ],
+    ],
+  ] satisfies ReadonlyArray<readonly [string, readonly ProviderEvent[]]>)(
+    '%s 是普通 failure 且保持原子性',
+    async (_name, events) => {
+      const manager = makeCompactManager(makeStreamProvider(() => streamEvents(events)));
+      manager.onTokenUsage(7_001);
+      const messages = makeMessages(8);
+      const snapshot = structuredClone(messages);
+      const estimate = manager.estimated;
+
+      await expect(
+        manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+      ).resolves.toEqual({ outcome: 'failed', level: 'normal', attempts: 1 });
+      expect(messages).toEqual(snapshot);
+      expect(manager.estimated).toBe(estimate);
+    },
+  );
+
+  it('timeoutMs <= 0 时省略 signal', async () => {
+    let capturedRequest: ProviderRequest | undefined;
+    const manager = makeCompactManager(
+      makeStreamProvider((request) => {
+        capturedRequest = request;
+        return validSummaryStream();
+      }),
+      { timeoutMs: 0 },
+    );
+
+    await manager.compact(makeMessages(8), {
+      trigger: 'manual',
+      originalUserMessages: ['原始需求'],
     });
-    mgr.onTokenUsage(7100);
+
+    expect(capturedRequest).not.toHaveProperty('signal');
+  });
+
+  it('裁剪后没有 turn 时停止，不发送只有摘要指令的请求', async () => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        {
+          type: 'response.error',
+          error: { code: 'provider_error', message: 'prompt too long', retryable: false },
+        },
+      ]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream));
+
+    await expect(
+      manager.compact(makeMessages(6), { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'failed', level: 'normal', attempts: 1 });
+    expect(stream).toHaveBeenCalledTimes(1);
+  });
+
+  it('没有较早完整 turn 时返回 no_history 且不调用 Provider', async () => {
+    const stream = vi.fn<ChatModelProvider['stream']>();
+    const manager = makeCompactManager(makeStreamProvider(stream));
+
+    await expect(
+      manager.compact(makeMessages(5), { trigger: 'manual', originalUserMessages: ['原始需求'] }),
+    ).resolves.toEqual({ outcome: 'skipped', reason: 'no_history', attempts: 0 });
+    expect(stream).not.toHaveBeenCalled();
+  });
+
+  it('孤立工具结果在调用 Provider 前失败并保持上下文不变', async () => {
+    const stream = vi.fn<ChatModelProvider['stream']>();
+    const manager = makeCompactManager(makeStreamProvider(stream));
     const messages = makeMessages(8);
-    for (let i = 0; i < 5; i++) {
-      await mgr.compress(messages, new Set(), true);
+    messages.splice(1, 0, {
+      role: 'tool',
+      toolCallId: 'orphan',
+      toolName: 'read_file',
+      content: 'result',
+      isError: false,
+    });
+    const snapshot = structuredClone(messages);
+
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'failed', level: 'normal', attempts: 0 },
+    );
+    expect(stream).not.toHaveBeenCalled();
+    expect(messages).toEqual(snapshot);
+  });
+
+  it('一整组五次重试最终失败只增加一次自动失败计数', async () => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([
+        {
+          type: 'response.error',
+          error: { code: 'provider_error', message: 'context window exceeded', retryable: false },
+        },
+      ]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream));
+    manager.onTokenUsage(7_001);
+    const messages = makeMessages(25);
+
+    for (let compactCall = 0; compactCall < 2; compactCall++) {
+      const result = await manager.compact(messages, {
+        trigger: 'auto',
+        originalUserMessages: ['原始需求'],
+      });
+      expect(result).toEqual({ outcome: 'failed', level: 'normal', attempts: 5 });
+      expect(manager.circuitOpen).toBe(false);
     }
-    expect(mgr.circuitOpen).toBe(false);
+    await manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+
+    expect(manager.circuitOpen).toBe(true);
+    expect(stream).toHaveBeenCalledTimes(15);
   });
 
-  it('protectedIndices 含 N-1（待摘要区边界），截断 N 使其不含受保护消息，返回 true', async () => {
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: (_req: any) =>
-        (async function* () {
-          yield { type: 'content.delta', delta: '<summary>test</summary>' } as ProviderEvent;
-          yield { type: 'response.complete' } as ProviderEvent;
-        })(),
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
+  it('auto normal 受熔断阻止，force/emergency 和 manual 绕过熔断', async () => {
+    const stream = vi.fn((_request: ProviderRequest) =>
+      streamEvents([{ type: 'content.delta', delta: '<summary>非法</summary>' }, { type: 'response.complete' }]),
+    );
+    const manager = makeCompactManager(makeStreamProvider(stream));
+    const messages = makeMessages(8);
+    manager.onTokenUsage(7_001);
+    for (let index = 0; index < 3; index++) {
+      await manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    }
+    expect(manager.circuitOpen).toBe(true);
+
+    const callsBeforeSkip = stream.mock.calls.length;
+    await expect(manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] })).resolves.toEqual({
+      outcome: 'skipped',
+      reason: 'circuit_open',
+      level: 'normal',
+      attempts: 0,
     });
-    mgr.onTokenUsage(7100);
-    // 使用 10 对消息，_calcRetainFrom 会返回 N=10（5 turn 窗口从末尾数 10 条）
-    // protectedIndices = {3} 在待摘要区（3 < 10），应截断 N 到 3
-    const messages = makeMessages(10); // 20 messages, N=10 from calcRetainFrom
-    const protectedIndices = new Set([3]);
-    const result = await mgr.compress(messages, protectedIndices, false);
-    expect(result).toBe(true);
-    // N 被截断到 3，重映射：i=3 >= 3 → 3-3+2=2，所以 protectedIndices = {2}
-    expect(protectedIndices.has(3)).toBe(false);
-    expect(protectedIndices.has(2)).toBe(true);
+    expect(stream).toHaveBeenCalledTimes(callsBeforeSkip);
+
+    manager.onTokenUsage(15_001);
+    await expect(manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] })).resolves.toEqual({
+      outcome: 'failed',
+      level: 'force',
+      attempts: 1,
+    });
+
+    manager.onTokenUsage(18_001);
+    await expect(manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] })).resolves.toEqual({
+      outcome: 'failed',
+      level: 'emergency',
+      attempts: 1,
+    });
+
+    manager.onTokenUsage(7_001);
+    await expect(manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] })).resolves.toEqual(
+      { outcome: 'failed', level: 'normal', attempts: 1 },
+    );
   });
 
-  it('摘要成功后 protectedIndices 正确重映射（i>=N → i-N+2；i<N 被移除）', async () => {
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: (_req: any) =>
-        (async function* () {
-          yield { type: 'content.delta', delta: '<summary>test</summary>' } as ProviderEvent;
-          yield { type: 'response.complete' } as ProviderEvent;
-        })(),
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
-    });
-    mgr.onTokenUsage(7100);
-    const messages = makeMessages(8); // 16 messages
-    // 在保留区（末尾附近）放一个受保护下标
-    const protectedIndices = new Set([14]);
-    await mgr.compress(messages, protectedIndices, false);
-    // 原 index 14 应已被重映射（不再是 14）
-    expect(protectedIndices.has(14)).toBe(false);
-  });
+  it('manual 最终失败不增加熔断计数，任意摘要成功会清零已有失败', async () => {
+    let returnValidSummary = false;
+    const provider = makeStreamProvider(() =>
+      returnValidSummary
+        ? validSummaryStream()
+        : streamEvents([{ type: 'content.delta', delta: '<summary>非法</summary>' }, { type: 'response.complete' }]),
+    );
+    const manager = makeCompactManager(provider);
+    const messages = makeMessages(8);
+    manager.onTokenUsage(7_001);
 
-  it('待摘要区 < 2 条，compress 返回 true 且不调用 stream', async () => {
-    const streamSpy = vi.fn();
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: streamSpy as any,
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
-    });
-    mgr.onTokenUsage(7100);
-    // 只有 1 条消息 → 待摘要区 < 2
-    const messages: ChatMessage[] = [{ role: 'user', content: 'only one' }];
-    const result = await mgr.compress(messages, new Set());
-    expect(result).toBe(true);
-    expect(streamSpy).not.toHaveBeenCalled();
-  });
+    for (let index = 0; index < 4; index++) {
+      await manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] });
+    }
+    expect(manager.circuitOpen).toBe(false);
 
-  it('N3：AbortError 超时视为失败，consecutiveSummaryFailures 递增', async () => {
-    const provider: ChatModelProvider = {
-      protocol: 'openai' as any,
-      supportsExtendedThinking: false,
-      stream: (_req: any) =>
-        (async function* () {
-          throw new DOMException('The operation was aborted', 'AbortError');
-        })(),
-    };
-    const mgr = new ContextManager(provider, 'test-model', {
-      contextWindow: CONTEXT_WINDOW,
-      offloadThresholdBytes: 8192,
-      turnOffloadThresholdBytes: 32768,
-      cacheDir,
-      timeoutMs: 5000,
-    });
-    mgr.onTokenUsage(7100);
-    const result = await mgr.compress(makeMessages(8), new Set());
-    expect(result).toBe(false);
-    expect(mgr.circuitOpen).toBe(false); // 1 次，未到 3
+    await manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    await manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+    returnValidSummary = true;
+    await manager.compact(messages, { trigger: 'manual', originalUserMessages: ['原始需求'] });
+    returnValidSummary = false;
+    messages.push(...makeMessages(2));
+    manager.onTokenUsage(7_001);
+    await manager.compact(messages, { trigger: 'auto', originalUserMessages: ['原始需求'] });
+
+    expect(manager.circuitOpen).toBe(false);
   });
 });
