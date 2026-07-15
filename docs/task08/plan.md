@@ -24,7 +24,7 @@
 - 把全部逻辑继续堆入 `ContextManager.ts`：改动最少，但九段解析、turn 边界、路径恢复和紧急渲染无法独立测试。
 - 引入完整 `ProviderContextState` 和不可变状态机：长期边界最清晰，但会扩大 Controller 中所有 `providerContext` 访问点的改动。
 
-本方案不修改 AgentLoop、OpenAI Provider、Anthropic Provider 和配置文件 schema。
+本方案不修改 AgentLoop、OpenAI/Anthropic Provider 的公开协议和配置文件 schema。T2 会修改共享 fetch transport，使 HTTP 错误在不泄露原始响应体的前提下保留安全的“输入过长”语义，供现有 Provider 错误协议和 compact 重试复用。
 
 ## 文件结构
 
@@ -33,9 +33,11 @@
 | 新建 | `src/context/compaction.ts` | 纯函数：档位选择、完整 turn、重试裁剪、九段校验、用户原文注入、恢复消息渲染 |
 | 修改 | `src/context/ContextManager.ts` | token/F2 状态、路径账本、Provider 摘要调用、重试编排、熔断、原子 compact |
 | 修改 | `src/context/index.ts` | 导出 compaction 公共类型和 Skill 来源类型 |
+| 修改 | `src/providers/shared/fetchTransport.ts` | T2：安全映射 HTTP 输入过长错误、限制错误体读取并保留取消语义，不改变 Provider 公开协议 |
 | 修改 | `src/session/ChatSessionController.ts` | `/compact`、自动触发、用户原文来源、notice 映射；删除 protected indices |
 | 新建 | `tests/unit/context/compaction.test.ts` | 纯算法单测 |
 | 修改 | `tests/unit/context/contextManager.test.ts` | Provider 调用、重试、恢复、熔断、紧急兜底单测 |
+| 修改 | `tests/unit/providers/fetchTransport.test.ts` | T2：共享 transport 输入过长、安全错误体和流取消回归测试 |
 | 修改 | `tests/unit/session/ChatSessionController.test.ts` | 命令和集成时序单测 |
 | 修改 | `docs/task08/tasks.md` | TDD 执行步骤 |
 | 修改 | `docs/task08/checklist.md` | Issue #54/#55 行为验收 |
@@ -223,6 +225,7 @@ private readonly forceMargin: number;
 private readonly emergencyMargin: number;
 private readonly skillContextSource: SkillContextSource;
 private _compactedPrefixLength = 0;
+private _reusableSummary: string | undefined;
 private _fileAccessSequence = 0;
 private readonly recentFileAccesses: FileAccessRecord[] = [];
 ```
@@ -253,11 +256,14 @@ onMessagesAppended(messages: readonly ChatMessage[]): void;
 
 ```typescript
 type SummaryAttemptResult =
-  | { kind: 'success'; summary: string }
+  | { kind: 'success'; summary: string; reusableSummary: string }
   | { kind: 'prompt_too_long' }
   | { kind: 'failure' };
 
-private async requestSummaryOnce(messages: readonly ChatMessage[]): Promise<SummaryAttemptResult>;
+private async requestSummaryOnce(
+  messages: readonly ChatMessage[],
+  originalUserMessages: readonly string[],
+): Promise<SummaryAttemptResult>;
 ```
 
 判定规则：
@@ -266,6 +272,7 @@ private async requestSummaryOnce(messages: readonly ChatMessage[]): Promise<Summ
 - 不以裸 `token` 关键词判断，避免把认证 token 错误当作超长。
 - timeout、其他 Provider 错误、stream 未 complete、缺失/非法九段 summary 返回 `failure`。
 - 每次请求创建独立 AbortSignal。
+- 成功时同时生成含本轮全部用户原文的 `summary`，以及第 6 节为空的 `reusableSummary`；后者只用于下一轮 compact 的上一代摘要输入。
 
 ### 最多五次调用
 
@@ -301,7 +308,7 @@ async compact(
 1. 计算档位；auto 低水位或 auto normal 熔断时返回 skipped。
 2. 分离旧合成前缀和完整真实 turns。
 3. 计算摘要 turns；为 0 时返回 `no_history`。
-4. 从摘要 turns 提取文件路径候选，并获取 Skill snapshots。
+4. 从会话文件访问账本选择最近路径，并获取 Skill snapshots。
 5. 发起九段摘要及超长降级重试。
 6. 成功时在临时数组构造新前缀 + 原保留 turns。
 7. emergency 最终失败时构造用户原文恢复 + 文件/Skill + 最近 5 完整 turns。

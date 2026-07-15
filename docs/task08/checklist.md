@@ -5,8 +5,8 @@
 ## 绑定文档
 
 - spec.md: 458a6e188c504c86297dcc1ec20ca332f4551663
-- plan.md: 8ccdb29e1e6615d14d46af11c16be96c218b7a09
-- tasks.md: 57a329dcac0e70c3746c57a79240d0375ea7ee7a
+- plan.md: c6f6cd5a8549ea586f107683f3ef1c941f303cc6
+- tasks.md: f9333540089cdb88be339ca72b5ea8ec569105c9
 
 ## 实现完整性
 
@@ -24,6 +24,8 @@
 - [x] onMessagesAppended 接收 Provider 消息数组，按全部 content 字符数累计 pendingChars。
 - [x] onTokenUsage 更新已知 prompt token 并清零 pendingChars。
 - [x] F2 实际缩短消息后按最终数组重建估算。
+- [x] F2 成功后即使此前存在高水位 token 基准，紧随其后的 auto compact 也按重建值正确返回 below_threshold 且不调用 Provider。
+- [x] F2 无实际改写或全部写入失败时保留已有 token 基准，不把 lastKnown 错误清零。
 - [x] compact 成功或紧急兜底后按最终数组重建估算。
 - [x] compact 失败或跳过时不错误重置估算。
 
@@ -32,6 +34,8 @@
 - [x] content 大于 8 KB 的工具结果被写入 context-cache，消息替换为固定预览。
 - [x] content 小于等于 8 KB 时不卸载。
 - [x] 同一完整 turn 的工具结果总量大于 32 KB 时优先卸载较大结果。
+- [x] turn 总量按卸载前后真实字节差更新，卸载预览字节仍计入阈值判断。
+- [x] 最大候选写入失败时总量不虚减，并继续尝试后续较小候选。
 - [x] 缓存目录不存在时递归创建。
 - [x] 写文件失败时保留原始 content，不抛出到主流程。
 - [x] 卸载前已经通过 onMessagesAppended 记录结构化文件路径。
@@ -174,12 +178,15 @@
 
 ## 验证记录（2026-07-15）
 
-- `git hash-object docs/task08/spec.md docs/task08/plan.md docs/task08/tasks.md`：通过；依次为 `458a6e188c504c86297dcc1ec20ca332f4551663`、`8ccdb29e1e6615d14d46af11c16be96c218b7a09`、`57a329dcac0e70c3746c57a79240d0375ea7ee7a`，与顶部绑定一致。
+- `git hash-object docs/task08/spec.md docs/task08/plan.md docs/task08/tasks.md`：通过；依次为 `458a6e188c504c86297dcc1ec20ca332f4551663`、`c6f6cd5a8549ea586f107683f3ef1c941f303cc6`、`f9333540089cdb88be339ca72b5ea8ec569105c9`，与顶部绑定一致。
 - `npm run lint`：通过；Biome 检查 143 个文件，0 errors/warnings。
 - `npm run typecheck`：通过；exit 0，0 TypeScript errors。
-- `npm test -- tests/unit/context/ tests/unit/session/ChatSessionController.test.ts`：通过；4 个测试文件、135 个测试全部通过。
-- `npm test`：未通过；50 个测试文件中 46 通过、4 失败，673 个测试中 656 通过、15 失败、2 跳过。失败均位于未被本功能改动的 `tests/unit/tools/`：`edit-file` 1 项、`read-file` 2 项、`write-file` 4 项和 `run-command` 8 项。
-- 失败文件隔离复跑：`edit-file` 8/8 通过；`read-file` 最终 10/11（120 ms executor 限制下实际 130 ms 超时）；`write-file` 最终 6/7，且两次失败用例不同；`run-command` 6/14，多数命令在当前 Windows bash 环境中达到 5 秒测试超时。功能分支未修改 `src/tools/` 或 `tests/unit/tools/`，这些结果归类为既有短超时/Windows bash 环境问题，而非本功能回归。
+- RED `npm test -- tests/unit/context/contextManager.test.ts`：新增终审回归测试后 78 项中 75 通过、3 失败，分别暴露成功卸载未重建估算、最大候选失败后提前停止、预览字节未计入总量。
+- GREEN `npm test -- tests/unit/context/contextManager.test.ts`：通过；1 个测试文件、78 个测试全部通过。
+- `npm test -- tests/unit/context/`：通过；3 个测试文件、106 个测试全部通过。
+- `npm test -- tests/unit/context/ tests/unit/session/ChatSessionController.test.ts`：通过；4 个测试文件、139 个测试全部通过。
+- `npm test -- tests/unit/providers/ tests/integration/streaming/`：通过；6 个测试文件、83 个测试全部通过。
+- `npm test`：未通过；50 个测试文件中 46 通过、4 失败，677 个测试中 661 通过、14 失败、2 跳过。失败均位于未被本功能改动的 `tests/unit/tools/`：`edit-file` 2 项、`read-file` 1 项、`write-file` 3 项和 `run-command` 8 项；输出表现为 `command_timeout` 或 5 秒用例超时，当前分支未修改 `src/tools/` 或这些测试文件。
 - `npm run build`：通过；exit 0，`dist/cli/main.js` 存在。
 - `npm run e2e:tmux`：未通过；其内置 build 通过，随后 bash 报错 `tests/e2e/tmux/agentcode-smoke.sh: line 2: set: pipefail\r: invalid option name`，归类为 Windows CRLF/bash 环境阻塞。
 - `git diff --check`：通过；无空白错误。

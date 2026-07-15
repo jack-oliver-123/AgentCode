@@ -3,14 +3,14 @@
 ## 绑定输入
 
 - spec.md: 458a6e188c504c86297dcc1ec20ca332f4551663
-- plan.md: 8ccdb29e1e6615d14d46af11c16be96c218b7a09
+- plan.md: c6f6cd5a8549ea586f107683f3ef1c941f303cc6
 
 ## 执行约束
 
 - 每个任务严格按 RED -> GREEN -> REFACTOR 顺序执行。
 - 只修改本任务列出的文件；额外缺陷先确认是否属于 Issue #54/#55。
 - 每个测试先观察预期失败，再写最小实现并观察通过。
-- 不修改 AgentLoop、OpenAI Provider、Anthropic Provider 或 YAML 配置 schema。
+- 不修改 AgentLoop、OpenAI/Anthropic Provider 的公开协议或 YAML 配置 schema；T2 只在共享 fetch transport 内保留安全的输入过长语义。
 - 不 push、不创建 PR、不合并仓库。
 
 ## 文件清单
@@ -20,9 +20,11 @@
 | 新建 | src/context/compaction.ts | T1 |
 | 修改 | src/context/ContextManager.ts | T2、T3、T4 |
 | 修改 | src/context/index.ts | T1、T2 |
+| 修改 | src/providers/shared/fetchTransport.ts | T2 |
 | 修改 | src/session/ChatSessionController.ts | T5 |
 | 新建 | tests/unit/context/compaction.test.ts | T1 |
 | 修改 | tests/unit/context/contextManager.test.ts | T2、T3、T4 |
+| 修改 | tests/unit/providers/fetchTransport.test.ts | T2 |
 | 修改 | tests/unit/session/ChatSessionController.test.ts | T5 |
 | 修改 | docs/task08/checklist.md | T6 |
 
@@ -243,6 +245,8 @@ git commit -m "feat(context): add compaction primitives"
 
 - Modify: src/context/ContextManager.ts
 - Modify: tests/unit/context/contextManager.test.ts
+- Modify: src/providers/shared/fetchTransport.ts
+- Modify: tests/unit/providers/fetchTransport.test.ts
 
 - [ ] **Step 1：写 options 与手动低水位先行测试**
 
@@ -296,14 +300,21 @@ private resetEstimate(messages: readonly ChatMessage[]): void {
 
 ~~~typescript
 type SummaryAttemptResult =
-  | { kind: 'success'; summary: string }
+  | { kind: 'success'; summary: string; reusableSummary: string }
   | { kind: 'prompt_too_long' }
   | { kind: 'failure' };
+
+private async requestSummaryOnce(
+  messages: readonly ChatMessage[],
+  originalUserMessages: readonly string[],
+): Promise<SummaryAttemptResult>;
 ~~~
 
-requestSummaryOnce 必须发送九段 Prompt、空 tools、toolChoice none、thinking disabled，为每次请求创建独立 timeout signal，收到 response.complete 后才调用 finalizeSummary。
+requestSummaryOnce(messages, originalUserMessages) 必须发送九段 Prompt、空 tools、toolChoice none、thinking disabled，为每次请求创建独立 timeout signal，收到 response.complete 后才调用 finalizeSummary。成功结果同时返回注入本轮用户原文的 summary，以及第 6 节为空、供下一轮 compact 使用的 reusableSummary。
 
 callSummaryWithFallback 按 10%、10%、10%、20% 调用；非 prompt-too-long 立即结束。
+
+共享 fetch transport 将 HTTP 400 的结构化 context-length 错误和 HTTP 413 安全映射为输入过长语义，同时限制错误体读取、取消未读流且不透传原始响应体；OpenAI/Anthropic Provider 的公开事件协议保持不变。
 
 - [ ] **Step 6：实现 normal/force/emergency 准入与熔断**
 
