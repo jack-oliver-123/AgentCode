@@ -44,12 +44,11 @@ export async function initMcpManager(
     if (result.status === 'fulfilled') {
       allTools.push(...result.value.tools);
       return result.value;
-    } else {
-      const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
-      const warning = `MCP Server "${serverName}" failed to connect: ${err.message}`;
-      console.warn(`[MCP] ${warning}`);
-      return { serverName, status: 'failed', tools: [], warning };
     }
+    const err = result.reason instanceof Error ? result.reason : new Error(String(result.reason));
+    const warning = `MCP Server "${serverName}" failed to connect: ${err.message}`;
+    console.warn(`[MCP] ${warning}`);
+    return { serverName, status: 'failed', tools: [], warning };
   });
 
   const manager: McpManager = {

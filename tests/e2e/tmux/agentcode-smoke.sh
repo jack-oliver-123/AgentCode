@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# This script is kept LF-only by .gitattributes for native Windows Bash.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -182,6 +183,21 @@ TEXT
 
 write_launcher() {
   local project_dir="$1"
+
+  if [[ "${OS:-}" == "Windows_NT" ]]; then
+    local launcher="$project_dir/start-agentcode.cmd"
+    local project_dir_windows
+    project_dir_windows="$(cygpath -w "$project_dir")"
+
+    {
+      printf '@echo off\r\n'
+      printf 'cd /d "%s"\r\n' "$project_dir_windows"
+      printf 'call node_modules\\.bin\\agentcode.cmd\r\n'
+    } > "$launcher"
+    cygpath -w "$launcher"
+    return
+  fi
+
   local launcher="$project_dir/start-agentcode.sh"
 
   {
@@ -192,6 +208,7 @@ write_launcher() {
     printf 'exec ./node_modules/.bin/agentcode\n'
   } > "$launcher"
   chmod +x "$launcher"
+  printf '%s\n' "$launcher"
 }
 
 require_command tmux
@@ -213,10 +230,10 @@ PACKAGE_TARBALL_PATH="$TMP_DIR/$PACKAGE_TARBALL"
 
 PROJECT_DIR="$TMP_DIR/project"
 mkdir -p "$PROJECT_DIR"
-npm install --prefix "$PROJECT_DIR" --no-save --ignore-scripts "$PACKAGE_TARBALL_PATH" >/dev/null
+npm install --prefix "$PROJECT_DIR" --no-save --ignore-scripts --no-audit --no-fund --prefer-offline "$PACKAGE_TARBALL_PATH" >/dev/null
 write_project_config "$PROJECT_DIR" "$MOCK_URL"
 write_tool_fixture "$PROJECT_DIR"
-write_launcher "$PROJECT_DIR"
+LAUNCHER="$(write_launcher "$PROJECT_DIR")"
 
 if [[ ! -x "$PROJECT_DIR/node_modules/.bin/agentcode" ]]; then
   fail 'installed package did not expose an executable agentcode bin'
@@ -231,10 +248,14 @@ if ! run_tmux new-session -d -s "$SESSION_NAME" -x 100 -y 30; then
   exit 2
 fi
 
-run_tmux set-environment -t "$SESSION_NAME" PATH "$PATH"
+TMUX_PATH="$PATH"
+if [[ "${OS:-}" == "Windows_NT" ]]; then
+  TMUX_PATH="$(cygpath -wp "$PATH")"
+fi
+run_tmux set-environment -t "$SESSION_NAME" PATH "$TMUX_PATH"
 run_tmux set-option -t "$SESSION_NAME" history-limit 2000 >/dev/null
 wait_for_pane_ready 10
-run_tmux send-keys -t "$SESSION_NAME" -l "$PROJECT_DIR/start-agentcode.sh"
+run_tmux send-keys -t "$SESSION_NAME" -l "\"$LAUNCHER\""
 run_tmux send-keys -t "$SESSION_NAME" C-m
 
 wait_for_pane_text 'Ask AgentCode' 10
@@ -244,16 +265,21 @@ wait_for_pane_text 'provider: openai' 5
 wait_for_pane_text 'config: project' 5
 
 send_prompt 'hello from tmux'
-wait_for_pane_text 'generating' 5
-wait_for_pane_text 'Waiting for model response' 5
-wait_for_pane_text 'streammarker' 5
+if [[ "${OS:-}" == "Windows_NT" ]]; then
+  # psmux exposes the final Ink frame but not reliable intermediate redraws.
+  wait_for_pane_text 'streammarker first answer' 12
+else
+  wait_for_pane_text 'generating' 5
+  wait_for_pane_text 'Waiting for model response' 5
+  wait_for_pane_text 'streammarker' 5
 
-PARTIAL_PANE="$(capture_pane)"
-if [[ "$PARTIAL_PANE" == *'streammarker first answer'* ]]; then
-  fail 'first response appeared all at once; expected a visible partial streaming state'
+  PARTIAL_PANE="$(capture_pane)"
+  if [[ "$PARTIAL_PANE" == *'streammarker first answer'* ]]; then
+    fail 'first response appeared all at once; expected a visible partial streaming state'
+  fi
+
+  wait_for_pane_text 'streammarker first answer' 8
 fi
-
-wait_for_pane_text 'streammarker first answer' 8
 sleep 1
 
 send_prompt 'second question'

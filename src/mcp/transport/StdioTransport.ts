@@ -51,7 +51,7 @@ export function createStdioTransport(entry: StdioServerEntry): McpTransport {
 
   // 按行读取 stdout
   if (childProcess.stdout !== null) {
-    const rl = createInterface({ input: childProcess.stdout, crlfDelay: Infinity });
+    const rl = createInterface({ input: childProcess.stdout, crlfDelay: Number.POSITIVE_INFINITY });
     rl.on('line', onLine);
     rl.on('close', () => {
       closed = true;
@@ -66,7 +66,7 @@ export function createStdioTransport(entry: StdioServerEntry): McpTransport {
         throw new Error('StdioTransport: connection is closed');
       }
       await new Promise<void>((resolve, reject) => {
-        childProcess!.stdin!.write(message + '\n', (err) => {
+        childProcess!.stdin!.write(`${message}\n`, (err) => {
           if (err !== null && err !== undefined) reject(err);
           else resolve();
         });

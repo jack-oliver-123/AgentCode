@@ -1,8 +1,26 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { fetchJsonStream } from '../../../src/providers/shared/fetchTransport.js';
+import { AgentCodeError } from '../../../src/shared/errors.js';
 
 const encoder = new TextEncoder();
+
+function makePendingErrorBodyFetch(): typeof fetch {
+  return vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+    const signal = init?.signal;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const abort = () => controller.error(new DOMException('aborted', 'AbortError'));
+        if (signal?.aborted === true) {
+          abort();
+        } else {
+          signal?.addEventListener('abort', abort, { once: true });
+        }
+      },
+    });
+    return new Response(body, { status: 400 });
+  });
+}
 
 describe('fetchJsonStream', () => {
   it('sends JSON requests and returns the streaming response body', async () => {
@@ -79,6 +97,264 @@ describe('fetchJsonStream', () => {
         status,
       },
     });
+  });
+
+  it.each([
+    [413, 'provider_error', false, 'Provider input too long.'],
+    [429, 'rate_limit', true, 'Provider rate limit reached. Retry after a short delay.'],
+    [500, 'provider_error', true, 'Provider returned HTTP 500.'],
+  ])('cancels an unread HTTP %s body before throwing the status error', async (status, code, retryable, message) => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('unread error body'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status }));
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: { code, message, retryable, status },
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('preserves the HTTP status error when unread body cancellation fails', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error('cancel failed');
+      },
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status: 500 }));
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider returned HTTP 500.',
+        retryable: true,
+        status: 500,
+      },
+    });
+  });
+
+  it.each([
+    ['empty', () => new Response(null, { status: 413 })],
+    ['HTML', () => new Response('<html>request entity too large</html>', { status: 413 })],
+    [
+      'Anthropic request_too_large',
+      () =>
+        new Response(
+          JSON.stringify({
+            type: 'error',
+            error: {
+              type: 'request_too_large',
+              message: 'Request exceeds the maximum allowed number of bytes',
+            },
+          }),
+          { status: 413, headers: { 'content-type': 'application/json' } },
+        ),
+    ],
+  ] as const)('normalizes an %s HTTP 413 without reading its body', async (_name, createResponse) => {
+    const response = createResponse();
+    const textSpy = vi.spyOn(response, 'text');
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider input too long.',
+        retryable: false,
+        status: 413,
+      },
+    });
+    expect(textSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      400,
+      {
+        error: {
+          code: 'context_length_exceeded',
+          type: 'invalid_request_error',
+          message: 'maximum context length exceeded: PRIVATE_USER_CONTENT',
+        },
+      },
+    ],
+    [
+      400,
+      {
+        error: {
+          type: 'invalid_request_error',
+          message: "This model's maximum context length is exceeded: PRIVATE_USER_CONTENT",
+        },
+      },
+    ],
+    [
+      413,
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'prompt is too long: PRIVATE_USER_CONTENT',
+        },
+      },
+    ],
+    [
+      400,
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'input too long: PRIVATE_USER_CONTENT',
+        },
+      },
+    ],
+  ])('normalizes HTTP %s input-length bodies without leaking the raw body', async (status, body) => {
+    const rawBody = JSON.stringify(body);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(rawBody, {
+        status,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await fetchJsonStream(
+        { url: 'https://api.example.com/v1/messages', body: {} },
+        { fetch: fetchMock, timeoutMs: 1000 },
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AgentCodeError);
+    expect(caught).toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider input too long.',
+        retryable: false,
+        status,
+      },
+    });
+    const publicMessage = (caught as AgentCodeError).publicError.message;
+    expect(publicMessage).not.toContain('PRIVATE_USER_CONTENT');
+    expect(publicMessage).not.toContain(rawBody);
+  });
+
+  it.each([
+    {
+      error: {
+        code: 'invalid_request_error',
+        message: 'maximum output tokens exceeded',
+      },
+    },
+    {
+      error: {
+        code: 'rate_limit_exceeded',
+        message: 'maximum tokens per minute exceeded',
+      },
+    },
+    {
+      error: {
+        code: 'invalid_request_error',
+        message: 'ordinary malformed request',
+      },
+    },
+  ])('does not misclassify a non-length HTTP 400 body: %j', async (body) => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider request failed with HTTP 400.',
+        retryable: false,
+        status: 400,
+      },
+    });
+  });
+
+  it('cancels an oversized HTTP 400 body before pulling all chunks', async () => {
+    const chunk = encoder.encode('x'.repeat(1024));
+    const totalChunks = 100;
+    let pullCount = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pullCount++;
+          if (pullCount <= totalChunks) {
+            controller.enqueue(chunk);
+          } else {
+            controller.close();
+          }
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(body, {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider request failed with HTTP 400.',
+        retryable: false,
+        status: 400,
+      },
+    });
+    expect(cancelled).toBe(true);
+    expect(pullCount).toBeLessThan(totalChunks);
+  });
+
+  it('falls back to the generic HTTP 400 error when the body reader cannot be acquired', async () => {
+    const response = new Response('locked', { status: 400 });
+    const heldReader = response.body!.getReader();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+
+    try {
+      await expect(
+        fetchJsonStream(
+          { url: 'https://api.example.com/v1/messages', body: {} },
+          { fetch: fetchMock, timeoutMs: 1000 },
+        ),
+      ).rejects.toMatchObject({
+        publicError: {
+          code: 'provider_error',
+          message: 'Provider request failed with HTTP 400.',
+          retryable: false,
+          status: 400,
+        },
+      });
+    } finally {
+      await heldReader.cancel();
+      heldReader.releaseLock();
+    }
   });
 
   it('rejects successful responses that are not event streams', async () => {
@@ -184,6 +460,53 @@ describe('fetchJsonStream', () => {
         retryable: false,
       },
     });
+  });
+
+  it('preserves caller cancellation while reading an HTTP 400 error body', async () => {
+    const abortController = new AbortController();
+    const fetchMock = makePendingErrorBodyFetch();
+    const operation = fetchJsonStream(
+      {
+        url: 'https://api.example.com/v1/messages',
+        body: {},
+        signal: abortController.signal,
+      },
+      { fetch: fetchMock, timeoutMs: 1000 },
+    );
+    const assertion = expect(operation).rejects.toMatchObject({
+      publicError: {
+        code: 'network_error',
+        message: 'Provider request was cancelled.',
+        retryable: false,
+      },
+    });
+
+    abortController.abort();
+    await assertion;
+  });
+
+  it('preserves timeout semantics while reading an HTTP 400 error body', async () => {
+    vi.useFakeTimers();
+    const fetchMock = makePendingErrorBodyFetch();
+
+    try {
+      const operation = fetchJsonStream(
+        { url: 'https://api.example.com/v1/messages', body: {} },
+        { fetch: fetchMock, timeoutMs: 10 },
+      );
+      const assertion = expect(operation).rejects.toMatchObject({
+        publicError: {
+          code: 'network_error',
+          message: 'Provider request timed out before the stream started.',
+          retryable: true,
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps caller abort non-retryable even when fetch rejects after timeout fires', async () => {

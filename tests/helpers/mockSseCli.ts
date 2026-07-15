@@ -99,7 +99,7 @@ async function writeOpenAIToolCall(response: ServerResponse): Promise<void> {
               {
                 index: 0,
                 function: {
-                  arguments: JSON.stringify(TOOL_FIXTURE_PATH) + '}',
+                  arguments: `${JSON.stringify(TOOL_FIXTURE_PATH)}}`,
                 },
               },
             ],

@@ -104,7 +104,7 @@ async function loadFileContent(path: string, maxBytes: number): Promise<string> 
     }
     if (buffer.length > maxBytes) {
       const truncated = truncateAtUtf8Boundary(buffer, maxBytes);
-      return truncated.trim() + '\n...(truncated)';
+      return `${truncated.trim()}\n...(truncated)`;
     }
     return buffer.toString('utf8').trim();
   } catch {
