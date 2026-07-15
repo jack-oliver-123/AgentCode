@@ -5,6 +5,23 @@ import { AgentCodeError } from '../../../src/shared/errors.js';
 
 const encoder = new TextEncoder();
 
+function makePendingErrorBodyFetch(): typeof fetch {
+  return vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+    const signal = init?.signal;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const abort = () => controller.error(new DOMException('aborted', 'AbortError'));
+        if (signal?.aborted === true) {
+          abort();
+        } else {
+          signal?.addEventListener('abort', abort, { once: true });
+        }
+      },
+    });
+    return new Response(body, { status: 400 });
+  });
+}
+
 describe('fetchJsonStream', () => {
   it('sends JSON requests and returns the streaming response body', async () => {
     const body = new ReadableStream<Uint8Array>({
@@ -78,6 +95,50 @@ describe('fetchJsonStream', () => {
         code,
         retryable,
         status,
+      },
+    });
+  });
+
+  it.each([
+    [413, 'provider_error', false, 'Provider input too long.'],
+    [429, 'rate_limit', true, 'Provider rate limit reached. Retry after a short delay.'],
+    [500, 'provider_error', true, 'Provider returned HTTP 500.'],
+  ])('cancels an unread HTTP %s body before throwing the status error', async (status, code, retryable, message) => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('unread error body'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status }));
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: { code, message, retryable, status },
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it('preserves the HTTP status error when unread body cancellation fails', async () => {
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error('cancel failed');
+      },
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response(body, { status: 500 }));
+
+    await expect(
+      fetchJsonStream({ url: 'https://api.example.com/v1/messages', body: {} }, { fetch: fetchMock, timeoutMs: 1000 }),
+    ).rejects.toMatchObject({
+      publicError: {
+        code: 'provider_error',
+        message: 'Provider returned HTTP 500.',
+        retryable: true,
+        status: 500,
       },
     });
   });
@@ -399,6 +460,53 @@ describe('fetchJsonStream', () => {
         retryable: false,
       },
     });
+  });
+
+  it('preserves caller cancellation while reading an HTTP 400 error body', async () => {
+    const abortController = new AbortController();
+    const fetchMock = makePendingErrorBodyFetch();
+    const operation = fetchJsonStream(
+      {
+        url: 'https://api.example.com/v1/messages',
+        body: {},
+        signal: abortController.signal,
+      },
+      { fetch: fetchMock, timeoutMs: 1000 },
+    );
+    const assertion = expect(operation).rejects.toMatchObject({
+      publicError: {
+        code: 'network_error',
+        message: 'Provider request was cancelled.',
+        retryable: false,
+      },
+    });
+
+    abortController.abort();
+    await assertion;
+  });
+
+  it('preserves timeout semantics while reading an HTTP 400 error body', async () => {
+    vi.useFakeTimers();
+    const fetchMock = makePendingErrorBodyFetch();
+
+    try {
+      const operation = fetchJsonStream(
+        { url: 'https://api.example.com/v1/messages', body: {} },
+        { fetch: fetchMock, timeoutMs: 10 },
+      );
+      const assertion = expect(operation).rejects.toMatchObject({
+        publicError: {
+          code: 'network_error',
+          message: 'Provider request timed out before the stream started.',
+          retryable: true,
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(10);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps caller abort non-retryable even when fetch rejects after timeout fires', async () => {

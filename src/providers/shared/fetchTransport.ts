@@ -55,10 +55,14 @@ export async function fetchJsonStream(
 
     if (!response.ok) {
       if (response.status === 413) {
+        await cancelResponseBodySafely(response);
         throw createInputTooLongError(response.status);
       }
       if (response.status === 400 && (await responseIndicatesInputTooLong(response))) {
         throw createInputTooLongError(response.status);
+      }
+      if (response.status !== 400) {
+        await cancelResponseBodySafely(response);
       }
       throw createProviderStatusError(response.status);
     }
@@ -102,6 +106,14 @@ function createInputTooLongError(status: number): AgentCodeError {
     retryable: false,
     status,
   });
+}
+
+async function cancelResponseBodySafely(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Body cleanup must not replace the provider status error.
+  }
 }
 
 async function responseIndicatesInputTooLong(response: Response): Promise<boolean> {
@@ -169,9 +181,12 @@ async function readErrorBodySafely(response: Response): Promise<string | undefin
       }
       body += decoder.decode(value, { stream: true });
     }
-  } catch {
+  } catch (error) {
     if (reader !== undefined) {
       await cancelReaderSafely(reader);
+    }
+    if (isAbortError(error)) {
+      throw error;
     }
     return undefined;
   } finally {
