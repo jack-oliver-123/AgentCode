@@ -104,8 +104,6 @@ export class ChatSessionController {
   private readonly fullPermissionMode: Exclude<PermissionMode, 'plan'>;
   /** F1/F2/F3：上下文管理器 */
   private readonly contextManager: ContextManager;
-  /** N2：受保护的 user 消息下标集合，摘要时不可删除 */
-  private readonly protectedContextIndices: Set<number> = new Set();
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -196,21 +194,37 @@ export class ChatSessionController {
     // 清除上一次切换产生的瞬态通知
     this.notice = undefined;
 
-    // 识别命令（/compress、/plan、/do）
-    const { mode, actualText, isCompress } = this.parseCommand(text);
+    // 识别命令（/compact、/plan、/do）
+    const { mode, actualText, isCompact } = this.parseCommand(text);
 
-    // F6：/compress 拦截（在 messages.push 前，不调用 setLoopMode）
-    if (isCompress === true) {
-      const manualThreshold = this.contextManager.contextWindow - 3000;
-      if (this.contextManager.estimated <= manualThreshold) {
-        this.notice = '上下文尚未到压缩阈值';
-      } else {
-        const success = await this.contextManager.compress(
-          this.providerContext,
-          this.protectedContextIndices,
-          true,
-        );
-        this.notice = success ? '上下文已压缩' : '上下文压缩失败，请稍后重试';
+    // /compact 在写入 UI 历史前拦截，且始终由 ContextManager 决定压缩档位。
+    if (isCompact === true) {
+      const previousStatus = this.status;
+      const previousLastError = this.lastError;
+      this.status = 'streaming';
+      try {
+        yield this.createStateChangedEvent();
+        try {
+          await this.contextManager.offloadToolResults(this.providerContext);
+          const result = await this.contextManager.compact(this.providerContext, {
+            trigger: 'manual',
+            originalUserMessages: this.getOriginalUserMessages(),
+          });
+          if (result.outcome === 'compacted') {
+            this.notice = '上下文已压缩';
+          } else if (result.outcome === 'emergency_fallback') {
+            this.notice = '上下文已紧急压缩，摘要失败后已使用机械兜底';
+          } else if (result.outcome === 'skipped' && result.reason === 'no_history') {
+            this.notice = '没有可压缩的历史';
+          } else {
+            this.notice = '上下文压缩失败，请稍后重试';
+          }
+        } catch {
+          this.notice = '上下文压缩失败，请稍后重试';
+        }
+      } finally {
+        this.status = previousStatus;
+        this.lastError = previousLastError;
       }
       yield this.createStateChangedEvent();
       return;
@@ -265,12 +279,12 @@ export class ChatSessionController {
       );
       this.turnIndex++;
 
-      // F7：在 AgentLoop 前执行 F2 卸载 + F3 自动压缩
+      // 在 AgentLoop 前执行工具结果卸载，再由 ContextManager 统一判断自动压缩档位。
       await this.contextManager.offloadToolResults(this.providerContext);
-      const autoThreshold = this.contextManager.contextWindow - 13000;
-      if (this.contextManager.estimated > autoThreshold && !this.contextManager.circuitOpen) {
-        await this.contextManager.compress(this.providerContext, this.protectedContextIndices);
-      }
+      await this.contextManager.compact(this.providerContext, {
+        trigger: 'auto',
+        originalUserMessages: this.getOriginalUserMessages(),
+      });
 
       const input: AgentLoopInput = {
         contextMessages: [...this.providerContext],
@@ -376,7 +390,7 @@ export class ChatSessionController {
         // 检测上下文溢出关键词，设置专用 notice
         const errMsg = event.error.message.toLowerCase();
         if (errMsg.includes('context') || errMsg.includes('token') || errMsg.includes('length')) {
-          this.notice = '上下文过长，请使用 /compress 压缩后继续';
+          this.notice = '上下文过长，请使用 /compact 压缩后继续';
         }
         this.failTurn(userMessage, event.error);
         return this.createStateChangedEvent();
@@ -390,11 +404,10 @@ export class ChatSessionController {
     }
   }
 
-  private parseCommand(text: string): { mode: AgentLoopMode; actualText: string; isCompress?: boolean } {
+  private parseCommand(text: string): { mode: AgentLoopMode; actualText: string; isCompact?: boolean } {
     const trimmed = text.trim();
-    if (/^\/compress\b/i.test(trimmed)) {
-      // /compress 不调用 setLoopMode，直接返回 isCompress 标志
-      return { mode: this.currentMode, actualText: '', isCompress: true };
+    if (/^\/compact\b/i.test(trimmed)) {
+      return { mode: this.currentMode, actualText: '', isCompact: true };
     }
     if (/^\/plan\b/i.test(trimmed)) {
       return { mode: 'plan', actualText: trimmed.slice(5).trim() || trimmed };
@@ -436,18 +449,13 @@ export class ChatSessionController {
     this.messages.push(assistantMessage);
     this.contextMessages.push(userMessage, assistantMessage);
 
-    // 记录 user 消息在 providerContext 中的下标（N2 保护）
-    const userIdx = this.providerContext.length;
-    this.providerContext.push(toProviderMessage(userMessage), ...turnMessages, {
-      role: 'assistant',
-      content: finalText,
-    });
-    this.protectedContextIndices.add(userIdx);
-
-    // F1：通知 contextManager 追加的字符数
-    const turnMsgsChars = turnMessages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
-    const appendedChars = toProviderMessage(userMessage).content.length + turnMsgsChars + finalText.length;
-    this.contextManager.onMessagesAppended(appendedChars);
+    const appendedMessages: ProviderChatMessage[] = [
+      toProviderMessage(userMessage),
+      ...turnMessages,
+      { role: 'assistant', content: finalText },
+    ];
+    this.providerContext.push(...appendedMessages);
+    this.contextManager.onMessagesAppended(appendedMessages);
 
     this.toolActivities = [];
     this.draft = undefined;
@@ -458,17 +466,20 @@ export class ChatSessionController {
   private failTurn(userMessage: ChatMessage, error: PublicError): void {
     if (!this.contextMessages.some((message) => message.id === userMessage.id)) {
       this.contextMessages.push(userMessage);
-      // 记录 user 消息在 providerContext 中的下标（N2 保护）
-      const userIdx = this.providerContext.length;
-      this.providerContext.push(toProviderMessage(userMessage));
-      this.protectedContextIndices.add(userIdx);
-      // F1：通知 contextManager 追加的字符数
-      this.contextManager.onMessagesAppended(toProviderMessage(userMessage).content.length);
+      const appendedMessages: ProviderChatMessage[] = [toProviderMessage(userMessage)];
+      this.providerContext.push(...appendedMessages);
+      this.contextManager.onMessagesAppended(appendedMessages);
     }
 
     this.draft = undefined;
     this.status = 'error';
     this.lastError = error;
+  }
+
+  private getOriginalUserMessages(): string[] {
+    return this.contextMessages
+      .filter((message) => message.role === 'user')
+      .map((message) => toProviderMessage(message).content);
   }
 
   private createMessage(role: MessageRole, text: string, finishReason?: string): ChatMessage {
