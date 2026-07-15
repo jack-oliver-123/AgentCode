@@ -260,6 +260,60 @@ describe('compaction primitives', () => {
     expect(result).not.toMatch(/<analysis>/i);
   });
 
+  it('ignores non-structural heading-like prose outside code fences', () => {
+    const providerText = validProviderText.replace(
+      '## 2. 关键技术概念\n概念',
+      '## 2. 关键技术概念\n概念\n### 三级细节\n##正文',
+    );
+
+    expect(finalizeSummary(providerText, ['x'])).toBeDefined();
+  });
+
+  it.each([
+    ['backtick', '```markdown', '```'],
+    ['tilde', '~~~markdown', '~~~'],
+  ])('ignores heading-like lines inside a %s code fence', (_name, openingFence, closingFence) => {
+    const fencedCode = [
+      openingFence,
+      '## 安装',
+      '## 1. 主要请求和意图',
+      'npm install agentcode',
+      closingFence,
+    ].join('\n');
+    const providerText = validProviderText.replace(
+      '## 3. 文件和代码段\n文件',
+      `## 3. 文件和代码段\n文件\n\n${fencedCode}`,
+    );
+
+    expect(finalizeSummary(providerText, ['x'])).toBeDefined();
+  });
+
+  it('rejects a duplicate fixed heading outside code fences', () => {
+    const providerText = validProviderText.replace(
+      '## 2. 关键技术概念',
+      '## 1. 主要请求和意图\n重复章节\n\n## 2. 关键技术概念',
+    );
+
+    expect(finalizeSummary(providerText, ['x'])).toBeUndefined();
+  });
+
+  it('rejects an extra real H2 outside code fences', () => {
+    const providerText = validProviderText.replace(
+      '## 2. 关键技术概念\n概念',
+      '## 2. 关键技术概念\n概念\n## 安装',
+    );
+
+    expect(finalizeSummary(providerText, ['x'])).toBeUndefined();
+  });
+
+  it('parses structure before injecting a Markdown heading from verbatim user text', () => {
+    const userText = '  ## 用户原文标题\n正文  ';
+    const result = finalizeSummary(validProviderText, [userText]);
+
+    expect(result).toBeDefined();
+    expect(result).toContain(`<user_message index="1" length="${userText.length}">\n${userText}\n</user_message>`);
+  });
+
   it('preserves JavaScript replacement tokens in user messages character-for-character', () => {
     const userText = ['$&', '$$', '$`', "$'"];
     const result = finalizeSummary(validProviderText, userText);

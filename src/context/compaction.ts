@@ -173,6 +173,61 @@ export function renderVerbatimUserMessages(messages: readonly string[]): string 
     .join('\n');
 }
 
+interface SummaryHeading {
+  text: string;
+  index: number;
+  length: number;
+}
+
+interface CodeFence {
+  marker: '`' | '~';
+  length: number;
+}
+
+function findStructuralHeadings(body: string): SummaryHeading[] {
+  const headings: SummaryHeading[] = [];
+  let fence: CodeFence | undefined;
+  let lineStart = 0;
+
+  while (lineStart <= body.length) {
+    const newlineIndex = body.indexOf('\n', lineStart);
+    const lineEnd = newlineIndex === -1 ? body.length : newlineIndex;
+    const contentEnd = lineEnd > lineStart && body[lineEnd - 1] === '\r' ? lineEnd - 1 : lineEnd;
+    const line = body.slice(lineStart, contentEnd);
+    const fenceMatch = line.match(/^[ \t]{0,3}(`{3,}|~{3,})(.*)$/);
+
+    if (fence) {
+      const run = fenceMatch?.[1];
+      const trailing = fenceMatch?.[2];
+      if (
+        run !== undefined &&
+        trailing !== undefined &&
+        run[0] === fence.marker &&
+        run.length >= fence.length &&
+        /^[ \t]*$/.test(trailing)
+      ) {
+        fence = undefined;
+      }
+    } else if (fenceMatch) {
+      const run = fenceMatch[1]!;
+      const trailing = fenceMatch[2]!;
+      const marker = run[0] as '`' | '~';
+      if (marker === '~' || !trailing.includes('`')) {
+        fence = { marker, length: run.length };
+      }
+    } else if (/^##(?:[ \t]+|$)/.test(line)) {
+      headings.push({ text: line, index: lineStart, length: line.length });
+    }
+
+    if (newlineIndex === -1) {
+      break;
+    }
+    lineStart = newlineIndex + 1;
+  }
+
+  return headings;
+}
+
 /** Validates the model response and injects the original user messages. */
 export function finalizeSummary(response: string, userMessages: readonly string[]): string | undefined {
   const openingTags = response.match(/<summary>/g) ?? [];
@@ -187,10 +242,10 @@ export function finalizeSummary(response: string, userMessages: readonly string[
     return undefined;
   }
 
-  const headingMatches = [...body.matchAll(/^##[^\r\n]*$/gm)];
+  const headingMatches = findStructuralHeadings(body);
   if (
     headingMatches.length !== SUMMARY_HEADINGS.length ||
-    headingMatches.some((heading, index) => heading[0] !== SUMMARY_HEADINGS[index])
+    headingMatches.some((heading, index) => heading.text !== SUMMARY_HEADINGS[index])
   ) {
     return undefined;
   }
@@ -202,8 +257,8 @@ export function finalizeSummary(response: string, userMessages: readonly string[
 
   const userHeading = headingMatches[5]!;
   const nextHeading = headingMatches[6]!;
-  const userSectionStart = userHeading.index! + userHeading[0].length;
-  const userSectionEnd = nextHeading.index!;
+  const userSectionStart = userHeading.index + userHeading.length;
+  const userSectionEnd = nextHeading.index;
   if (body.slice(userSectionStart, userSectionEnd).trim() !== USER_MESSAGES_PLACEHOLDER) {
     return undefined;
   }
