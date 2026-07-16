@@ -12,6 +12,7 @@ import type { AgentConfig } from '../config/schema.js';
 import { ContextManager } from '../context/ContextManager.js';
 import { lookupContextWindow } from '../context/contextWindow.js';
 import { join } from 'node:path';
+import type { AutoNoteWriterPort } from '../notes/AutoNoteWriter.js';
 import type { ChatModelProvider, ChatMessage as ProviderChatMessage } from '../providers/types.js';
 import { type PublicError, toPublicError } from '../shared/errors.js';
 import { type IdGenerator, createId } from '../shared/ids.js';
@@ -23,6 +24,7 @@ import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
 import type { AskPermissionFn, PermissionChecker, PermissionMode } from '../tools/permissions/types.js';
 import { createPermissionChecker } from '../tools/permissions/checker.js';
 import { loadPermissionRules } from '../tools/permissions/config.js';
+import type { SessionArchivePort } from './SessionArchive.js';
 import type {
   ChatMessage,
   ChatSessionDraft,
@@ -55,6 +57,14 @@ export interface ChatSessionControllerOptions {
   homeDir?: string;
   /** 依赖注入：ContextManager 实例（用于测试） */
   contextManager?: ContextManager;
+  /** 恢复后的 Provider 历史上下文 */
+  initialProviderContext?: readonly ProviderChatMessage[];
+  /** 恢复后的 TUI 历史消息 */
+  initialMessages?: readonly ChatMessage[];
+  /** 会话归档端口（可注入，便于测试） */
+  sessionArchive?: SessionArchivePort;
+  /** 自动笔记端口（可注入，便于测试） */
+  autoNoteWriter?: AutoNoteWriterPort;
 }
 
 export interface SubmitUserTextOptions {
@@ -104,6 +114,10 @@ export class ChatSessionController {
   private readonly fullPermissionMode: Exclude<PermissionMode, 'plan'>;
   /** F1/F2/F3：上下文管理器 */
   private readonly contextManager: ContextManager;
+  private readonly sessionArchive: SessionArchivePort | undefined;
+  private readonly autoNoteWriter: AutoNoteWriterPort | undefined;
+  /** 当前 turn 内累计的 completion token 数 */
+  private _turnCompletionTokens = 0;
 
   constructor(options: ChatSessionControllerOptions) {
     this.provider = options.provider;
@@ -119,6 +133,8 @@ export class ChatSessionController {
       ...DEFAULT_AGENT_LOOP_CONFIG,
       ...options.agentLoopConfig,
     };
+    this.sessionArchive = options.sessionArchive;
+    this.autoNoteWriter = options.autoNoteWriter;
 
     const configuredPermissionMode = options.permissionMode ?? this.config.permissionMode;
     this.fullPermissionMode = configuredPermissionMode === 'plan' ? 'normal' : configuredPermissionMode;
@@ -165,6 +181,16 @@ export class ChatSessionController {
         timeoutMs: this.config.request.timeoutMs,
       },
     );
+
+    const initialProviderContext = (options.initialProviderContext ?? []).map(cloneProviderMessage);
+    const initialMessages = (options.initialMessages ?? []).map(cloneMessage);
+    this.providerContext = initialProviderContext;
+    this.messages.push(...initialMessages.map(cloneMessage));
+    this.contextMessages.push(...initialMessages.map(cloneMessage));
+    if (initialProviderContext.length > 0) {
+      this.contextManager.onMessagesAppended(initialProviderContext);
+    }
+    this.turnIndex = initialMessages.filter((message) => message.role === 'user').length;
   }
 
   getState(): ChatSessionState {
@@ -231,6 +257,7 @@ export class ChatSessionController {
     }
 
     this.setLoopMode(mode);
+    this._turnCompletionTokens = 0;
 
     const userMessage = this.createMessage('user', actualText);
     this.messages.push(userMessage);
@@ -314,7 +341,7 @@ export class ChatSessionController {
       };
 
       for await (const event of runAgentLoop(input, deps)) {
-        const stateEvent = this.applyAgentLoopEvent(event, userMessage);
+        const stateEvent = await this.applyAgentLoopEvent(event, userMessage);
         if (stateEvent !== undefined) {
           yield stateEvent;
         }
@@ -325,7 +352,10 @@ export class ChatSessionController {
     }
   }
 
-  private applyAgentLoopEvent(event: AgentLoopEvent, userMessage: ChatMessage): ChatSessionEvent | undefined {
+  private async applyAgentLoopEvent(
+    event: AgentLoopEvent,
+    userMessage: ChatMessage,
+  ): Promise<ChatSessionEvent | undefined> {
     switch (event.type) {
       case 'text.delta': {
         const draft = this.requireDraft();
@@ -373,6 +403,7 @@ export class ChatSessionController {
 
       case 'token.usage':
         this.contextManager.onTokenUsage(event.totalPromptTokens);
+        this._turnCompletionTokens += event.completionTokens ?? 0;
         return undefined;
 
       case 'loop.retrying':
@@ -380,7 +411,7 @@ export class ChatSessionController {
         return undefined;
 
       case 'loop.completed':
-        this.completeTurn(
+        await this.completeTurn(
           userMessage,
           event.finalText,
           event.turnMessages,
@@ -430,12 +461,14 @@ export class ChatSessionController {
     return mode === 'plan' ? 'plan' : this.fullPermissionMode;
   }
 
-  private completeTurn(
+  private async completeTurn(
     userMessage: ChatMessage,
     finalText: string,
     turnMessages: ProviderChatMessage[],
     finishReason: string | undefined,
-  ): void {
+  ): Promise<void> {
+    const completionTokens = this._turnCompletionTokens;
+    this._turnCompletionTokens = 0;
     // 构建 assistant message，包含 tool_use parts + text part
     const parts: MessagePart[] = [...this.toolActivities, { type: 'text', text: finalText }];
     const assistantMessage: ChatMessage = {
@@ -460,6 +493,29 @@ export class ChatSessionController {
     this.providerContext.push(...appendedMessages);
     this.contextManager.onMessagesAppended(appendedMessages);
 
+    if (this.sessionArchive !== undefined) {
+      try {
+        await this.sessionArchive.append(appendedMessages);
+      } catch (error) {
+        console.warn('[SessionArchive] 会话存档失败', error);
+      }
+    }
+    if (this.autoNoteWriter !== undefined) {
+      try {
+        void this.autoNoteWriter
+          .maybeUpdate({
+            userText: toProviderMessage(userMessage).content,
+            assistantText: finalText,
+            completionTokens,
+          })
+          .catch((error) => {
+            console.warn('[AutoNoteWriter] 自动笔记更新失败', error);
+          });
+      } catch (error) {
+        console.warn('[AutoNoteWriter] 自动笔记更新启动失败', error);
+      }
+    }
+
     this.toolActivities = [];
     this.draft = undefined;
     this.status = 'idle';
@@ -467,6 +523,7 @@ export class ChatSessionController {
   }
 
   private failTurn(userMessage: ChatMessage, error: PublicError): void {
+    this._turnCompletionTokens = 0;
     if (!this.contextMessages.some((message) => message.id === userMessage.id)) {
       this.contextMessages.push(userMessage);
       const appendedMessages: ProviderChatMessage[] = [toProviderMessage(userMessage)];
@@ -577,6 +634,13 @@ function cloneMessage(message: ChatMessage): ChatMessage {
   }
 
   return cloned;
+}
+
+function cloneProviderMessage(message: ProviderChatMessage): ProviderChatMessage {
+  if ('toolCalls' in message) {
+    return { ...message, toolCalls: message.toolCalls.map((call) => ({ ...call })) };
+  }
+  return { ...message };
 }
 
 function createEmptyRegistry(): ToolRegistry {

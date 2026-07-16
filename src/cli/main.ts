@@ -11,6 +11,14 @@ export interface RunCliOptions {
   stderr?: Pick<NodeJS.WriteStream, 'write'>;
 }
 
+export interface ParsedCliArgs {
+  resumeMode: boolean;
+}
+
+export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
+  return { resumeMode: argv.includes('--resume') };
+}
+
 export async function runCli(options: RunCliOptions = {}): Promise<number> {
   const bootstrap = options.bootstrap ?? bootstrapApp;
   const stderr = options.stderr ?? process.stderr;
@@ -27,7 +35,10 @@ export async function runCli(options: RunCliOptions = {}): Promise<number> {
 }
 
 async function main(): Promise<void> {
-  process.exitCode = await runCli();
+  const { resumeMode } = parseCliArgs(process.argv.slice(2));
+  process.exitCode = await runCli({
+    ...(resumeMode ? { bootstrap: () => bootstrapApp({ resumeMode: true }) } : {}),
+  });
 }
 
 function isCliEntrypoint(): boolean {

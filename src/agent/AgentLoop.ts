@@ -200,22 +200,7 @@ export async function* runAgentLoop(
         yield { type: 'tool_call.result', call, result, durationMs, iteration };
       }
 
-      // 检查 submit_plan
-      const planResult = allResults.find((r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok);
-      if (planResult?.result.ok) {
-        const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
-        yield { type: 'plan.submitted', steps };
-        yield {
-          type: 'loop.completed',
-          finalText: turnText,
-          totalIterations: iteration,
-          reason: 'natural',
-          turnMessages: messages.slice(initialMessageCount),
-        };
-        return;
-      }
-
-      // 将 assistant 消息 + tool results 追加到 messages
+      // 在任何提前结束分支前固化完整工具链，确保跨 turn 上下文与会话归档不丢消息。
       const assistantMessage: ProviderMessage = {
         role: 'assistant',
         content: turnText,
@@ -232,6 +217,21 @@ export async function* runAgentLoop(
           isError: !result.ok,
         };
         messages.push(toolResultMessage);
+      }
+
+      // 检查 submit_plan
+      const planResult = allResults.find((r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok);
+      if (planResult?.result.ok) {
+        const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
+        yield { type: 'plan.submitted', steps };
+        yield {
+          type: 'loop.completed',
+          finalText: turnText,
+          totalIterations: iteration,
+          reason: 'natural',
+          turnMessages: messages.slice(initialMessageCount),
+        };
+        return;
       }
 
       // 继续下一轮

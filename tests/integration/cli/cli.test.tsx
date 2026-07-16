@@ -3,7 +3,7 @@ import React from 'react';
 import { describe, expect, it } from 'vitest';
 
 import { bootstrapApp } from '../../../src/app/bootstrapApp.js';
-import { runCli } from '../../../src/cli/main.js';
+import { parseCliArgs, runCli } from '../../../src/cli/main.js';
 import type { AgentConfig, ResolvedConfig } from '../../../src/config/schema.js';
 import { ChatSessionController } from '../../../src/session/ChatSessionController.js';
 import type { ChatMessage, ChatSessionDraft } from '../../../src/session/types.js';
@@ -248,6 +248,11 @@ api_key: sk-test-bootstrap-secret
 });
 
 describe('runCli', () => {
+  it('只把精确的 --resume 参数解析为恢复模式', () => {
+    expect(parseCliArgs(['--resume'])).toEqual({ resumeMode: true });
+    expect(parseCliArgs(['--resume=false', 'resume'])).toEqual({ resumeMode: false });
+  });
+
   it('returns a safe non-zero exit code when bootstrap fails', async () => {
     const stderrChunks: string[] = [];
     const exitCode = await runCli({

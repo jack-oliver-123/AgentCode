@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentConfig } from '../../../src/config/schema.js';
 import type { ChatModelProvider, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
@@ -1137,6 +1137,125 @@ describe('ChatSessionController - ContextManager 集成', () => {
     const controller = createController(provider, {}, { contextManager: mockContextManager });
     const states = await collectStates(controller.submitUserText('test'));
     expect(states.at(-1)?.notice).toBe('上下文过长，请使用 /compact 压缩后继续');
+  });
+});
+
+describe('ChatSessionController - task09 会话持久化集成', () => {
+  it('恢复历史进入首轮 Provider 请求、TUI 和 ContextManager 原文账本', async () => {
+    const appendedCalls: unknown[][] = [];
+    const compactRequests: CompactionRequestForTest[] = [];
+    const contextManager = createContextManagerMock({
+      onMessagesAppended: (messages) => appendedCalls.push([...messages]),
+      compact: async (_messages, request) => {
+        compactRequests.push(request);
+        return { outcome: 'skipped', reason: 'below_threshold', attempts: 0 };
+      },
+    });
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: '新回复' },
+      { type: 'response.complete', finishReason: 'stop' },
+    ]);
+    const initialProviderContext = [
+      { role: 'user' as const, content: '历史问题' },
+      { role: 'assistant' as const, content: '历史回答' },
+    ];
+    const initialMessages = [
+      { id: 'old-user', role: 'user' as const, parts: [{ type: 'text' as const, text: '历史问题' }], createdAt: 1 },
+      {
+        id: 'old-assistant',
+        role: 'assistant' as const,
+        parts: [{ type: 'text' as const, text: '历史回答' }],
+        createdAt: 2,
+      },
+    ];
+    const controller = createController(provider, {}, { contextManager, initialProviderContext, initialMessages });
+
+    expect(controller.getState().messages).toEqual(initialMessages);
+    expect(appendedCalls[0]).toEqual(initialProviderContext);
+
+    await collectStates(controller.submitUserText('继续'));
+
+    expect(provider.requests[0]?.messages.slice(0, 3)).toEqual([
+      ...initialProviderContext,
+      { role: 'user', content: '继续' },
+    ]);
+    expect(compactRequests[0]?.originalUserMessages).toEqual(['历史问题', '继续']);
+  });
+
+  it('归档完成前不发布最终 idle，归档收到本轮完整 Provider 批次', async () => {
+    const archiveGate = createDeferred<void>();
+    const sessionArchive = { append: vi.fn(() => archiveGate.promise) };
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: '完成' },
+      { type: 'response.complete', finishReason: 'stop' },
+    ]);
+    const controller = createController(provider, {}, { sessionArchive });
+    let settled = false;
+    const statesPromise = collectStates(controller.submitUserText('开始')).then((states) => {
+      settled = true;
+      return states;
+    });
+
+    await vi.waitFor(() => expect(sessionArchive.append).toHaveBeenCalledTimes(1));
+    expect(settled).toBe(false);
+    expect(sessionArchive.append).toHaveBeenCalledWith([
+      { role: 'user', content: '开始' },
+      { role: 'assistant', content: '完成' },
+    ]);
+
+    archiveGate.resolve();
+    const states = await statesPromise;
+    expect(states.at(-1)?.status).toBe('idle');
+  });
+
+  it('自动笔记不阻塞最终状态，并收到本轮 completion token 累积值', async () => {
+    const never = new Promise<void>(() => undefined);
+    const autoNoteWriter = { maybeUpdate: vi.fn(() => never) };
+    const provider = new FakeProvider([
+      { type: 'response.usage', usage: { inputTokens: 10, outputTokens: 125 } },
+      { type: 'response.usage', usage: { inputTokens: 5, outputTokens: 100 } },
+      { type: 'content.delta', delta: '```ts\nconst ok = true;\n```' },
+      { type: 'response.complete', finishReason: 'stop' },
+    ]);
+    const controller = createController(provider, {}, { autoNoteWriter });
+
+    const states = await collectStates(controller.submitUserText('实现'));
+
+    expect(states.at(-1)?.status).toBe('idle');
+    expect(autoNoteWriter.maybeUpdate).toHaveBeenCalledWith({
+      userText: '实现',
+      assistantText: '```ts\nconst ok = true;\n```',
+      completionTokens: 225,
+    });
+  });
+
+  it('失败轮次的 completion token 不会污染下一次成功轮次', async () => {
+    const autoNoteWriter = { maybeUpdate: vi.fn(async () => undefined) };
+    const provider = new FakeProvider([
+      [
+        { type: 'response.usage', usage: { inputTokens: 10, outputTokens: 300 } },
+        {
+          type: 'response.error',
+          error: { code: 'provider_error', message: 'first failed', retryable: false },
+        },
+      ],
+      [
+        { type: 'response.usage', usage: { inputTokens: 10, outputTokens: 10 } },
+        { type: 'content.delta', delta: 'second ok' },
+        { type: 'response.complete', finishReason: 'stop' },
+      ],
+    ]);
+    const controller = createController(provider, {}, { autoNoteWriter });
+
+    await collectStates(controller.submitUserText('first'));
+    await collectStates(controller.submitUserText('second'));
+
+    expect(autoNoteWriter.maybeUpdate).toHaveBeenCalledTimes(1);
+    expect(autoNoteWriter.maybeUpdate).toHaveBeenCalledWith({
+      userText: 'second',
+      assistantText: 'second ok',
+      completionTokens: 10,
+    });
   });
 });
 

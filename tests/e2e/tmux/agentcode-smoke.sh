@@ -179,6 +179,10 @@ write_tool_fixture() {
   cat > "$project_dir/tool-fixture.txt" <<'TEXT'
 fixture says tool loop works
 TEXT
+
+  cat > "$project_dir/AGENTCODE.md" <<'TEXT'
+TASK09_E2E_PROJECT_RULE
+TEXT
 }
 
 write_launcher() {
@@ -192,7 +196,7 @@ write_launcher() {
     {
       printf '@echo off\r\n'
       printf 'cd /d "%s"\r\n' "$project_dir_windows"
-      printf 'call node_modules\\.bin\\agentcode.cmd\r\n'
+      printf 'call node_modules\\.bin\\agentcode.cmd %%*\r\n'
     } > "$launcher"
     cygpath -w "$launcher"
     return
@@ -205,7 +209,7 @@ write_launcher() {
     printf 'set -euo pipefail\n'
     printf 'export PATH=%q\n' "$PATH"
     printf 'cd %q\n' "$project_dir"
-    printf 'exec ./node_modules/.bin/agentcode\n'
+    printf 'exec ./node_modules/.bin/agentcode "$@"\n'
   } > "$launcher"
   chmod +x "$launcher"
   printf '%s\n' "$launcher"
@@ -287,6 +291,65 @@ wait_for_pane_text 'I remember first answer.' 10
 
 send_prompt 'please read the fixture file'
 wait_for_pane_text 'Tool summary: fixture says tool loop works.' 15
+
+SESSION_DIR="$PROJECT_DIR/.agentcode/sessions"
+mapfile -t SESSION_FILES < <(find "$SESSION_DIR" -maxdepth 1 -type f -name '*.jsonl' -print)
+if [[ "${#SESSION_FILES[@]}" -ne 1 ]]; then
+  fail "expected exactly one session archive, found ${#SESSION_FILES[@]}"
+fi
+SESSION_FILE="${SESSION_FILES[0]}"
+if ! SESSION_LINE_COUNT="$(node - "$SESSION_FILE" <<'NODE'
+const { readFileSync } = require('node:fs');
+const filePath = process.argv[2];
+const lines = readFileSync(filePath, 'utf8').trimEnd().split(/\r?\n/).filter(Boolean);
+const messages = lines.map((line) => JSON.parse(line));
+if (messages.length < 8) process.exit(1);
+if (!messages.some((message) => message.role === 'user' && message._ui?.author === 'user')) process.exit(1);
+if (!messages.some((message) => message.role === 'assistant' && message._ui?.author === 'agent')) process.exit(1);
+if (!messages.some((message) => Array.isArray(message.toolCalls) && message._ui === undefined)) process.exit(1);
+if (!messages.some((message) => message.role === 'tool' && message._ui === undefined)) process.exit(1);
+process.stdout.write(String(messages.length));
+NODE
+)"; then
+  fail 'session archive did not contain valid task09 JSONL records'
+fi
+
+run_tmux send-keys -t "$SESSION_NAME" C-c
+sleep 1
+run_tmux clear-history -t "$SESSION_NAME" >/dev/null 2>&1 || true
+run_tmux send-keys -t "$SESSION_NAME" -l "\"$LAUNCHER\" --resume"
+run_tmux send-keys -t "$SESSION_NAME" C-m
+wait_for_pane_text '选择要恢复的会话' 10
+run_tmux send-keys -t "$SESSION_NAME" C-m
+wait_for_pane_text 'Ask AgentCode' 10
+wait_for_pane_text 'Tool summary: fixture says tool loop works.' 10
+
+send_prompt 'after resume'
+wait_for_pane_text 'Resume context is active.' 15
+
+send_prompt 'remember: never use the any type'
+wait_for_pane_text 'Preference recorded.' 15
+
+MEMORY_INDEX="$PROJECT_DIR/.agentcode/memory/MEMORY.md"
+MEMORY_DEADLINE=$((SECONDS + 15))
+while (( SECONDS < MEMORY_DEADLINE )); do
+  if [[ -f "$MEMORY_INDEX" ]] && grep -q '(no-any.md)' "$MEMORY_INDEX"; then
+    break
+  fi
+  sleep 0.2
+done
+if [[ ! -f "$MEMORY_INDEX" ]] || ! grep -q '(no-any.md)' "$MEMORY_INDEX"; then
+  fail 'automatic note index was not created after the preference trigger'
+fi
+
+mapfile -t RESUMED_SESSION_FILES < <(find "$SESSION_DIR" -maxdepth 1 -type f -name '*.jsonl' -print)
+if [[ "${#RESUMED_SESSION_FILES[@]}" -ne 1 || "${RESUMED_SESSION_FILES[0]}" != "$SESSION_FILE" ]]; then
+  fail 'resume created a fragmented session archive instead of continuing the selected file'
+fi
+RESUMED_LINE_COUNT="$(node -e "const fs=require('node:fs'); const lines=fs.readFileSync(process.argv[1],'utf8').trimEnd().split(/\\r?\\n/).filter(Boolean); for (const line of lines) JSON.parse(line); process.stdout.write(String(lines.length));" "$SESSION_FILE")"
+if (( RESUMED_LINE_COUNT <= SESSION_LINE_COUNT )); then
+  fail 'resumed conversation did not append new JSONL records'
+fi
 
 FINAL_PANE="$(capture_pane)"
 if has_sentinel_leak "$FINAL_PANE"; then

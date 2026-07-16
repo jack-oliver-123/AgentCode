@@ -9,6 +9,20 @@ const SECOND_REPLY = 'I remember first answer.';
 const TOOL_FIXTURE_PATH = 'tool-fixture.txt';
 const TOOL_FIXTURE_TEXT = 'fixture says tool loop works';
 const TOOL_FINAL_REPLY = `Tool summary: ${TOOL_FIXTURE_TEXT}.`;
+const PROJECT_RULE_MARKER = 'TASK09_E2E_PROJECT_RULE';
+const RESUME_REPLY = 'Resume context is active.';
+const PREFERENCE_REPLY = 'Preference recorded.';
+const NOTE_OPERATION_REPLY = JSON.stringify([
+  {
+    op: 'add',
+    level: 'project',
+    title: 'Avoid any',
+    filename: 'no-any',
+    summary: 'Do not use the any type',
+    type: 'feedback',
+    body: 'Do not use the any type in this project.',
+  },
+]);
 
 const server = createServer(async (request, response) => {
   const body = await readRequestBody(request);
@@ -137,11 +151,31 @@ async function writeAnthropicStream(response: ServerResponse, rawBody: string): 
 }
 
 function chooseReply(rawBody: string): string {
+  if (isMemoryMaintenanceRequest(rawBody)) {
+    return NOTE_OPERATION_REPLY;
+  }
+  if (!rawBody.includes(PROJECT_RULE_MARKER)) {
+    return 'Project rule marker is missing.';
+  }
+  if (hasLastUserText(rawBody, 'after resume')) {
+    return RESUME_REPLY;
+  }
+  if (hasLastUserText(rawBody, 'remember: never use')) {
+    return PREFERENCE_REPLY;
+  }
   if (hasToolResultContext(rawBody)) {
     return TOOL_FINAL_REPLY;
   }
 
   return hasSecondTurnContext(rawBody) ? SECOND_REPLY : FIRST_REPLY;
+}
+
+function isMemoryMaintenanceRequest(rawBody: string): boolean {
+  return rawBody.includes('生成记忆操作') && rawBody.includes('用户级 MEMORY.md');
+}
+
+function hasLastUserText(rawBody: string, text: string): boolean {
+  return matchesMessage(parseMessages(rawBody).at(-1), 'user', text);
 }
 
 function shouldReturnToolCall(rawBody: string): boolean {
