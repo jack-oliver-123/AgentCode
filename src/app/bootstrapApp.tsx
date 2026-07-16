@@ -89,6 +89,10 @@ export async function bootstrapApp(
   });
   const projectRoot = resolvedConfig.source === 'project' ? dirname(dirname(resolvedConfig.path)) : runtimeCwd;
 
+  // 注意：规则/会话/笔记全部以 projectRoot 为根，而非启动时的 cwd。
+  // 这与 loadDynamicModules 此前「从 cwd 向上找最近的 CLAUDE.md」的行为不同：
+  // 在子目录启动时不再采用子目录里的 CLAUDE.md，而采用配置文件所在的项目根。
+  // 这样会话归档与恢复才能稳定定位到同一份 JSONL，避免按启动目录碎片化。
   const registryPromise = loadModules(projectRoot, runtimeHomeDir);
   void cleanSessions(projectRoot).catch((error) => {
     console.warn('[SessionCleaner] 后台清理失败', error);
@@ -152,13 +156,15 @@ export async function bootstrapApp(
         }
       : {}),
   });
-  const autoNoteWriter = createNoteWriter({
-    provider,
-    model: resolvedConfig.config.model,
-    timeoutMs: resolvedConfig.config.request.timeoutMs,
-    cwd: projectRoot,
-    homeDir: runtimeHomeDir,
-  });
+  const autoNoteWriter = resolvedConfig.config.autoNotesEnabled
+    ? createNoteWriter({
+        provider,
+        model: resolvedConfig.config.model,
+        timeoutMs: resolvedConfig.config.request.timeoutMs,
+        cwd: projectRoot,
+        homeDir: runtimeHomeDir,
+      })
+    : undefined;
   const controller = createController({
     provider,
     config: resolvedConfig.config,
@@ -169,7 +175,7 @@ export async function bootstrapApp(
     askPermission: permissionPromptCoordinator.askPermission,
     homeDir: runtimeHomeDir,
     sessionArchive,
-    autoNoteWriter,
+    ...(autoNoteWriter !== undefined ? { autoNoteWriter } : {}),
     ...(restoredSession !== null
       ? {
           initialProviderContext: restoredSession.providerContext,

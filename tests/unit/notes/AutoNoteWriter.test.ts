@@ -193,6 +193,38 @@ describe('AutoNoteWriter', () => {
     }
   });
 
+  it('逐元素解析：单条非法字段不丢失同批其余合法操作', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agentcode-note-partial-'));
+    const memoryDir = join(root, 'project', '.agentcode', 'memory');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const raw = [
+      addOperation({ filename: 'good', title: '合法笔记', body: '合法正文' }),
+      { ...addOperation({ filename: 'bad', title: '过大正文' }), body: 'x'.repeat(256 * 1024 + 1) },
+      addOperation({ filename: 'also-good', title: '再次合法' }),
+    ];
+    const provider = new FakeProvider(noteResponse(raw));
+    try {
+      await createWriter(root, provider).maybeUpdate({
+        userText: '以后记住这两条',
+        assistantText: '好',
+        completionTokens: 0,
+      });
+
+      expect(await readFile(join(memoryDir, 'good.md'), 'utf8')).toContain('name: good');
+      expect(await readFile(join(memoryDir, 'good.md'), 'utf8')).toContain('合法正文');
+      expect(await readFile(join(memoryDir, 'also-good.md'), 'utf8')).toContain('name: also-good');
+      await expect(readFile(join(memoryDir, 'bad.md'), 'utf8')).rejects.toThrow();
+      const index = await readFile(join(memoryDir, 'MEMORY.md'), 'utf8');
+      expect(index).toContain('(good.md)');
+      expect(index).toContain('(also-good.md)');
+      expect(index).not.toContain('(bad.md)');
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('拒绝会破坏 Markdown 索引语法的文件名，并保留既有安全条目', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agentcode-note-parentheses-'));
     const memoryDir = join(root, 'project', '.agentcode', 'memory');

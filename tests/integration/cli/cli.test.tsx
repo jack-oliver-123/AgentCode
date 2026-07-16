@@ -250,7 +250,12 @@ api_key: sk-test-bootstrap-secret
 describe('runCli', () => {
   it('只把精确的 --resume 参数解析为恢复模式', () => {
     expect(parseCliArgs(['--resume'])).toEqual({ resumeMode: true });
+    expect(parseCliArgs(['--resume=true'])).toEqual({ resumeMode: true });
+    expect(parseCliArgs(['--resume=1'])).toEqual({ resumeMode: true });
     expect(parseCliArgs(['--resume=false', 'resume'])).toEqual({ resumeMode: false });
+    expect(parseCliArgs(['--resume=0'])).toEqual({ resumeMode: false });
+    expect(parseCliArgs(['--no-resume'])).toEqual({ resumeMode: false });
+    expect(parseCliArgs(['resume'])).toEqual({ resumeMode: false });
   });
 
   it('returns a safe non-zero exit code when bootstrap fails', async () => {
@@ -353,6 +358,7 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
       showThinking: false,
     },
     permissionMode: 'normal',
+    autoNotesEnabled: true,
     ...overrides,
   };
 }

@@ -667,6 +667,7 @@ function createConfig(overrides: Partial<AgentConfig>): AgentConfig {
       showThinking: false,
     },
     permissionMode: 'normal',
+    autoNotesEnabled: true,
     ...overrides,
   };
 }

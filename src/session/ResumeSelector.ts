@@ -69,7 +69,7 @@ async function selectSummary(
   emitKeypressEvents(input, readline);
   input.setRawMode?.(true);
 
-  output.write('选择要恢复的会话（↑/↓ 或数字，Enter 确认，Esc 取消）：\n');
+  output.write('选择要恢复的会话（↑/↓ 或数字，Enter 确认，Esc / q / Ctrl-C 取消）：\n');
   for (const [index, summary] of summaries.entries()) {
     output.write(
       `${index + 1}. ${summary.sessionId}  ${formatSummaryDate(summary.lastModified)}  ${summary.messageCount} 条消息\n`,

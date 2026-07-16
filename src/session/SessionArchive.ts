@@ -9,7 +9,7 @@ import {
   fingerprintsMatch,
   openSafeFileForUpdate,
 } from '../shared/safeFs.js';
-import type { ArchivedSessionMessage } from './archiveSchema.js';
+import { type ArchivedSessionMessage, cloneProviderMessage } from './archiveSchema.js';
 
 const FILE_MODE = 0o600;
 const SESSION_ID_PATTERN = /^\d{8}-\d{6}-[0-9a-f]{4}$/;
@@ -97,6 +97,10 @@ export class SessionArchive implements SessionArchivePort {
             !fingerprintsMatch(this.expectedFile, opened.fingerprint) ||
             this.repairOffset > opened.fingerprint.size
           ) {
+            // 指纹不匹配说明恢复后磁盘上又新增了消息（其他进程/会话已续写）。
+            // 此时绝不用陈旧 offset 截断，而是放弃本轮追加：当前 turn 不会落盘，
+            // 坏尾由下次 --resume 重新探测修复。这是有意的数据取舍——宁可本轮归档
+            // 缺失，也不能覆盖其他进程已写入的有效消息。
             throw new Error('Session archive changed after restore; refusing to apply a stale repair offset.');
           }
           await handle.truncate(this.repairOffset);
@@ -167,11 +171,4 @@ function createSessionId(timestamp: number, randomHex: string): string {
 
 function pad(value: number): string {
   return String(value).padStart(2, '0');
-}
-
-function cloneProviderMessage(message: ProviderChatMessage): ProviderChatMessage {
-  if ('toolCalls' in message) {
-    return { ...message, toolCalls: message.toolCalls.map((call) => ({ ...call })) };
-  }
-  return { ...message };
 }

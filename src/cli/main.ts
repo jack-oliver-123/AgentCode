@@ -16,7 +16,15 @@ export interface ParsedCliArgs {
 }
 
 export function parseCliArgs(argv: readonly string[]): ParsedCliArgs {
-  return { resumeMode: argv.includes('--resume') };
+  return {
+    resumeMode: argv.some((argument) => {
+      if (argument === '--resume') return true;
+      const match = /^--resume=(.*)$/.exec(argument);
+      if (match === null) return false;
+      const value = match[1]!.toLowerCase();
+      return value !== 'false' && value !== '0' && value !== 'no';
+    }),
+  };
 }
 
 export async function runCli(options: RunCliOptions = {}): Promise<number> {

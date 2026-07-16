@@ -24,6 +24,7 @@ import type { ToolExecutionContext, ToolRegistry } from '../tools/types.js';
 import type { AskPermissionFn, PermissionChecker, PermissionMode } from '../tools/permissions/types.js';
 import { createPermissionChecker } from '../tools/permissions/checker.js';
 import { loadPermissionRules } from '../tools/permissions/config.js';
+import { cloneProviderMessage } from './archiveSchema.js';
 import type { SessionArchivePort } from './SessionArchive.js';
 import type {
   ChatMessage,
@@ -634,13 +635,6 @@ function cloneMessage(message: ChatMessage): ChatMessage {
   }
 
   return cloned;
-}
-
-function cloneProviderMessage(message: ProviderChatMessage): ProviderChatMessage {
-  if ('toolCalls' in message) {
-    return { ...message, toolCalls: message.toolCalls.map((call) => ({ ...call })) };
-  }
-  return { ...message };
 }
 
 function createEmptyRegistry(): ToolRegistry {

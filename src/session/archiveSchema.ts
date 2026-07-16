@@ -7,6 +7,13 @@ import type {
 import type { ProviderToolCall } from '../tools/types.js';
 import type { ChatMessage as SessionChatMessage } from './types.js';
 
+export function cloneProviderMessage(message: ProviderChatMessage): ProviderChatMessage {
+  if ('toolCalls' in message) {
+    return { ...message, toolCalls: message.toolCalls.map((call) => ({ ...call })) };
+  }
+  return { ...message };
+}
+
 export interface ArchivedUi {
   id: string;
   createdAt: number;

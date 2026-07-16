@@ -27,6 +27,11 @@ export interface RawConfig {
       }
     | undefined;
   permission_mode?: string | undefined;
+  /**
+   * 自动笔记配置。enabled 默认 true；设为 false 时禁止每轮触发额外 LLM 调用，
+   * 避免 API 费用。会话归档与恢复不受此开关影响。
+   */
+  notes?: { enabled?: boolean | undefined } | undefined;
   /** MCP Server 原始配置，深层解析由 mcpSchema.ts 负责 */
   mcp_servers?: Record<string, unknown> | undefined;
 }
@@ -48,6 +53,8 @@ export interface AgentConfig {
     showThinking: boolean;
   };
   permissionMode: 'plan' | 'strict' | 'normal' | 'auto' | 'yolo';
+  /** 自动笔记特性开关，默认开启 */
+  autoNotesEnabled: boolean;
   /** 合并后的 MCP Server 配置，由 loadConfig 填充 */
   mcpServers?: McpServersConfig;
 }
@@ -122,6 +129,11 @@ export const rawConfigSchema = z
       })
       .optional(),
     permission_mode: z.enum(['plan', 'strict', 'normal', 'auto', 'yolo']).optional(),
+    notes: z
+      .object({
+        enabled: z.boolean().optional(),
+      })
+      .optional(),
     // mcp_servers 由 mcpSchema.ts 深层解析，这里只做宽松的结构检查
     mcp_servers: z.record(z.string().min(1), z.unknown()).optional(),
   })
@@ -154,5 +166,6 @@ export function normalizeConfig(rawConfig: RawConfig): AgentConfig {
       showThinking: rawConfig.ui?.show_thinking ?? false,
     },
     permissionMode: (rawConfig.permission_mode as AgentConfig['permissionMode'] | undefined) ?? 'normal',
+    autoNotesEnabled: rawConfig.notes?.enabled ?? true,
   };
 }

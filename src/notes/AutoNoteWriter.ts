@@ -27,7 +27,6 @@ const NOTE_OPERATION_SCHEMA = z
     body: z.string().max(MAX_NOTE_BODY_LENGTH),
   })
   .strict();
-const NOTE_OPERATIONS_SCHEMA = z.array(NOTE_OPERATION_SCHEMA).max(MAX_OPERATIONS);
 const PRUNE_SELECTION_SCHEMA = z
   .object({
     level: z.enum(['user', 'project']),
@@ -101,8 +100,8 @@ export class AutoNoteWriter implements AutoNoteWriterPort {
     if (response === undefined) {
       return;
     }
-    const operations = parseJsonResponse(response, NOTE_OPERATIONS_SCHEMA);
-    if (operations === undefined) {
+    const operations = parseOperations(response);
+    if (operations.length === 0) {
       console.warn('[AutoNoteWriter] LLM 返回的笔记操作不是有效 JSON 数组');
       return;
     }
@@ -244,7 +243,7 @@ ${indexes.user}
 ${indexes.project}
 
 只返回 JSON 数组，每项必须包含：
-{"op":"add|update|delete","level":"user|project","title":"string","filename":"string","summary":"string","type":"user|feedback|project|reference","body":"string"}`;
+{"op":"add|update|delete","level":"user|project","title":"string(<=500)","filename":"string(<=200，仅字母数字._-)","summary":"string(<=2000)","type":"user|feedback|project|reference","body":"string(<=256KB)"}`;
 }
 
 function buildPrunePrompt(level: MemoryLevel, index: string): string {
@@ -264,6 +263,36 @@ function parseJsonResponse<T>(text: string, schema: z.ZodType<T>): T | undefined
   } catch {
     return undefined;
   }
+}
+
+/**
+ * 逐元素解析 LLM 返回的操作数组。任意单条非法（字段缺失、body 过大、枚举越界等）
+ * 只跳过该条并记录 warn，不影响其余合法操作，避免一条坏数据让整批丢失。
+ */
+function parseOperations(text: string): NoteOperation[] {
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(text);
+  const candidate = (fenced?.[1] ?? text).trim();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(candidate);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  const operations: NoteOperation[] = [];
+  for (const [index, item] of raw.entries()) {
+    const result = NOTE_OPERATION_SCHEMA.safeParse(item);
+    if (result.success) {
+      if (operations.length >= MAX_OPERATIONS) {
+        console.warn(`[AutoNoteWriter] 超过 ${MAX_OPERATIONS} 条操作上限，丢弃后续条目`);
+        break;
+      }
+      operations.push(result.data);
+    } else {
+      console.warn(`[AutoNoteWriter] 跳过第 ${index + 1} 条无效笔记操作`, result.error);
+    }
+  }
+  return operations;
 }
 
 function createNoteContent(operation: NoteOperation, filename: string): string {

@@ -655,6 +655,7 @@ function createAnthropicConfig(overrides: Partial<AgentConfig> = {}): AgentConfi
       showThinking: false,
     },
     permissionMode: 'normal',
+    autoNotesEnabled: true,
     ...overrides,
   };
 }
