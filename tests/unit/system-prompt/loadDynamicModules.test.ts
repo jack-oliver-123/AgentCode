@@ -9,7 +9,7 @@ describe('loadDynamicModules', () => {
   it('无 .agentcode 目录时返回默认注册表（custom-instructions 和 memory 为空）', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agentcode-test-'));
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const projectContext = registry.find((m) => m.id === 'project-context');
       const custom = registry.find((m) => m.id === 'custom-instructions');
       const memory = registry.find((m) => m.id === 'memory');
@@ -30,7 +30,7 @@ describe('loadDynamicModules', () => {
     await mkdir(configDir, { recursive: true });
     await writeFile(join(configDir, 'instructions.md'), '优先使用中文回答');
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const custom = registry.find((m) => m.id === 'custom-instructions');
       expect(custom!.content).toContain('优先使用中文回答');
       expect(custom!.content).toContain('用户自定义指令');
@@ -45,7 +45,7 @@ describe('loadDynamicModules', () => {
     await mkdir(configDir, { recursive: true });
     await writeFile(join(configDir, 'memory.md'), '用户偏好 vim 操作');
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const memory = registry.find((m) => m.id === 'memory');
       expect(memory!.content).toContain('用户偏好 vim 操作');
       expect(memory!.content).toContain('持久化记忆');
@@ -58,7 +58,7 @@ describe('loadDynamicModules', () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agentcode-test-'));
     await writeFile(join(tempDir, 'CLAUDE.md'), '# 项目规则\n优先使用中文');
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const projectContext = registry.find((m) => m.id === 'project-context');
       expect(projectContext!.content).toContain('# 项目规则');
       expect(projectContext!.content).toContain('项目上下文（CLAUDE.md）');
@@ -74,7 +74,7 @@ describe('loadDynamicModules', () => {
     await writeFile(join(tempDir, 'CLAUDE.md'), '项目级规则');
     await writeFile(join(configDir, 'instructions.md'), '用户级指令');
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const projectContext = registry.find((m) => m.id === 'project-context');
       const custom = registry.find((m) => m.id === 'custom-instructions');
       expect(projectContext!.content).toContain('项目级规则');
@@ -93,7 +93,7 @@ describe('loadDynamicModules', () => {
     await mkdir(subDir, { recursive: true });
     await writeFile(join(tempDir, 'CLAUDE.md'), '# 根目录规则');
     try {
-      const registry = await loadDynamicModules(subDir);
+      const registry = await loadDynamicModules(subDir, join(tempDir, 'home'));
       const projectContext = registry.find((m) => m.id === 'project-context');
       expect(projectContext!.content).toContain('# 根目录规则');
       expect(projectContext!.content).toContain('项目上下文（CLAUDE.md）');
@@ -107,7 +107,7 @@ describe('loadDynamicModules', () => {
     const largeContent = 'x'.repeat(20 * 1024);
     await writeFile(join(tempDir, 'CLAUDE.md'), largeContent);
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const projectContext = registry.find((m) => m.id === 'project-context');
       expect(projectContext!.content).toContain('...(truncated)');
       expect(projectContext!.content.length).toBeLessThan(20 * 1024);
@@ -124,7 +124,7 @@ describe('loadDynamicModules', () => {
     const largeContent = 'x'.repeat(5000);
     await writeFile(join(configDir, 'instructions.md'), largeContent);
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const custom = registry.find((m) => m.id === 'custom-instructions');
       expect(custom!.content).toContain('...(truncated)');
       // 内容应被截断
@@ -137,12 +137,37 @@ describe('loadDynamicModules', () => {
   it('保持模块顺序不变', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'agentcode-test-'));
     try {
-      const registry = await loadDynamicModules(tempDir);
+      const registry = await loadDynamicModules(tempDir, join(tempDir, 'home'));
       const orders = registry.map((m) => m.order);
       // 验证 order 值序列保持递增
       for (let i = 1; i < orders.length; i++) {
         expect(orders[i]!).toBeGreaterThanOrEqual(orders[i - 1]!);
       }
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('集成 project-rules 和两级 MEMORY.md，并在新索引后追加旧 memory.md', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'agentcode-test-'));
+    const homeDir = join(tempDir, 'home');
+    const configDir = join(tempDir, '.agentcode');
+    await mkdir(join(homeDir, '.agentcode', 'memory'), { recursive: true });
+    await mkdir(join(configDir, 'memory'), { recursive: true });
+    await writeFile(join(tempDir, 'AGENTCODE.md'), '动态规则标记');
+    await writeFile(join(homeDir, '.agentcode', 'memory', 'MEMORY.md'), '用户索引标记');
+    await writeFile(join(configDir, 'memory', 'MEMORY.md'), '项目索引标记');
+    await writeFile(join(configDir, 'memory.md'), '旧记忆标记');
+    try {
+      const registry = await loadDynamicModules(tempDir, homeDir);
+      const projectRules = registry.find((module) => module.id === 'project-rules');
+      const memory = registry.find((module) => module.id === 'memory');
+
+      expect(projectRules?.content).toContain('动态规则标记');
+      expect(memory?.content).toContain('用户索引标记');
+      expect(memory?.content).toContain('项目索引标记');
+      expect(memory?.content).toContain('旧记忆标记');
+      expect(memory!.content.indexOf('项目索引标记')).toBeLessThan(memory!.content.indexOf('旧记忆标记'));
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

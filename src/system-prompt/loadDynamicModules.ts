@@ -1,6 +1,8 @@
 import { access, readFile } from 'node:fs/promises';
 import { dirname, join, parse, resolve } from 'node:path';
 
+import { loadMemoryIndex } from './loadMemoryIndex.js';
+import { loadProjectRules } from './loadProjectRules.js';
 import { defaultRegistry } from './registry.js';
 import type { SystemPromptModule } from './types.js';
 
@@ -26,12 +28,6 @@ const DYNAMIC_SOURCES = [
     maxBytes: 4096,
     resolvePath: (cwd: string) => Promise.resolve(join(cwd, CONFIG_DIRECTORY, 'instructions.md')),
   },
-  {
-    id: 'memory',
-    label: '持久化记忆',
-    maxBytes: 4096,
-    resolvePath: (cwd: string) => Promise.resolve(join(cwd, CONFIG_DIRECTORY, 'memory.md')),
-  },
 ] as const;
 
 /**
@@ -42,20 +38,32 @@ const DYNAMIC_SOURCES = [
  * - .agentcode/ 下的文件仅在 cwd 下查找
  * - 文件不存在或读取失败时静默跳过，不影响启动
  */
-export async function loadDynamicModules(cwd: string): Promise<SystemPromptModule[]> {
-  // 并行解析路径并加载内容
-  const loaded = await Promise.all(
-    DYNAMIC_SOURCES.map(async (source) => {
-      const filePath = await source.resolvePath(cwd);
-      if (filePath === undefined) return { id: source.id, content: '' };
-      const content = await loadFileContent(filePath, source.maxBytes);
-      return { id: source.id, content };
-    }),
-  );
+export async function loadDynamicModules(cwd: string, homeDir: string): Promise<SystemPromptModule[]> {
+  const [loaded, projectRules, memoryIndex, legacyMemory] = await Promise.all([
+    Promise.all(
+      DYNAMIC_SOURCES.map(async (source) => {
+        const filePath = await source.resolvePath(cwd);
+        if (filePath === undefined) return { id: source.id, content: '' };
+        const content = await loadFileContent(filePath, source.maxBytes);
+        return { id: source.id, content };
+      }),
+    ),
+    loadProjectRules(cwd, homeDir),
+    loadMemoryIndex(cwd, homeDir),
+    loadFileContent(join(cwd, CONFIG_DIRECTORY, 'memory.md'), 4096),
+  ]);
+
+  const memory = [memoryIndex, legacyMemory].filter((content) => content.length > 0).join('\n\n');
 
   // 建立 id → content 的映射
   const contentMap = new Map<string, string>(loaded.map((item) => [item.id, item.content]));
-  const labelMap = new Map<string, string>(DYNAMIC_SOURCES.map((s) => [s.id, s.label]));
+  contentMap.set('project-rules', projectRules);
+  contentMap.set('memory', memory);
+  const labelMap = new Map<string, string>([
+    ...DYNAMIC_SOURCES.map((source) => [source.id, source.label] as const),
+    ['project-rules', '项目规则（AGENTCODE.md）'],
+    ['memory', '持久化记忆'],
+  ]);
 
   // 基于 defaultRegistry 浅拷贝，替换动态模块内容
   return defaultRegistry.map((mod) => {

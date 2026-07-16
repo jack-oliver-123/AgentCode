@@ -461,6 +461,7 @@ function makeOpenAIConfig(): AgentConfig {
     request: { timeoutMs: 1000, headers: {} },
     ui: { showThinking: false },
     permissionMode: 'normal',
+    autoNotesEnabled: true,
   };
 }
 

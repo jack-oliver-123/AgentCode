@@ -59,6 +59,7 @@ describe('loadConfig', () => {
         showThinking: true,
       },
       permissionMode: 'normal',
+      autoNotesEnabled: true,
     });
   });
 
@@ -97,6 +98,27 @@ describe('loadConfig', () => {
 
     expect(resolvedConfig.source).toBe('global');
     expect(resolvedConfig.path).toBe(globalConfigPath);
+  });
+
+  it('notes.enabled defaults to true and respects explicit false', async () => {
+    const workspace = await createTempWorkspace();
+    await writeAgentConfig(workspace.project, VALID_PROJECT_CONFIG);
+    const defaultResolved = await loadConfig({ cwd: workspace.project, homeDir: workspace.home });
+    expect(defaultResolved.config.autoNotesEnabled).toBe(true);
+
+    await writeAgentConfig(
+      workspace.project,
+      `
+protocol: openai
+model: gpt-4.1
+base_url: https://api.openai.com/v1
+api_key: sk-test-notes-off
+notes:
+  enabled: false
+`,
+    );
+    const disabledResolved = await loadConfig({ cwd: workspace.project, homeDir: workspace.home });
+    expect(disabledResolved.config.autoNotesEnabled).toBe(false);
   });
 
   it('does not fall back to global config when project config exists but is invalid', async () => {

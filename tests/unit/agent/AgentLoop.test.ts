@@ -457,7 +457,13 @@ describe('runAgentLoop - Plan Mode', () => {
     }
 
     const completed = events.find((e) => e.type === 'loop.completed');
-    expect(completed).toMatchObject({ reason: 'natural' });
+    expect(completed).toMatchObject({
+      reason: 'natural',
+      turnMessages: [
+        { role: 'assistant', toolCalls: [{ id: 'plan-1', name: 'submit_plan' }] },
+        { role: 'tool', toolCallId: 'plan-1', toolName: 'submit_plan', isError: false },
+      ],
+    });
   });
 
   it('Plan Mode 中模型不调用 submit_plan 而返回纯文本时正常完成', async () => {
