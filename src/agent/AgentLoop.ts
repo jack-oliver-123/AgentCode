@@ -64,12 +64,13 @@ export async function* runAgentLoop(
 
     const steerBeforeRequest = input.consumeSteer?.() ?? [];
     if (steerBeforeRequest.length > 0) {
-      messages.push({ role: 'user', content: formatSteerGuidance(steerBeforeRequest) });
+      messages.push(formatSteerGuidance(steerBeforeRequest));
       yield { type: 'steer.consumed', items: steerBeforeRequest };
     }
 
     // 检查 signal — 可能在迭代之间被取消
     if (signal?.aborted) {
+      input.closeSteerInput?.();
       yield {
         type: 'loop.completed',
         finalText: '',
@@ -98,6 +99,7 @@ export async function* runAgentLoop(
       retry,
       iteration,
       signal,
+      input.closeSteerInput,
     );
 
     // streamWithRetry 返回 undefined 表示已 yield loop.failed 并需要终止
@@ -125,7 +127,7 @@ export async function* runAgentLoop(
     const hasToolCalls = turnToolCalls.length > 0;
     if (!hasToolCalls && steerAfterResponse.length > 0) {
       messages.push({ role: 'assistant', content: turnText });
-      messages.push({ role: 'user', content: formatSteerGuidance(steerAfterResponse) });
+      messages.push(formatSteerGuidance(steerAfterResponse));
       yield { type: 'steer.consumed', items: steerAfterResponse };
       continue;
     }
@@ -142,6 +144,7 @@ export async function* runAgentLoop(
     // 任何停止条件满足时直接退出（natural, cancelled, max_iterations, unknown_tool_limit）
     if (decision.stop) {
       const reason = decision.reason === 'provider_error' ? 'unknown_tool_limit' : decision.reason;
+      input.closeSteerInput?.();
       yield {
         type: 'loop.completed',
         finalText: turnText,
@@ -178,6 +181,7 @@ export async function* runAgentLoop(
 
       if (postCountDecision.stop) {
         const reason = postCountDecision.reason === 'provider_error' ? 'unknown_tool_limit' : postCountDecision.reason;
+        input.closeSteerInput?.();
         yield {
           type: 'loop.completed',
           finalText: turnText,
@@ -233,7 +237,7 @@ export async function* runAgentLoop(
       }
 
       if (steerAfterResponse.length > 0) {
-        messages.push({ role: 'user', content: formatSteerGuidance(steerAfterResponse) });
+        messages.push(formatSteerGuidance(steerAfterResponse));
         yield { type: 'steer.consumed', items: steerAfterResponse };
       }
 
@@ -241,6 +245,7 @@ export async function* runAgentLoop(
       const planResult = allResults.find((r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok);
       if (planResult?.result.ok) {
         const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
+        input.closeSteerInput?.();
         yield { type: 'plan.submitted', steps };
         yield {
           type: 'loop.completed',
@@ -257,6 +262,7 @@ export async function* runAgentLoop(
     }
 
     // 兜底：无工具调用已在上面 decision 处理，此处不应到达
+    input.closeSteerInput?.();
     yield {
       type: 'loop.completed',
       finalText: turnText,
@@ -268,6 +274,7 @@ export async function* runAgentLoop(
   }
 
   // 达到迭代上限
+  input.closeSteerInput?.();
   yield {
     type: 'loop.completed',
     finalText: '',
@@ -297,6 +304,7 @@ async function* streamWithRetry(
   retry: RetryConfig,
   iteration: number,
   signal: AbortSignal | undefined,
+  closeSteerInput: (() => void) | undefined,
 ): AsyncGenerator<AgentLoopEvent, ProviderStreamResult | undefined, undefined> {
   let lastError: PublicError | undefined;
 
@@ -315,6 +323,7 @@ async function* streamWithRetry(
       await sleep(delayMs, signal);
       // sleep 被 abort 打断时直接退出
       if (signal?.aborted) {
+        closeSteerInput?.();
         yield { type: 'loop.failed', error: lastError!, iteration };
         return undefined;
       }
@@ -383,6 +392,7 @@ async function* streamWithRetry(
         message: 'Provider stream ended without response.complete event.',
         retryable: false,
       };
+      closeSteerInput?.();
       yield { type: 'loop.failed', error: protoErr, iteration };
       return undefined;
     }
@@ -390,6 +400,7 @@ async function* streamWithRetry(
     // 有错误 — 检查是否可重试
     lastError = streamError!;
     if (!lastError.retryable) {
+      closeSteerInput?.();
       yield { type: 'loop.failed', error: lastError, iteration };
       return undefined;
     }
@@ -397,6 +408,7 @@ async function* streamWithRetry(
   }
 
   // 超过重试上限
+  closeSteerInput?.();
   yield { type: 'loop.failed', error: lastError!, iteration };
   return undefined;
 }
@@ -436,9 +448,13 @@ function resolveRegistry(registry: ToolRegistry, mode: 'default' | 'plan'): Tool
   return registry.filterByRisk(['read']);
 }
 
-function formatSteerGuidance(items: readonly import('./types.js').SteerGuidance[]): string {
+function formatSteerGuidance(items: readonly import('./types.js').SteerGuidance[]): ProviderMessage {
   const lines = items.map((item, index) => `${index + 1}. ${item.text}`);
-  return `<steer-guidance>\n${lines.join('\n')}\n</steer-guidance>`;
+  return {
+    role: 'user',
+    content: `<steer-guidance>\n${lines.join('\n')}\n</steer-guidance>`,
+    provenance: 'steer',
+  };
 }
 
 function serializeToolResult(result: ToolExecutionResult): string {

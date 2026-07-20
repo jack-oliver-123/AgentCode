@@ -1,10 +1,20 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PermissionManager,
   PermissionTargetChangedError,
   type PermissionRuleStorage,
 } from '../../../src/app/permissions/PermissionManager.js';
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
 
 function memoryStorage(initial: { project?: string; global?: string } = {}): PermissionRuleStorage & {
   contents: { project?: string; global?: string };
@@ -20,6 +30,80 @@ function memoryStorage(initial: { project?: string; global?: string } = {}): Per
 }
 
 describe('PermissionManager', () => {
+  it('isolates allow_session rules by active session and restores them only for that session', async () => {
+    const askPermission = vi.fn()
+      .mockResolvedValueOnce({ action: 'allow_session' })
+      .mockResolvedValueOnce({ action: 'deny' });
+    const manager = await PermissionManager.open({
+      selectedMode: 'normal',
+      agentMode: 'default',
+      storage: memoryStorage(),
+      askPermission,
+    });
+    const input = {
+      toolName: 'write_file',
+      toolRisk: 'write' as const,
+      parsedArguments: { path: 'src/session-only.ts' },
+      cwd: process.cwd(),
+    };
+
+    await manager.activateSession('session-a');
+    await expect(manager.preflight(input)).resolves.toMatchObject({ decision: { allowed: true } });
+    expect(manager.snapshot().counts.session).toBe(1);
+
+    await manager.activateSession('session-b');
+    expect(manager.snapshot().counts.session).toBe(0);
+    await expect(manager.preflight(input)).resolves.toMatchObject({ decision: { allowed: false } });
+
+    await manager.activateSession('session-a');
+    await expect(manager.preflight(input)).resolves.toMatchObject({ decision: { allowed: true, source: 'rule_allow' } });
+    expect(askPermission).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts with a safe valid subset when permission YAML or individual rules are corrupt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const malformed = await PermissionManager.open({
+      selectedMode: 'normal',
+      agentMode: 'default',
+      storage: memoryStorage({ project: 'rules: [unterminated' }),
+    });
+    expect(malformed.snapshot().counts.project).toBe(0);
+
+    const partial = await PermissionManager.open({
+      selectedMode: 'normal',
+      agentMode: 'default',
+      storage: memoryStorage({
+        project: 'rules:\n  - rule: read_file(src/**)\n    action: allow\n  - bad: entry\n',
+      }),
+    });
+
+    expect((await partial.getRuleViews('project')).map((rule) => rule.rule)).toEqual(['read_file(src/**)']);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('uses a disk CAS so two managers cannot overwrite each other with stale rule snapshots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agentcode-permissions-'));
+    const home = await mkdtemp(join(tmpdir(), 'agentcode-permissions-home-'));
+    tempRoots.push(root, home);
+    const first = await PermissionManager.open({ selectedMode: 'normal', agentMode: 'default', cwd: root, homeDir: home });
+    const second = await PermissionManager.open({ selectedMode: 'normal', agentMode: 'default', cwd: root, homeDir: home });
+
+    const results = await Promise.allSettled([
+      first.addProjectRule({ rule: 'read_file(src/first/**)', action: 'allow' }),
+      second.addProjectRule({ rule: 'run_command(rm *)', action: 'deny' }),
+    ]);
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect((results.find((result) => result.status === 'rejected') as PromiseRejectedResult).reason)
+      .toBeInstanceOf(PermissionTargetChangedError);
+    const persisted = await readFile(join(root, '.agentcode', 'permissions.yaml'), 'utf8');
+    expect([
+      persisted.includes('read_file(src/first/**)'),
+      persisted.includes('run_command(rm *)'),
+    ].filter(Boolean)).toHaveLength(1);
+  });
+
   it('separates selected mode from the Plan/Review readonly cap', async () => {
     const manager = await PermissionManager.open({
       selectedMode: 'normal',

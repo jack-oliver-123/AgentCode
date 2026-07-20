@@ -6,6 +6,7 @@ import { readSafeFile } from '../../shared/safeFs.js';
 
 const MAX_COMMAND_OUTPUT = 64 * 1024 * 1024;
 const MAX_UNTRACKED_FILE_BYTES = 2 * 1024 * 1024;
+const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 
 export type ReviewTargetInput =
   | { kind: 'worktree'; focus?: string }
@@ -32,7 +33,9 @@ export type ReviewTargetErrorCode =
   | 'rate_limited'
   | 'target_not_found'
   | 'repo_mismatch'
-  | 'target_changed';
+  | 'target_changed'
+  | 'cancelled'
+  | 'preflight_timeout';
 
 export class ReviewTargetError extends Error {
   constructor(readonly code: ReviewTargetErrorCode, message: string) {
@@ -45,18 +48,28 @@ export interface ReviewCommandResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  aborted?: boolean;
+  timedOut?: boolean;
+}
+
+export interface ReviewCommandOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export type ReviewCommandRunner = (
   command: 'git' | 'gh',
   args: readonly string[],
   cwd: string,
+  options?: ReviewCommandOptions,
 ) => Promise<ReviewCommandResult>;
 
 export interface FreezeReviewTargetOptions {
   cwd: string;
   run?: ReviewCommandRunner;
   now?: () => number;
+  signal?: AbortSignal;
+  commandTimeoutMs?: number;
 }
 
 interface PullRequestMetadata {
@@ -72,7 +85,20 @@ export async function freezeReviewTarget(
   input: ReviewTargetInput,
   options: FreezeReviewTargetOptions,
 ): Promise<FrozenReviewTarget> {
-  const run = options.run ?? runReviewCommand;
+  const commandRunner = options.run ?? runReviewCommand;
+  const run: ReviewCommandRunner = async (command, args, cwd) => {
+    const result = await commandRunner(command, args, cwd, {
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
+      timeoutMs: options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+    });
+    if (result.aborted || options.signal?.aborted) {
+      throw new ReviewTargetError('cancelled', `Review preflight command was cancelled: ${command} ${args[0] ?? ''}`.trim());
+    }
+    if (result.timedOut) {
+      throw new ReviewTargetError('preflight_timeout', `Review preflight command timed out: ${command} ${args[0] ?? ''}`.trim());
+    }
+    return result;
+  };
   const repoRoot = await resolveRepoRoot(options.cwd, run);
   const repoIdentity = await resolveRepoIdentity(repoRoot, run);
   const frozenAt = (options.now ?? Date.now)();
@@ -229,6 +255,12 @@ async function freezeWorktreeDiff(repoRoot: string, headSha: string, run: Review
   for (const relativePath of untracked.stdout.split('\0').filter(Boolean).sort()) {
     const file = await readSafeFile(repoRoot, resolve(repoRoot, relativePath), MAX_UNTRACKED_FILE_BYTES);
     if (file === undefined) continue;
+    if (file.truncated) {
+      throw new ReviewTargetError(
+        'target_not_found',
+        `Untracked file exceeds the ${MAX_UNTRACKED_FILE_BYTES} byte review snapshot limit: ${relativePath}`,
+      );
+    }
     const content = file.buffer.includes(0) ? file.buffer.toString('base64') : file.buffer.toString('utf8');
     const encoding = file.buffer.includes(0) ? 'base64' : 'utf8';
     snapshots.push(
@@ -365,10 +397,38 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-export const runReviewCommand: ReviewCommandRunner = (command, args, cwd) =>
+export const runReviewCommand: ReviewCommandRunner = (command, args, cwd, options = {}) =>
   new Promise((resolveCommand) => {
-    execFile(command, args, { cwd, encoding: 'utf8', maxBuffer: MAX_COMMAND_OUTPUT }, (error, stdout, stderr) => {
-      const exitCode = error === null ? 0 : typeof error.code === 'number' ? error.code : 1;
-      resolveCommand({ stdout, stderr, exitCode });
-    });
+    try {
+      execFile(
+        command,
+        args,
+        {
+          cwd,
+          encoding: 'utf8',
+          maxBuffer: MAX_COMMAND_OUTPUT,
+          timeout: options.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+          ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        },
+        (error, stdout, stderr) => {
+          const exitCode = error === null ? 0 : typeof error.code === 'number' ? error.code : 1;
+          const aborted = options.signal?.aborted === true || error?.name === 'AbortError';
+          const timedOut = !aborted && error !== null && 'killed' in error && error.killed === true;
+          resolveCommand({
+            stdout,
+            stderr,
+            exitCode,
+            ...(aborted ? { aborted: true } : {}),
+            ...(timedOut ? { timedOut: true } : {}),
+          });
+        },
+      );
+    } catch (error) {
+      resolveCommand({
+        stdout: '',
+        stderr: error instanceof Error ? error.message : String(error),
+        exitCode: 1,
+        ...(options.signal?.aborted ? { aborted: true } : {}),
+      });
+    }
   });

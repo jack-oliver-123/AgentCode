@@ -69,12 +69,14 @@ export function memoryDeleteFingerprint(target: MemoryDeleteTarget): string {
 }
 
 type WriteIndex = typeof atomicWritePrivateFile;
+type RenameFile = typeof rename;
 
 export interface MemoryManagerOptions {
   cwd: string;
   homeDir: string;
   autoNotesEnabled?: boolean;
   writeIndex?: WriteIndex;
+  renameFile?: RenameFile;
   createNonce?: () => string;
 }
 
@@ -101,6 +103,7 @@ interface LoadedIndex {
 
 export class MemoryManager {
   readonly writeIndex: WriteIndex;
+  readonly renameFile: RenameFile;
 
   private readonly roots: Record<MemoryScope, string>;
   private pending: Promise<void> = Promise.resolve();
@@ -108,6 +111,7 @@ export class MemoryManager {
   constructor(private readonly options: MemoryManagerOptions) {
     this.roots = { user: resolve(options.homeDir), project: resolve(options.cwd) };
     this.writeIndex = options.writeIndex ?? atomicWritePrivateFile;
+    this.renameFile = options.renameFile ?? rename;
   }
 
   async list(): Promise<MemoryIndexSnapshot> {
@@ -191,10 +195,22 @@ export class MemoryManager {
       let moved = false;
       let indexWritten = false;
       try {
-        await rename(currentEntry.path, tombstone);
+        await this.renameFile(currentEntry.path, tombstone);
         moved = true;
+        const movedNote = await readSafeFile(index.root, tombstone, MAX_NOTE_BYTES);
+        if (movedNote === undefined || movedNote.truncated || !fingerprintsMatch(movedNote.fingerprint, target.noteFingerprint)) {
+          throw new MemoryTargetChangedError(`Memory file changed while it was being moved: ${target.filename}`);
+        }
         await this.writeIndex(index.root, index.path, nextIndex, FILE_MODE);
         indexWritten = true;
+        const deleteCandidate = await readSafeFile(index.root, tombstone, MAX_NOTE_BYTES);
+        if (
+          deleteCandidate === undefined ||
+          deleteCandidate.truncated ||
+          !fingerprintsMatch(deleteCandidate.fingerprint, target.noteFingerprint)
+        ) {
+          throw new MemoryTargetChangedError(`Memory tombstone changed before deletion: ${target.filename}`);
+        }
         await rm(tombstone);
         moved = false;
       } catch (error) {
@@ -208,7 +224,13 @@ export class MemoryManager {
         }
         if (moved) {
           try {
-            await rename(tombstone, currentEntry.path);
+            const replacement = await readSafeFile(index.root, currentEntry.path, 1);
+            if (replacement !== undefined) {
+              throw new MemoryTargetChangedError(
+                `Memory path was recreated during rollback; preserved tombstone at ${tombstone}`,
+              );
+            }
+            await this.renameFile(tombstone, currentEntry.path);
           } catch (rollbackError) {
             rollbackErrors.push(rollbackError);
           }

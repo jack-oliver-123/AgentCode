@@ -135,4 +135,16 @@ describe('InputRouter', () => {
     expect(harness.toggleMode).toHaveBeenCalledOnce();
     expect(harness.dispatcher.dispatch).not.toHaveBeenCalled();
   });
+
+  it('rejects Shift+Tab mode changes while a run or Review is active', async () => {
+    const harness = createHarness(true, false, true);
+
+    await expect(harness.router.route('draft', 'shift-tab')).resolves.toEqual({
+      kind: 'mode_toggle',
+      accepted: false,
+      clearInput: false,
+      reason: 'run_active',
+    });
+    expect(harness.toggleMode).not.toHaveBeenCalled();
+  });
 });

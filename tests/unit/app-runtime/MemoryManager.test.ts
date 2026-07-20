@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -88,6 +88,35 @@ describe('MemoryManager', () => {
 
     await expect(manager.delete(target)).rejects.toBeInstanceOf(MemoryTargetChangedError);
     expect(await readFile(notePath, 'utf8')).toBe('changed after confirmation');
+    expect(await readFile(join(project, '.agentcode', 'memory', 'MEMORY.md'), 'utf8')).toContain('one.md');
+  });
+
+  it('preserves a replacement written between validation and rename instead of deleting it', async () => {
+    const project = await tempRoot('agentcode-memory-project-');
+    const home = await tempRoot('agentcode-memory-home-');
+    await writeMemory(project, [{ title: 'One', file: 'one.md', summary: 'first', body: 'old note' }]);
+    const notePath = join(project, '.agentcode', 'memory', 'one.md');
+    const replacementPath = join(project, '.agentcode', 'memory', '.replacement.md');
+    let replaced = false;
+    const manager = new MemoryManager({
+      cwd: project,
+      homeDir: home,
+      renameFile: async (from, to) => {
+        if (!replaced && from === notePath) {
+          replaced = true;
+          await writeFile(replacementPath, 'replacement written by another process', 'utf8');
+          await rm(from);
+          await rename(replacementPath, from);
+        }
+        await rename(from, to);
+      },
+      createNonce: () => 'race',
+    });
+    const target = await manager.prepareDelete('project', 'one.md');
+
+    await expect(manager.delete(target)).rejects.toBeInstanceOf(MemoryTargetChangedError);
+
+    expect(await readFile(notePath, 'utf8')).toBe('replacement written by another process');
     expect(await readFile(join(project, '.agentcode', 'memory', 'MEMORY.md'), 'utf8')).toContain('one.md');
   });
 

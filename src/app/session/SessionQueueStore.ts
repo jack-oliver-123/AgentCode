@@ -73,6 +73,7 @@ export class SessionQueueStore {
     const filePath = options.filePath ?? defaultQueuePath(options.storageRoot, options.sessionId);
     const storage = options.storage ?? createFileQueueStorage(options.storageRoot, filePath);
     const serialized = await storage.read();
+    if (serialized !== undefined) assertQueueSize(serialized, filePath);
     const initial = serialized === undefined
       ? emptySnapshot(options.sessionId)
       : restoredSnapshot(parsePersistedQueue(serialized, options.sessionId));
@@ -186,7 +187,9 @@ export class SessionQueueStore {
   }
 
   private async persistAndCommit(next: SessionQueueSnapshot): Promise<void> {
-    await this.storage.write(serializeQueue(next));
+    const serialized = serializeQueue(next);
+    assertQueueSize(serialized, this.filePath);
+    await this.storage.write(serialized);
     this.state = next;
   }
 
@@ -241,6 +244,13 @@ function serializeQueue(snapshot: SessionQueueSnapshot): string {
     items: snapshot.items.map((item) => ({ ...item })),
   };
   return `${JSON.stringify(persisted, null, 2)}\n`;
+}
+
+function assertQueueSize(serialized: string, filePath: string): void {
+  const bytes = Buffer.byteLength(serialized, 'utf8');
+  if (bytes > MAX_QUEUE_BYTES) {
+    throw new Error(`Queue file exceeds ${MAX_QUEUE_BYTES} bytes: ${filePath}`);
+  }
 }
 
 function parsePersistedQueue(serialized: string, expectedSessionId: string): PersistedQueueState {

@@ -111,6 +111,65 @@ describe('AppCommandExecutor review lifecycle', () => {
     expect(setModeCap).toHaveBeenCalledWith({ agentMode: 'plan', reviewActive: true });
     expect(setModeCap).toHaveBeenCalledWith({ agentMode: 'plan', reviewActive: false });
   });
+
+  it('makes Review preflight cancellable before git or gh returns', async () => {
+    const runtime = new AppRuntime({ mode: 'default', session: { ...sessionSnapshot(), agentMode: 'default' } });
+    const setModeCap = vi.fn(async () => permissionSnapshot());
+    const permissions = { snapshot: permissionSnapshot, setModeCap } as unknown as PermissionManager;
+    const pauseQueue = vi.fn(async () => undefined);
+    const sessions = { pauseQueue } as unknown as AppSessionRuntime;
+    const workspace = { getActiveSnapshot: sessionSnapshot } as unknown as SessionWorkspace<RuntimeSessionController>;
+    const reviewRunner = { run: vi.fn() } as unknown as ReviewRunner;
+    const preflightStarted = createDeferred<AbortSignal>();
+    const freezeReviewTarget = vi.fn((_input, signal?: AbortSignal) => {
+      if (signal === undefined) return Promise.reject(new Error('missing preflight signal'));
+      preflightStarted.resolve(signal);
+      return new Promise<FrozenReviewTarget>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('preflight cancelled')), { once: true });
+      });
+    });
+    const interactions = new InteractionCoordinator({
+      getState: () => ({
+        sessionId: 'session-a',
+        activeRunExists: runtime.getSnapshot().run.phase !== 'idle',
+        agentMode: runtime.getSnapshot().mode,
+        reviewActive: runtime.getSnapshot().run.reviewActive,
+      }),
+      execute: async () => undefined,
+    });
+    const executor = new AppCommandExecutor({
+      runtime,
+      sessions,
+      workspace,
+      interactions,
+      permissions,
+      memory: {} as MemoryManager,
+      freezeReviewTarget,
+      reviewRunner,
+    });
+    const action: CommandAction = {
+      type: 'start_review',
+      idempotencyKey: 'review-preflight',
+      target: { kind: 'pr', target: '42' },
+    };
+    const preflight = executor.preflight(action, commandContext(runtime), { kind: 'review.pr' });
+    const signal = await preflightStarted.promise;
+    expect(runtime.getSnapshot().run).toMatchObject({ id: 'review-preflight', reviewActive: true });
+
+    await executor.commit(
+      { type: 'stop_run', idempotencyKey: 'stop-preflight' },
+      commandContext(runtime),
+      { kind: 'stop' },
+    );
+
+    await expect(preflight).rejects.toThrow('preflight cancelled');
+    expect(signal.aborted).toBe(true);
+    expect(pauseQueue).toHaveBeenCalledOnce();
+    expect(reviewRunner.run).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot().run).toMatchObject({ phase: 'idle', reviewActive: false });
+    expect(setModeCap).toHaveBeenCalledWith({ agentMode: 'default', reviewActive: true });
+    expect(setModeCap).toHaveBeenCalledWith({ agentMode: 'default', reviewActive: false });
+  });
 });
 
 function commandContext(runtime: AppRuntime): CommandContext {
@@ -164,4 +223,12 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<voi
     if (Date.now() >= deadline) throw new Error('Timed out waiting for condition.');
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
+}
+
+function createDeferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolvePromise!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
 }

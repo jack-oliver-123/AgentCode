@@ -61,6 +61,8 @@ export interface AgentLoopInput {
   signal?: AbortSignal;
   /** 在每个安全模型边界提取运行中追加的 Steer 指导。 */
   consumeSteer?: () => readonly SteerGuidance[];
+  /** Stop accepting guidance immediately after the final consume boundary. */
+  closeSteerInput?: () => void;
 }
 
 /** Agent Loop 依赖（注入） */

@@ -1,23 +1,35 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ReviewTargetError,
   freezeReviewTarget,
   validateFrozenReviewTarget,
+  type ReviewCommandOptions,
+  type ReviewCommandResult,
   type ReviewCommandRunner,
 } from '../../../src/app/review/targetFreeze.js';
 
 interface FakeCommand {
   command: 'git' | 'gh';
   args: readonly string[];
+  options?: ReviewCommandOptions;
 }
 
-function createRunner(overrides: Partial<Record<string, { stdout?: string; stderr?: string; exitCode?: number }>> = {}): {
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+function createRunner(overrides: Partial<Record<string, Partial<ReviewCommandResult>>> = {}): {
   runner: ReviewCommandRunner;
   calls: FakeCommand[];
 } {
   const calls: FakeCommand[] = [];
-  const defaults: Record<string, { stdout?: string; stderr?: string; exitCode?: number }> = {
+  const defaults: Record<string, Partial<ReviewCommandResult>> = {
     'git rev-parse --show-toplevel': { stdout: 'C:\\repo\n' },
     'git rev-parse HEAD': { stdout: 'head-sha\n' },
     'git config --get remote.origin.url': { stdout: 'git@github.com:acme/project.git\n' },
@@ -26,21 +38,31 @@ function createRunner(overrides: Partial<Record<string, { stdout?: string; stder
   };
   return {
     calls,
-    runner: async (command, args) => {
-      calls.push({ command, args: [...args] });
+    runner: async (command, args, _cwd, options) => {
+      calls.push({ command, args: [...args], ...(options !== undefined ? { options } : {}) });
       const key = `${command} ${args.join(' ')}`;
       const result = overrides[key] ?? defaults[key];
       if (result === undefined) throw new Error(`Unexpected command: ${key}`);
-      return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.exitCode ?? 0 };
+      return {
+        stdout: result.stdout ?? '',
+        stderr: result.stderr ?? '',
+        exitCode: result.exitCode ?? 0,
+        ...(result.aborted === true ? { aborted: true } : {}),
+        ...(result.timedOut === true ? { timedOut: true } : {}),
+      };
     },
   };
 }
 
 describe('freezeReviewTarget', () => {
   it('freezes a worktree by HEAD, diff bytes, repo identity, and deterministic hash', async () => {
-    const { runner } = createRunner();
+    const { runner, calls } = createRunner();
+    const signal = new AbortController().signal;
 
-    const target = await freezeReviewTarget({ kind: 'worktree', focus: 'security' }, { cwd: 'C:\\repo', run: runner, now: () => 100 });
+    const target = await freezeReviewTarget(
+      { kind: 'worktree', focus: 'security' },
+      { cwd: 'C:\\repo', run: runner, now: () => 100, signal, commandTimeoutMs: 1234 },
+    );
 
     expect(target).toMatchObject({
       kind: 'worktree',
@@ -53,6 +75,32 @@ describe('freezeReviewTarget', () => {
     });
     expect(target.diff).toContain('+change');
     expect(target.diffHash).toMatch(/^[0-9a-f]{64}$/u);
+    expect(calls.every((call) => call.options?.signal === signal && call.options.timeoutMs === 1234)).toBe(true);
+  });
+
+  it.each([
+    ['cancelled', { aborted: true }],
+    ['preflight_timeout', { timedOut: true }],
+  ] as const)('classifies bounded preflight termination as %s', async (code, result) => {
+    const { runner } = createRunner({
+      'git rev-parse --show-toplevel': result,
+    });
+
+    await expect(freezeReviewTarget({ kind: 'worktree' }, { cwd: 'C:\\repo', run: runner }))
+      .rejects.toMatchObject({ code });
+  });
+
+  it('rejects untracked files that cannot be represented by the frozen snapshot', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agentcode-review-large-'));
+    tempRoots.push(root);
+    await writeFile(join(root, 'large.bin'), Buffer.alloc(2 * 1024 * 1024 + 1, 0x61));
+    const { runner } = createRunner({
+      'git rev-parse --show-toplevel': { stdout: `${root}\n` },
+      'git ls-files --others --exclude-standard -z': { stdout: 'large.bin\0' },
+    });
+
+    await expect(freezeReviewTarget({ kind: 'worktree' }, { cwd: root, run: runner }))
+      .rejects.toMatchObject({ code: 'target_not_found', message: expect.stringContaining('snapshot limit') });
   });
 
   it('resolves a branch to immutable base/head SHAs and diffs only those SHAs', async () => {
@@ -65,10 +113,10 @@ describe('freezeReviewTarget', () => {
 
     expect(target).toMatchObject({ kind: 'branch', baseSha: 'base-sha', headSha: 'head-sha' });
     expect(target.metadata).toMatchObject({ branch: 'main' });
-    expect(calls).toContainEqual({
+    expect(calls).toContainEqual(expect.objectContaining({
       command: 'git',
       args: ['diff', '--binary', '--no-ext-diff', 'base-sha...head-sha', '--'],
-    });
+    }));
   });
 
   it('rejects a GitHub PR URL for another repository before requesting PR data', async () => {

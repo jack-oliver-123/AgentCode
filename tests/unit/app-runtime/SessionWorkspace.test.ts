@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -225,5 +225,48 @@ describe('SessionWorkspace', () => {
       resumed: true,
     });
     await resumedWorkspace.close();
+  });
+
+  it('resumes a metadata-only zero-turn session whose JSONL archive was never created', async () => {
+    const root = await tempRoot();
+    const ids = ['session-a', 'session-b'];
+    const createController = vi.fn(async ({ session }) => ({ id: session.id, close: vi.fn() }));
+    const workspace = await SessionWorkspace.open<FakeController>({
+      storageRoot: root,
+      selectedPermissionMode: 'normal',
+      createSessionId: () => ids.shift()!,
+      createController,
+    });
+    await workspace.createSession();
+
+    await expect(workspace.resumeSession('session-a')).resolves.toMatchObject({
+      kind: 'activated',
+      session: { id: 'session-a', turnCount: 0 },
+    });
+    expect(createController).toHaveBeenLastCalledWith(expect.objectContaining({
+      restored: { providerContext: [], messages: [], activities: [] },
+    }));
+    await workspace.close();
+  });
+
+  it('counts legacy archive turns from ordinary user messages instead of all records', async () => {
+    const root = await tempRoot();
+    const sessionsDir = join(root, '.agentcode', 'sessions');
+    const legacyId = '20260720-101500-abcd';
+    await mkdir(sessionsDir, { recursive: true });
+    await writeFile(join(sessionsDir, `${legacyId}.jsonl`), [
+      JSON.stringify({ role: 'user', content: 'question', _ts: 1, _ui: { id: 'u-1', createdAt: 1, author: 'user' } }),
+      JSON.stringify({ role: 'assistant', content: 'answer', _ts: 2, _ui: { id: 'a-1', createdAt: 2, author: 'agent' } }),
+      JSON.stringify({ role: 'user', content: 'guidance', provenance: 'steer', _ts: 3 }),
+    ].join('\n'), 'utf8');
+    const workspace = await SessionWorkspace.open<FakeController>({
+      storageRoot: root,
+      selectedPermissionMode: 'normal',
+      createSessionId: () => 'session-current',
+      createController: async ({ session }) => ({ id: session.id, close: vi.fn() }),
+    });
+
+    expect((await workspace.listSessions()).find((session) => session.id === legacyId)?.turnCount).toBe(1);
+    await workspace.close();
   });
 });

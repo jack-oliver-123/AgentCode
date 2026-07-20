@@ -2,6 +2,7 @@ import { DEFAULT_AGENT_LOOP_CONFIG, type AgentLoopEvent, type SteerGuidance } fr
 import { runAgentLoop } from '../../agent/AgentLoop.js';
 import type { ChatModelProvider } from '../../providers/types.js';
 import { AgentCodeError } from '../../shared/errors.js';
+import { createStaticRegistry } from '../../tools/registry.js';
 import type { ToolExecutionContext, ToolRegistry } from '../../tools/types.js';
 import type { FrozenReviewTarget } from './targetFreeze.js';
 
@@ -53,7 +54,9 @@ export class ReviewRunner {
     consumeSteer?: () => readonly SteerGuidance[],
   ): Promise<ReviewResult> {
     await this.options.validateTarget(target);
-    const registry = this.options.toolRegistry.filterByRisk(['read']);
+    // The frozen diff is the complete review input. Runtime-backed read tools would
+    // observe a different checkout and could escape the frozen target boundary.
+    const registry = createStaticRegistry([]);
     let finalText: string | undefined;
 
     const events = runAgentLoop(

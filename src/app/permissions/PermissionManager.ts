@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { open, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parse, stringify } from 'yaml';
 
-import { atomicWritePrivateFile, readSafeFile } from '../../shared/safeFs.js';
+import { atomicWritePrivateFile, ensurePrivateDirectory, readSafeFile } from '../../shared/safeFs.js';
 import { createPermissionChecker } from '../../tools/permissions/checker.js';
 import { compileRules } from '../../tools/permissions/ruleEngine.js';
 import type {
@@ -18,6 +20,8 @@ import type { AgentMode, EffectivePermissionMode, PermissionMode, PermissionSnap
 const PERMISSION_FILE_MODE = 0o600;
 const MAX_PERMISSION_BYTES = 1024 * 1024;
 const PERMISSION_PATH = join('.agentcode', 'permissions.yaml');
+const PERMISSION_LOCK_TIMEOUT_MS = 5_000;
+const PERMISSION_LOCK_RETRY_MS = 25;
 
 export type PermissionScope = 'session' | 'project' | 'global';
 type PersistentPermissionScope = Exclude<PermissionScope, 'session'>;
@@ -33,6 +37,11 @@ export interface PermissionRuleView {
 export interface PermissionRuleStorage {
   read(scope: PersistentPermissionScope): Promise<string | undefined>;
   write(scope: PersistentPermissionScope, content: string): Promise<void>;
+  compareAndSwap?(
+    scope: PersistentPermissionScope,
+    expected: string | undefined,
+    content: string,
+  ): Promise<boolean>;
 }
 
 export interface PermissionAuditEvent {
@@ -85,6 +94,7 @@ export class PermissionTargetChangedError extends Error {
 interface RuleDocument {
   document: Record<string, unknown>;
   rules: PermissionRule[];
+  source: string | undefined;
 }
 
 interface RuleState {
@@ -99,6 +109,8 @@ export class PermissionManager {
   private reviewActive: boolean;
   private generation = 0;
   private rules: RuleState;
+  private activeSessionId: string | undefined;
+  private readonly sessionRules = new Map<string, PermissionRule[]>();
   private pending: Promise<void> = Promise.resolve();
   private preflightPending: Promise<void> = Promise.resolve();
 
@@ -133,6 +145,24 @@ export class PermissionManager {
         project: this.rules.project.rules.length,
         global: this.rules.global.rules.length,
       }),
+    });
+  }
+
+  activateSession(sessionId: string): Promise<PermissionSnapshot> {
+    const normalized = sessionId.trim();
+    if (normalized.length === 0) return Promise.reject(new Error('Session ID must not be empty.'));
+    return this.serialize(async () => {
+      if (this.activeSessionId === normalized) return this.snapshot();
+      if (this.activeSessionId !== undefined) {
+        this.sessionRules.set(this.activeSessionId, [...this.rules.session]);
+      }
+      const hadActiveSession = this.activeSessionId !== undefined;
+      this.activeSessionId = normalized;
+      const nextRules = this.sessionRules.get(normalized) ?? (hadActiveSession ? [] : this.rules.session);
+      this.rules = { ...this.rules, session: [...nextRules] };
+      this.sessionRules.set(normalized, [...nextRules]);
+      if (hadActiveSession) this.generation += 1;
+      return this.snapshot();
     });
   }
 
@@ -199,11 +229,10 @@ export class PermissionManager {
       const before = this.snapshot();
       const nextRules = this.rawRules(scope).filter((_, ruleIndex) => ruleIndex !== index);
       if (scope === 'session') {
-        this.rules = { ...this.rules, session: nextRules };
+        this.setSessionRules(nextRules);
       } else {
         const current = this.rules[scope];
-        const nextDocument: RuleDocument = { document: current.document, rules: nextRules };
-        await this.storage.write(scope, serializeRuleDocument(nextDocument));
+        const nextDocument = await this.persistRuleDocument(scope, current, nextRules);
         this.rules = { ...this.rules, [scope]: nextDocument };
       }
       this.generation += 1;
@@ -227,7 +256,7 @@ export class PermissionManager {
   addSessionRule(rule: PermissionRule, context: { activeRunId?: string } = {}): Promise<PermissionRuleView> {
     return this.serialize(async () => {
       const before = this.snapshot();
-      this.rules = { ...this.rules, session: [rule, ...this.rules.session] };
+      this.setSessionRules([rule, ...this.rules.session]);
       this.generation += 1;
       const view = createRuleViews('session', this.rules.session)[0]!;
       const after = this.snapshot();
@@ -251,8 +280,7 @@ export class PermissionManager {
     return this.serialize(async () => {
       const before = this.snapshot();
       const current = this.rules.project;
-      const nextDocument: RuleDocument = { document: current.document, rules: [rule, ...current.rules] };
-      await this.storage.write('project', serializeRuleDocument(nextDocument));
+      const nextDocument = await this.persistRuleDocument('project', current, [rule, ...current.rules]);
       this.rules = { ...this.rules, project: nextDocument };
       this.generation += 1;
       const view = createRuleViews('project', nextDocument.rules)[0]!;
@@ -337,6 +365,45 @@ export class PermissionManager {
     };
   }
 
+  private setSessionRules(rules: readonly PermissionRule[]): void {
+    const next = rules.map((rule) => ({ ...rule }));
+    this.rules = { ...this.rules, session: next };
+    if (this.activeSessionId !== undefined) this.sessionRules.set(this.activeSessionId, [...next]);
+  }
+
+  private async persistRuleDocument(
+    scope: PersistentPermissionScope,
+    current: RuleDocument,
+    rules: readonly PermissionRule[],
+  ): Promise<RuleDocument> {
+    const candidate: RuleDocument = {
+      document: current.document,
+      rules: rules.map((rule) => ({ ...rule })),
+      source: undefined,
+    };
+    const serialized = serializeRuleDocument(candidate);
+    const committed = this.storage.compareAndSwap !== undefined
+      ? await this.storage.compareAndSwap(scope, current.source, serialized)
+      : await this.compareAndSwapFallback(scope, current.source, serialized);
+    if (!committed) {
+      const disk = await this.storage.read(scope);
+      this.rules = { ...this.rules, [scope]: parseRuleDocument(disk, scope) };
+      this.generation += 1;
+      throw new PermissionTargetChangedError(`Permission file changed on disk before ${scope} rules were persisted.`);
+    }
+    return { ...candidate, source: serialized };
+  }
+
+  private async compareAndSwapFallback(
+    scope: PersistentPermissionScope,
+    expected: string | undefined,
+    content: string,
+  ): Promise<boolean> {
+    if ((await this.storage.read(scope)) !== expected) return false;
+    await this.storage.write(scope, content);
+    return true;
+  }
+
   private assertExpectedGeneration(expected: number | undefined): void {
     if (expected !== undefined && expected !== this.generation) {
       throw new PermissionTargetChangedError(
@@ -381,36 +448,108 @@ function createFilePermissionStorage(cwd: string, homeDir: string): PermissionRu
       const root = roots[scope];
       return atomicWritePrivateFile(root, join(root, PERMISSION_PATH), content, PERMISSION_FILE_MODE);
     },
+    compareAndSwap: (scope, expected, content) => {
+      const root = roots[scope];
+      return compareAndSwapPermissionFile(root, join(root, PERMISSION_PATH), expected, content);
+    },
   };
 }
 
 function parseRuleDocument(content: string | undefined, scope: PersistentPermissionScope): RuleDocument {
-  if (content === undefined || content.trim().length === 0) return { document: {}, rules: [] };
+  if (content === undefined || content.trim().length === 0) return { document: {}, rules: [], source: content };
   let value: unknown;
   try {
     value = parse(content);
-  } catch {
-    throw new Error(`Invalid ${scope} permission YAML.`);
+  } catch (error) {
+    warnInvalidPermission(scope, 'YAML', error);
+    return { document: {}, rules: [], source: content };
   }
-  if (!isRecord(value)) throw new Error(`Invalid ${scope} permission document.`);
+  if (!isRecord(value)) {
+    warnInvalidPermission(scope, 'document');
+    return { document: {}, rules: [], source: content };
+  }
   const rawRules = value['rules'];
-  if (rawRules === undefined) return { document: value, rules: [] };
-  if (!Array.isArray(rawRules)) throw new Error(`Invalid ${scope} permission rules.`);
-  const rules = rawRules.map((rule): PermissionRule => {
+  if (rawRules === undefined) return { document: value, rules: [], source: content };
+  if (!Array.isArray(rawRules)) {
+    warnInvalidPermission(scope, 'rules');
+    return { document: value, rules: [], source: content };
+  }
+  const rules: PermissionRule[] = [];
+  rawRules.forEach((rule, index) => {
     if (
       !isRecord(rule) ||
       typeof rule['rule'] !== 'string' ||
       (rule['action'] !== 'allow' && rule['action'] !== 'deny')
     ) {
-      throw new Error(`Invalid ${scope} permission rule.`);
+      warnInvalidPermission(scope, `rule ${index + 1}`);
+      return;
     }
-    return { rule: rule['rule'], action: rule['action'] };
+    const candidate: PermissionRule = { rule: rule['rule'], action: rule['action'] };
+    try {
+      compileRules([candidate]);
+      rules.push(candidate);
+    } catch (error) {
+      warnInvalidPermission(scope, `rule ${index + 1}`, error);
+    }
   });
-  return { document: value, rules };
+  return { document: value, rules, source: content };
 }
 
 function serializeRuleDocument(ruleDocument: RuleDocument): string {
   return stringify({ ...ruleDocument.document, rules: ruleDocument.rules });
+}
+
+async function compareAndSwapPermissionFile(
+  root: string,
+  filePath: string,
+  expected: string | undefined,
+  content: string,
+): Promise<boolean> {
+  const directory = await ensurePrivateDirectory(root, dirname(filePath), 0o700);
+  const lockPath = join(directory, `.${basename(filePath)}.lock`);
+  const lock = await acquirePermissionLock(lockPath);
+  try {
+    const current = await readSafeFile(root, filePath, MAX_PERMISSION_BYTES);
+    if (current?.truncated) throw new Error(`Permission file exceeds ${MAX_PERMISSION_BYTES} bytes: ${filePath}`);
+    const currentContent = current?.buffer.toString('utf8');
+    if (currentContent !== expected) return false;
+    await atomicWritePrivateFile(root, filePath, content, PERMISSION_FILE_MODE);
+    return true;
+  } finally {
+    await lock.close().catch(() => undefined);
+    await rm(lockPath).catch(() => undefined);
+  }
+}
+
+async function acquirePermissionLock(lockPath: string) {
+  const deadline = Date.now() + PERMISSION_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      const handle = await open(
+        lockPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+        PERMISSION_FILE_MODE,
+      );
+      await handle.writeFile(`${process.pid}\n`, 'utf8');
+      await handle.sync();
+      return handle;
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) throw new Error(`Timed out waiting for permission file lock: ${lockPath}`);
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, PERMISSION_LOCK_RETRY_MS));
+    }
+  }
+}
+
+function warnInvalidPermission(scope: PersistentPermissionScope, part: string, error?: unknown): void {
+  console.warn(
+    `[PermissionManager] Ignoring invalid ${scope} permission ${part}.`,
+    ...(error === undefined ? [] : [error]),
+  );
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }
 
 function createRuleViews(scope: PermissionScope, rules: readonly PermissionRule[]): PermissionRuleView[] {

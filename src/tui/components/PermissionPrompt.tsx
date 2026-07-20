@@ -7,6 +7,7 @@ export interface PermissionPromptProps {
   toolName: string;
   description: string;
   onRespond(response: PromptResponse): void;
+  active?: boolean;
 }
 
 interface Option {
@@ -22,7 +23,7 @@ const OPTIONS: readonly Option[] = [
   { label: '[4] 拒绝', key: '4', response: { action: 'deny' } },
 ];
 
-export function PermissionPrompt({ toolName, description, onRespond }: PermissionPromptProps): ReactElement {
+export function PermissionPrompt({ toolName, description, onRespond, active = true }: PermissionPromptProps): ReactElement {
   const [selected, setSelected] = useState(0);
 
   useInput((input, key) => {
@@ -57,7 +58,7 @@ export function PermissionPrompt({ toolName, description, onRespond }: Permissio
     if (key.escape) {
       onRespond({ action: 'deny' });
     }
-  });
+  }, { isActive: active });
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="blue" paddingX={1}>

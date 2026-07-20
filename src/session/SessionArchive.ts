@@ -38,6 +38,38 @@ export type SessionArchiveActivity =
   | { type: 'run.stopped'; runId: string; createdAt: number }
   | { type: 'review.result'; reviewId: string; content: unknown; createdAt: number };
 
+export function parseSessionArchiveActivity(value: unknown): SessionArchiveActivity | undefined {
+  if (!isRecord(value) || value['_activity'] !== value['type'] || !isTimestamp(value['createdAt'])) return undefined;
+  if (value['type'] === 'steer') {
+    if (
+      typeof value['id'] !== 'string' || value['id'].length === 0 ||
+      typeof value['runId'] !== 'string' || value['runId'].length === 0 ||
+      typeof value['text'] !== 'string' || value['text'].length === 0
+    ) return undefined;
+    return {
+      type: 'steer',
+      id: value['id'],
+      runId: value['runId'],
+      text: value['text'],
+      createdAt: value['createdAt'],
+    };
+  }
+  if (value['type'] === 'run.stopped') {
+    if (typeof value['runId'] !== 'string' || value['runId'].length === 0) return undefined;
+    return { type: 'run.stopped', runId: value['runId'], createdAt: value['createdAt'] };
+  }
+  if (value['type'] === 'review.result') {
+    if (typeof value['reviewId'] !== 'string' || value['reviewId'].length === 0 || !('content' in value)) return undefined;
+    return {
+      type: 'review.result',
+      reviewId: value['reviewId'],
+      content: structuredClone(value['content']),
+      createdAt: value['createdAt'],
+    };
+  }
+  return undefined;
+}
+
 export class SessionArchive implements SessionArchivePort {
   readonly sessionId: string;
   readonly filePath: string;
@@ -141,6 +173,7 @@ export class SessionArchive implements SessionArchivePort {
     if ('toolCalls' in message) {
       return { ...message, toolCalls: message.toolCalls.map((call) => ({ ...call })), _ts: timestamp };
     }
+    if (message.provenance === 'steer') return { ...message, _ts: timestamp };
     const author = message.role === 'user' ? 'user' : 'agent';
     return {
       ...message,
@@ -148,6 +181,14 @@ export class SessionArchive implements SessionArchivePort {
       _ui: { id: this.createUiId(author), createdAt: timestamp, author },
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 async function fileNeedsLeadingNewline(handle: FileHandle, size: number): Promise<boolean> {

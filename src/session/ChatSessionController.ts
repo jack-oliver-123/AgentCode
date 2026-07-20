@@ -28,7 +28,7 @@ import type { AskPermissionFn, PermissionChecker, PermissionMode } from '../tool
 import { createPermissionChecker } from '../tools/permissions/checker.js';
 import { loadPermissionRules } from '../tools/permissions/config.js';
 import { cloneProviderMessage } from './archiveSchema.js';
-import type { SessionArchivePort } from './SessionArchive.js';
+import type { SessionArchiveActivity, SessionArchivePort } from './SessionArchive.js';
 import type {
   ChatMessage,
   ChatSessionActivity,
@@ -70,6 +70,8 @@ export interface ChatSessionControllerOptions {
   initialProviderContext?: readonly ProviderChatMessage[];
   /** 恢复后的 TUI 历史消息 */
   initialMessages?: readonly ChatMessage[];
+  /** Restored typed activities that are intentionally outside provider/TUI message turns. */
+  initialActivities?: readonly SessionArchiveActivity[];
   /** 会话归档端口（可注入，便于测试） */
   sessionArchive?: SessionArchivePort;
   /** 自动笔记端口（可注入，便于测试） */
@@ -139,6 +141,7 @@ export class ChatSessionController {
   private readonly expireApprovals: ((runId: string) => void | Promise<void>) | undefined;
   private activeAbortController: AbortController | undefined;
   private activeRunId: string | undefined;
+  private acceptingSteers = false;
   private pendingSteers: SteerGuidance[] = [];
   private turnSteers: SteerGuidance[] = [];
   private readonly activities: ChatSessionActivity[] = [];
@@ -215,6 +218,7 @@ export class ChatSessionController {
     this.providerContext = initialProviderContext;
     this.messages.push(...initialMessages.map(cloneMessage));
     this.contextMessages.push(...initialMessages.map(cloneMessage));
+    this.activities.push(...(options.initialActivities ?? []).map(toChatSessionActivity));
     if (initialProviderContext.length > 0) {
       this.contextManager.onMessagesAppended(initialProviderContext);
     }
@@ -276,7 +280,9 @@ export class ChatSessionController {
     const normalized = text.trim();
     if (normalized.length === 0) return { accepted: false, reason: 'empty' };
     const runId = this.activeRunId;
-    if (this.status !== 'streaming' || runId === undefined) return { accepted: false, reason: 'no_active_run' };
+    if (this.status !== 'streaming' || runId === undefined || !this.acceptingSteers) {
+      return { accepted: false, reason: 'no_active_run' };
+    }
     const guidance: SteerGuidance = {
       id: this.createIdFn('steer'),
       text: normalized,
@@ -287,7 +293,7 @@ export class ChatSessionController {
     } catch {
       return { accepted: false, reason: 'persistence_failed' };
     }
-    if (this.status !== 'streaming' || this.activeRunId !== runId) {
+    if (this.status !== 'streaming' || this.activeRunId !== runId || !this.acceptingSteers) {
       return { accepted: false, reason: 'run_ended' };
     }
     this.pendingSteers.push(guidance);
@@ -390,8 +396,12 @@ export class ChatSessionController {
     this.turnSteers = [];
     const runId = this.createIdFn('run');
     const abortController = new AbortController();
+    const signal = options.signal === undefined
+      ? abortController.signal
+      : AbortSignal.any([options.signal, abortController.signal]);
     this.activeRunId = runId;
     this.activeAbortController = abortController;
+    this.acceptingSteers = true;
 
     const userMessage = this.createMessage('user', text);
     this.messages.push(userMessage);
@@ -443,15 +453,12 @@ export class ChatSessionController {
       // 在 AgentLoop 前执行工具结果卸载，再由 ContextManager 统一判断自动压缩档位。
       // 当前 userMessage 尚未进入 contextMessages（在 completeTurn/failTurn 才写入），
       // 需显式追加到 originalUserMessages，确保本轮用户请求出现在摘要第 6 节。
-      await this.contextManager.offloadToolResults(this.providerContext);
+      await this.contextManager.offloadToolResults(this.providerContext, signal);
       await this.contextManager.compact(this.providerContext, {
         trigger: 'auto',
         originalUserMessages: [...this.getOriginalUserMessages(), toProviderMessage(userMessage).content],
-      });
-
-      const signal = options.signal === undefined
-        ? abortController.signal
-        : AbortSignal.any([options.signal, abortController.signal]);
+      }, signal);
+      signal.throwIfAborted();
       const input: AgentLoopInput = {
         contextMessages: [...this.providerContext],
         userMessage: toProviderMessage(userMessage),
@@ -459,6 +466,9 @@ export class ChatSessionController {
         ...(reminder.length > 0 ? { reminder } : {}),
         signal,
         consumeSteer: () => this.pendingSteers.splice(0),
+        closeSteerInput: () => {
+          if (this.activeRunId === runId) this.acceptingSteers = false;
+        },
       };
 
       const deps: AgentLoopDeps = {
@@ -488,7 +498,8 @@ export class ChatSessionController {
         }
       }
     } catch (error) {
-      if (abortController.signal.aborted) {
+      this.acceptingSteers = false;
+      if (signal.aborted) {
         await this.completeTurn(userMessage, '', [], 'stopped');
       } else {
         this.failTurn(userMessage, toPublicError(error));
@@ -498,6 +509,7 @@ export class ChatSessionController {
       if (this.activeRunId === runId) {
         this.activeRunId = undefined;
         this.activeAbortController = undefined;
+        this.acceptingSteers = false;
         this.pendingSteers = [];
       }
     }
@@ -576,6 +588,7 @@ export class ChatSessionController {
         return undefined;
 
       case 'loop.completed':
+        this.acceptingSteers = false;
         await this.completeTurn(
           userMessage,
           event.finalText,
@@ -589,6 +602,7 @@ export class ChatSessionController {
         return this.createStateChangedEvent();
 
       case 'loop.failed': {
+        this.acceptingSteers = false;
         // code 为 provider_error 且消息明确指示输入过长时提示使用 /compact。
         // 使用与 ContextManager.classifySummaryError 一致的精确模式，避免误匹配
         // "authentication token expired"、"invalid key length" 等无关错误。
@@ -693,10 +707,12 @@ export class ChatSessionController {
       }
     }
 
+    const stopped = finishReason === 'stopped' || this.activeAbortController?.signal.aborted === true;
+    if (stopped && assistantMessage.meta !== undefined) assistantMessage.meta.finishReason = 'stopped';
     this.toolActivities = [];
     this.turnSteers = [];
     this.draft = undefined;
-    this.status = finishReason === 'stopped' ? 'stopped' : 'idle';
+    this.status = stopped ? 'stopped' : 'idle';
     this.lastError = undefined;
   }
 
@@ -830,6 +846,29 @@ function createEmptyRegistry(): ToolRegistry {
     getProviderDeclarations: () => [],
     filterByRisk: () => createEmptyRegistry(),
   };
+}
+
+function toChatSessionActivity(activity: SessionArchiveActivity): ChatSessionActivity {
+  switch (activity.type) {
+    case 'steer':
+      return { id: activity.id, type: 'steer', text: activity.text, createdAt: activity.createdAt };
+    case 'run.stopped':
+      return {
+        id: `stopped-${activity.runId}-${activity.createdAt}`,
+        type: 'stopped',
+        runId: activity.runId,
+        createdAt: activity.createdAt,
+      };
+    case 'review.result':
+      return {
+        id: `review-${activity.reviewId}-${activity.createdAt}`,
+        type: 'review',
+        reviewId: activity.reviewId,
+        summary: reviewSummary(activity.content),
+        findingCount: reviewFindingCount(activity.content),
+        createdAt: activity.createdAt,
+      };
+  }
 }
 
 function reviewSummary(content: unknown): string {

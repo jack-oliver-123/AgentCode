@@ -173,13 +173,18 @@ export async function bootstrapApp(
         permissionManager,
         ...(autoNoteWriter !== undefined ? { autoNoteWriter } : {}),
         ...(restored !== undefined
-          ? { initialProviderContext: restored.providerContext, initialMessages: restored.messages }
+          ? {
+              initialProviderContext: restored.providerContext,
+              initialMessages: restored.messages,
+              ...(restored.activities !== undefined ? { initialActivities: restored.activities } : {}),
+            }
           : {}),
       });
     },
     ...(restoredSession !== null ? { initial: { restored: restoredSession } } : {}),
   });
 
+  await permissionManager.activateSession(workspace.getActiveSnapshot().id);
   await permissionManager.setSelectedMode(workspace.getActiveSnapshot().selectedPermissionMode, { confirmed: true });
   await permissionManager.setModeCap({ agentMode: workspace.getActiveSnapshot().agentMode, reviewActive: false });
 
@@ -292,7 +297,10 @@ export async function bootstrapApp(
     interactions,
     permissions: permissionManager,
     memory: memoryManager,
-    freezeReviewTarget: (input) => (dependencies.freezeReviewTarget ?? freezeReviewTarget)(input, { cwd: projectRoot }),
+    freezeReviewTarget: (input, signal) => (dependencies.freezeReviewTarget ?? freezeReviewTarget)(input, {
+      cwd: projectRoot,
+      ...(signal !== undefined ? { signal } : {}),
+    }),
     reviewRunner,
     refreshCompletionSources: async (source) => {
       if (source === 'sessions') latestSessions = await workspace.listSessions();

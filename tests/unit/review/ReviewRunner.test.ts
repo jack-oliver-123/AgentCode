@@ -23,25 +23,38 @@ const frozenTarget: FrozenReviewTarget = {
   frozenAt: 100,
 };
 
-function tool(name: string, risk: 'read' | 'write'): ToolDefinition {
+function tool(
+  name: string,
+  risk: 'read' | 'write',
+  execute: ToolDefinition['execute'] = async () => ({
+    ok: true,
+    toolName: name,
+    data: {},
+    meta: { durationMs: 0, timedOut: false },
+  }),
+): ToolDefinition {
   return {
     name,
     description: `${risk} tool`,
     risk,
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
     validate: () => ({ ok: true, value: {} }),
-    execute: async () => ({ ok: true, toolName: name, data: {}, meta: { durationMs: 0, timedOut: false } }),
+    execute,
   };
 }
 
 function createRunner(
   provider: FakeProvider,
-  overrides: { validate?: () => Promise<void>; persist?: (result: ReviewResult) => Promise<void> } = {},
+  overrides: {
+    validate?: () => Promise<void>;
+    persist?: (result: ReviewResult) => Promise<void>;
+    registry?: ReturnType<typeof createStaticRegistry>;
+  } = {},
 ): ReviewRunner {
   return new ReviewRunner({
     provider,
     model: 'review-model',
-    toolRegistry: createStaticRegistry([tool('read_file', 'read'), tool('write_file', 'write')]),
+    toolRegistry: overrides.registry ?? createStaticRegistry([tool('read_file', 'read'), tool('write_file', 'write')]),
     createToolContext: (signal) => ({
       cwd: 'C:\\repo',
       timeoutMs: 1_000,
@@ -87,8 +100,36 @@ describe('ReviewRunner', () => {
     expect(provider.requests).toHaveLength(1);
     expect(provider.requests[0]?.messages).toHaveLength(1);
     expect(provider.requests[0]?.messages[0]).toMatchObject({ role: 'user' });
-    expect(provider.requests[0]?.tools?.map((declaration) => declaration.name)).toEqual(['read_file']);
+    expect(provider.requests[0]?.tools?.map((declaration) => declaration.name)).toEqual([]);
     expect(provider.requests[0]?.system).toContain('只读');
+  });
+
+  it('never executes a runtime-backed read tool requested by untrusted review content', async () => {
+    const execute = vi.fn(async () => ({
+      ok: true as const,
+      toolName: 'read_file',
+      data: { content: 'live workspace secret' },
+      meta: { durationMs: 0, timedOut: false },
+    }));
+    const provider = new FakeProvider([
+      [
+        { type: 'tool.call', call: { id: 'call-1', name: 'read_file', argumentsText: '{"path":"../secret"}' } },
+        { type: 'response.complete' },
+      ],
+      [
+        { type: 'content.delta', delta: JSON.stringify({ findings: [], summary: 'Frozen diff only.' }) },
+        { type: 'response.complete' },
+      ],
+    ]);
+    const runner = createRunner(provider, {
+      registry: createStaticRegistry([tool('read_file', 'read', execute)]),
+    });
+
+    await expect(runner.run(frozenTarget)).resolves.toMatchObject({ findings: [] });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(provider.requests.every((request) => request.tools?.length === 0)).toBe(true);
+    expect(provider.requests[0]?.messages[0]?.content).toContain(frozenTarget.diff);
   });
 
   it('accepts findings: [] as a successful review result', async () => {

@@ -568,7 +568,7 @@ describe('runAgentLoop - Steer 安全边界', () => {
     );
 
     expect(provider.requests).toHaveLength(2);
-    expect(provider.requests[1]?.messages).toEqual([
+    expect(provider.requests[1]?.messages).toMatchObject([
       { role: 'user', content: 'Do something' },
       { role: 'assistant', content: 'initial answer' },
       { role: 'user', content: '<steer-guidance>\n1. 先检查测试\n2. 再解释根因\n</steer-guidance>' },
@@ -581,6 +581,7 @@ describe('runAgentLoop - Steer 安全边界', () => {
       ],
     });
     expect(events.find((event) => event.type === 'loop.completed')).toMatchObject({ finalText: 'revised answer' });
+    expect(provider.requests[1]?.messages.at(-1)).toHaveProperty('provenance', 'steer');
   });
 
   it('tool 执行期间收到的 Steer 不取消工具，只在工具结束后的模型边界注入', async () => {
@@ -605,9 +606,10 @@ describe('runAgentLoop - Steer 安全边界', () => {
     );
 
     expect(toolCompleted).toBe(true);
-    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+    expect(provider.requests[1]?.messages.at(-1)).toMatchObject({
       role: 'user',
       content: '<steer-guidance>\n1. 结合工具结果\n</steer-guidance>',
     });
+    expect(provider.requests[1]?.messages.at(-1)).toHaveProperty('provenance', 'steer');
   });
 });

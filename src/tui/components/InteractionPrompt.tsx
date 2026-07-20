@@ -10,9 +10,10 @@ import { removeLastGrapheme } from './InputPane.js';
 export interface InteractionPromptProps {
   request: InteractionRequest;
   onRespond(response: InteractionResponse): void;
+  active?: boolean;
 }
 
-export function InteractionPrompt({ request, onRespond }: InteractionPromptProps): ReactElement {
+export function InteractionPrompt({ request, onRespond, active = true }: InteractionPromptProps): ReactElement {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const choices = useMemo(() => {
@@ -28,6 +29,7 @@ export function InteractionPrompt({ request, onRespond }: InteractionPromptProps
   const visibleChoices = choices.slice(windowStart, windowStart + 8);
 
   useInput((input, key) => {
+    if (input.startsWith('/')) return;
     if (key.escape || (request.kind !== 'session-picker' && input.toLocaleLowerCase() === 'n')) {
       onRespond({ kind: 'cancelled' });
       return;
@@ -58,7 +60,7 @@ export function InteractionPrompt({ request, onRespond }: InteractionPromptProps
       setQuery((current) => `${current}${input}`);
       setSelected(0);
     }
-  });
+  }, { isActive: active });
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor="yellow" paddingX={1}>

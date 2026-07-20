@@ -208,6 +208,10 @@ export class SessionWorkspace<TController extends SessionWorkspaceController = S
         true,
       );
       const candidate = await this.buildCandidate(session, async () => {
+        if (metadata?.turnCount === 0 && this.options.loadSession === undefined) {
+          const archive = await readSafeFile(resolve(this.options.storageRoot), summary.archivePath, 1);
+          if (archive === undefined) return { providerContext: [], messages: [], activities: [] };
+        }
         const load = this.options.loadSession ?? ((filePath: string) => loadArchivedSession(filePath, this.options.storageRoot));
         const restored = await load(summary.archivePath);
         if (restored.source !== undefined && restored.source.sessionId !== summary.id) {
@@ -293,7 +297,7 @@ export class SessionWorkspace<TController extends SessionWorkspaceController = S
         id: archive.sessionId,
         createdAt: timestamp,
         updatedAt: timestamp,
-        turnCount: archive.messageCount,
+        turnCount: archive.turnCount,
         archivePath: archive.filePath,
         agentMode: 'default',
         selectedPermissionMode: this.options.selectedPermissionMode,

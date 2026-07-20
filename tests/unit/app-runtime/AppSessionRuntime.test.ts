@@ -86,10 +86,26 @@ describe('AppSessionRuntime', () => {
     await waitFor(() => harness.workspace.getActiveQueue().snapshot().items.length === 0);
     await harness.workspace.close();
   });
+
+  it('pauses Queue during Stop even if the controller publishes an idle final state', async () => {
+    const harness = await createHarness({ stopEndsIdle: true });
+    await expect(harness.sessions.submitPrompt('active task')).resolves.toEqual({ accepted: true });
+    await expect(harness.sessions.queueAdd('must remain queued')).resolves.toEqual({ accepted: true });
+
+    await expect(harness.sessions.stopRun()).resolves.toEqual({ accepted: true });
+
+    expect(harness.controller.submitted).toEqual([{ text: 'active task', mode: 'default' }]);
+    expect(harness.workspace.getActiveQueue().snapshot()).toMatchObject({
+      paused: true,
+      items: [{ text: 'must remain queued', status: 'queued' }],
+    });
+    await harness.workspace.close();
+  });
 });
 
 async function createHarness(options: {
   failText?: string;
+  stopEndsIdle?: boolean;
   onAgentModeChanged?: (mode: AgentMode) => void | Promise<void>;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'agentcode-app-session-'));
@@ -100,7 +116,7 @@ async function createHarness(options: {
     selectedPermissionMode: 'normal',
     createSessionId: () => 'session-a',
     createController: ({ session }) => {
-      controller = new ControlledController(session.agentMode, options.failText);
+      controller = new ControlledController(session.agentMode, options.failText, options.stopEndsIdle ?? false);
       return controller;
     },
   });
@@ -122,7 +138,11 @@ class ControlledController implements RuntimeSessionController {
   private releaseTurn: (() => void) | undefined;
   private stopped = false;
 
-  constructor(mode: AgentMode, private readonly failText?: string) {
+  constructor(
+    mode: AgentMode,
+    private readonly failText?: string,
+    private readonly stopEndsIdle = false,
+  ) {
     this.state = { messages: [], status: 'idle', mode };
   }
 
@@ -144,7 +164,7 @@ class ControlledController implements RuntimeSessionController {
       this.releaseTurn = resolve;
     });
     this.activeRunId = undefined;
-    this.state = { ...this.state, status: this.stopped ? 'stopped' : 'idle' };
+    this.state = { ...this.state, status: this.stopped && !this.stopEndsIdle ? 'stopped' : 'idle' };
     this.stopped = false;
     yield { type: 'state.changed', state: this.getState() };
   }

@@ -54,7 +54,8 @@ describe('TUI App', () => {
 
     expect(output).toContain('权限请求');
     expect(output).toContain('[execute]');
-    expect(output).not.toContain('Ask AgentCode about this project');
+    expect(output).toContain('Ask AgentCode about this project');
+    expect(output).toContain('Type / for runtime controls');
     coordinator.dispose();
   });
 

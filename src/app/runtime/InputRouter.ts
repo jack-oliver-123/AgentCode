@@ -62,9 +62,12 @@ export class InputRouter {
   async route(rawText: string, intent: InputIntent): Promise<InputRouteResult> {
     if (intent === 'tab') return this.complete(rawText, 'next');
     if (intent === 'shift-tab') {
-      return rawText.trimStart().startsWith('/')
-        ? this.complete(rawText, 'previous')
-        : this.toggleMode();
+      if (rawText.trimStart().startsWith('/')) return this.complete(rawText, 'previous');
+      const app = this.options.getAppSnapshot();
+      if (app.run.phase !== 'idle' || app.queue.draining) {
+        return { kind: 'mode_toggle', accepted: false, clearInput: false, reason: 'run_active' };
+      }
+      return this.toggleMode();
     }
 
     const text = rawText.trim();

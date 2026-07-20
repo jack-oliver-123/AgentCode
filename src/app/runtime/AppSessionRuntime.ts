@@ -38,6 +38,7 @@ export class AppSessionRuntime implements InputWorkspacePort {
   private starting = false;
   private drainPromise: Promise<void> | undefined;
   private queueDraining = false;
+  private stopRequested = false;
 
   constructor(
     private readonly runtime: AppRuntime,
@@ -101,13 +102,18 @@ export class AppSessionRuntime implements InputWorkspacePort {
     const completion = this.activeCompletion;
     const settlement = this.activeSettlement;
     const drain = this.drainPromise;
-    const result = await this.workspace.getActiveController().stopRun();
-    if (!result.accepted) return { accepted: false, reason: result.reason };
-    await completion?.catch(() => undefined);
-    await settlement?.catch(() => undefined);
-    await drain?.catch(() => undefined);
-    await this.pauseQueue();
-    return { accepted: true };
+    this.stopRequested = true;
+    try {
+      const result = await this.workspace.getActiveController().stopRun();
+      if (!result.accepted) return { accepted: false, reason: result.reason };
+      await completion?.catch(() => undefined);
+      await settlement?.catch(() => undefined);
+      await drain?.catch(() => undefined);
+      await this.pauseQueue();
+      return { accepted: true };
+    } finally {
+      this.stopRequested = false;
+    }
   }
 
   async pauseQueue(): Promise<void> {
@@ -118,7 +124,7 @@ export class AppSessionRuntime implements InputWorkspacePort {
 
   drainQueueIfReady(): void {
     const queue = this.workspace.getActiveQueue().snapshot();
-    if (!this.isActive() && queue.items.length > 0 && !queue.paused) this.scheduleQueueDrain();
+    if (!this.stopRequested && !this.isActive() && queue.items.length > 0 && !queue.paused) this.scheduleQueueDrain();
   }
 
   async compact(instructions?: string): Promise<void> {
@@ -194,6 +200,11 @@ export class AppSessionRuntime implements InputWorkspacePort {
   private async afterDirectTurn(state: ChatSessionState): Promise<void> {
     await this.recordTurn();
     const queue = this.workspace.getActiveQueue();
+    if (this.stopRequested && queue.snapshot().items.length > 0) {
+      await queue.pause();
+      this.publishQueue();
+      return;
+    }
     if ((state.status === 'error' || state.status === 'stopped') && queue.snapshot().items.length > 0) {
       await queue.pause();
       this.publishQueue();
@@ -214,6 +225,7 @@ export class AppSessionRuntime implements InputWorkspacePort {
   }
 
   private scheduleQueueDrain(): void {
+    if (this.stopRequested) return;
     void this.ensureQueueDrain().catch((error) => this.reportQueueFailure(error));
   }
 
@@ -222,11 +234,12 @@ export class AppSessionRuntime implements InputWorkspacePort {
     this.publishQueue();
     const queue = this.workspace.getActiveQueue();
     try {
-      while (!queue.snapshot().paused) {
+      while (!this.stopRequested && !queue.snapshot().paused) {
         if (this.isActive()) {
           await this.activeCompletion;
           continue;
         }
+        if (this.stopRequested) return;
         const item = await queue.startNext();
         this.publishQueue();
         if (item === undefined) return;

@@ -23,7 +23,7 @@ export interface AppCommandExecutorOptions {
   interactions: InteractionCoordinator;
   permissions: PermissionManager;
   memory: MemoryManager;
-  freezeReviewTarget: (input: ReviewTargetInput) => Promise<FrozenReviewTarget>;
+  freezeReviewTarget: (input: ReviewTargetInput, signal?: AbortSignal) => Promise<FrozenReviewTarget>;
   reviewRunner: ReviewRunner;
   refreshCompletionSources?: (source: 'sessions' | 'memory' | 'permissions') => Promise<void>;
   now?: () => number;
@@ -35,6 +35,12 @@ export class AppCommandExecutor implements CommandActionExecutor {
     id: string;
     abortController: AbortController;
     pendingSteers: SteerGuidance[];
+    startMode: 'default' | 'plan';
+  } | undefined;
+  private reviewPreflight: {
+    id: string;
+    abortController: AbortController;
+    startMode: 'default' | 'plan';
   } | undefined;
   private reviewSteerSequence = 0;
 
@@ -42,6 +48,9 @@ export class AppCommandExecutor implements CommandActionExecutor {
 
   dispose(): void {
     this.activeReview?.abortController.abort();
+    const preflight = this.reviewPreflight;
+    preflight?.abortController.abort();
+    if (preflight !== undefined) void this.finishReviewPreflight(preflight);
     this.prepared.clear();
   }
 
@@ -93,7 +102,7 @@ export class AppCommandExecutor implements CommandActionExecutor {
         return;
       }
       case 'start_review':
-        this.prepared.set(action.idempotencyKey, await this.options.freezeReviewTarget(action.target));
+        await this.prepareReview(action.idempotencyKey, action.target);
         return;
       case 'request_queue_remove': {
         const queue = this.options.workspace.getActiveQueue().snapshot();
@@ -166,6 +175,7 @@ export class AppCommandExecutor implements CommandActionExecutor {
           ...(action.name !== undefined ? { name: action.name } : {}),
           selectedPermissionMode: this.options.permissions.snapshot().selectedMode,
         });
+        await this.options.permissions.activateSession(this.options.workspace.getActiveSnapshot().id);
         await this.options.permissions.setModeCap({ agentMode: 'default', reviewActive: false });
         this.publishPermissions();
         this.options.sessions.publishCurrentState(true);
@@ -341,10 +351,13 @@ export class AppCommandExecutor implements CommandActionExecutor {
       case 'stop_run': {
         if (this.options.runtime.getSnapshot().run.reviewActive) {
           const review = this.activeReview;
-          if (review === undefined) throw new Error('No active review operation.');
-          review.abortController.abort();
+          const preflight = this.reviewPreflight;
+          if (review === undefined && preflight === undefined) throw new Error('No active review operation.');
+          review?.abortController.abort();
+          preflight?.abortController.abort();
           await this.options.sessions.pauseQueue();
-          this.appendAudit(action.idempotencyKey, 'review.stop', { runId: review.id });
+          if (preflight !== undefined) await this.finishReviewPreflight(preflight);
+          this.appendAudit(action.idempotencyKey, 'review.stop', { runId: review?.id ?? preflight?.id });
           return undefined;
         }
         const result = await this.options.sessions.stopRun();
@@ -444,15 +457,18 @@ export class AppCommandExecutor implements CommandActionExecutor {
 
   private async startReview(reviewId: string, target: FrozenReviewTarget): Promise<void> {
     if (this.activeReview !== undefined) throw new Error('A review operation is already active.');
+    const prepared = this.reviewPreflight;
+    if (prepared === undefined || prepared.id !== reviewId) {
+      throw new Error('Review preflight is no longer active.');
+    }
+    this.reviewPreflight = undefined;
     const review = {
       id: reviewId,
-      abortController: new AbortController(),
+      abortController: prepared.abortController,
       pendingSteers: [] as SteerGuidance[],
+      startMode: prepared.startMode,
     };
-    await this.options.permissions.setModeCap({ agentMode: this.options.runtime.getSnapshot().mode, reviewActive: true });
-    this.publishPermissions();
     this.activeReview = review;
-    this.options.runtime.dispatch({ type: 'review.started', runId: reviewId });
     this.appendAudit(reviewId, 'review.start', {
       kind: target.kind,
       diffHash: target.diffHash,
@@ -501,7 +517,7 @@ export class AppCommandExecutor implements CommandActionExecutor {
     } finally {
       try {
         await this.options.permissions.setModeCap({
-          agentMode: this.options.runtime.getSnapshot().mode,
+          agentMode: review.startMode,
           reviewActive: false,
         });
         this.publishPermissions();
@@ -516,6 +532,7 @@ export class AppCommandExecutor implements CommandActionExecutor {
   private async activateSession(target: string) {
     const result = await this.options.workspace.resumeSession(target);
     if (result.kind === 'activated') {
+      await this.options.permissions.activateSession(result.session.id);
       await this.options.permissions.setSelectedMode(result.session.selectedPermissionMode, { confirmed: true });
       await this.options.permissions.setModeCap({ agentMode: result.session.agentMode, reviewActive: false });
       this.publishPermissions();
@@ -523,6 +540,50 @@ export class AppCommandExecutor implements CommandActionExecutor {
       this.expireInteractionsForInactiveSessions();
     }
     return result;
+  }
+
+  private async prepareReview(reviewId: string, target: ReviewTargetInput): Promise<void> {
+    if (this.activeReview !== undefined || this.reviewPreflight !== undefined) {
+      throw new Error('A review operation is already active.');
+    }
+    const preflight = {
+      id: reviewId,
+      abortController: new AbortController(),
+      startMode: this.options.runtime.getSnapshot().mode,
+    };
+    this.reviewPreflight = preflight;
+    this.options.runtime.dispatch({ type: 'review.started', runId: reviewId });
+    try {
+      await this.options.permissions.setModeCap({ agentMode: preflight.startMode, reviewActive: true });
+      this.publishPermissions();
+      preflight.abortController.signal.throwIfAborted();
+      const frozen = await this.options.freezeReviewTarget(target, preflight.abortController.signal);
+      if (preflight.abortController.signal.aborted || this.reviewPreflight !== preflight) {
+        throw new Error('Review preflight was cancelled.');
+      }
+      this.prepared.set(reviewId, frozen);
+    } catch (error) {
+      try {
+        await this.finishReviewPreflight(preflight);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Review preflight and cleanup both failed.');
+      }
+      throw error;
+    }
+  }
+
+  private async finishReviewPreflight(
+    preflight: NonNullable<AppCommandExecutor['reviewPreflight']>,
+  ): Promise<void> {
+    if (this.reviewPreflight !== preflight) return;
+    this.reviewPreflight = undefined;
+    this.prepared.delete(preflight.id);
+    try {
+      await this.options.permissions.setModeCap({ agentMode: preflight.startMode, reviewActive: false });
+      this.publishPermissions();
+    } finally {
+      this.options.runtime.dispatch({ type: 'review.finished' });
+    }
   }
 
   private appendAudit(id: string, operation: string, data: Readonly<Record<string, unknown>>): void {

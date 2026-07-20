@@ -12,6 +12,7 @@ import type { AgentConfig, ResolvedConfig } from '../../../src/config/schema.js'
 import { CommandHelpPanel } from '../../../src/tui/components/CommandHelpPanel.js';
 import { InputPane } from '../../../src/tui/components/InputPane.js';
 import { InteractionPrompt } from '../../../src/tui/components/InteractionPrompt.js';
+import { MemoryPanel } from '../../../src/tui/components/MemoryPanel.js';
 import { StatusBar } from '../../../src/tui/components/StatusBar.js';
 import { ReviewPanel } from '../../../src/tui/components/ReviewPanel.js';
 
@@ -88,6 +89,72 @@ describe('Task 10 command input UI', () => {
     expect(output).toContain('Steer this run or queue the next task');
     expect(output).toContain('Enter steer');
     expect(output).toContain('Alt+Enter queue');
+  });
+
+  it('keeps the composer mounted during approvals and exposes runtime controls', () => {
+    const output = renderToString(
+      <InputPane
+        mode="default"
+        activeRun
+        modalActive
+        onRoute={vi.fn(async () => ({ kind: 'empty' as const, accepted: false as const, clearInput: false as const }))}
+      />,
+    );
+
+    expect(output).toContain('Steer this run or queue the next task');
+    expect(output).toContain('Type / for runtime controls');
+  });
+
+  it('renders full help with category headings and a dedicated search field', () => {
+    const commands = createBuiltinCommandRegistry().listVisible().map((command) => command.metadata);
+    const output = renderToString(<CommandHelpPanel data={commands} />);
+
+    expect(output).toContain('Search:');
+    expect(output).toContain('GENERAL');
+    expect(output).toContain('WORKFLOW');
+    expect(output).toContain('RUNTIME');
+    expect(output).toContain('/help');
+    expect(output).toContain('/stop');
+  });
+
+  it('renders a searchable USER/PROJECT memory picker and a dedicated detail view', () => {
+    const snapshot: MemoryIndexSnapshot = {
+      ...memory,
+      user: [{
+        id: 'preference.md',
+        scope: 'user',
+        title: 'Preference',
+        filename: 'preference.md',
+        summary: 'User preference',
+        path: '/user/preference.md',
+      }],
+      project: [{
+        id: 'architecture.md',
+        scope: 'project',
+        title: 'Architecture',
+        filename: 'architecture.md',
+        summary: 'Project design',
+        path: '/project/architecture.md',
+      }],
+    };
+    const list = renderToString(<MemoryPanel data={snapshot} onCommand={vi.fn(async () => undefined)} />);
+
+    expect(list).toContain('Search:');
+    expect(list).toContain('USER');
+    expect(list).toContain('PROJECT');
+    expect(list).toContain('preference.md');
+    expect(list).toContain('Enter show');
+    expect(list).toContain('Ctrl+D delete');
+
+    const detail = renderToString(<MemoryPanel data={{
+      ...snapshot.project[0],
+      frontmatter: 'name: architecture',
+      body: 'Use event boundaries.',
+      content: 'Use event boundaries.',
+      fingerprint: { size: 21, mtimeMs: 1, dev: 1, ino: 1 },
+    }} onCommand={vi.fn(async () => undefined)} />);
+    expect(detail).toContain('Use event boundaries.');
+    expect(detail).not.toContain('{"frontmatter"');
   });
 
   it('renders complete command metadata in detailed help', () => {

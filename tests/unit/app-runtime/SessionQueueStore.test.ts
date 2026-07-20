@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   SessionQueueStore,
@@ -64,6 +64,20 @@ describe('SessionQueueStore', () => {
     expect(writes).toBe(1);
     expect(store.snapshot().items).toEqual([]);
     expect(store.snapshot().version).toBe(0);
+  });
+
+  it('rejects an oversized Queue before writing or reporting acceptance', async () => {
+    const write = vi.fn(async () => undefined);
+    const store = await SessionQueueStore.open({
+      storageRoot: 'C:\\unused',
+      sessionId: '20260720-100000-abcd',
+      storage: { read: async () => undefined, write },
+    });
+
+    await expect(store.add('x'.repeat(4 * 1024 * 1024), 'default')).rejects.toThrow('Queue file exceeds');
+
+    expect(write).not.toHaveBeenCalled();
+    expect(store.snapshot()).toMatchObject({ version: 0, items: [] });
   });
 
   it('supports start, completion, pause/resume, remove, and clear with versioned snapshots', async () => {

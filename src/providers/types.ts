@@ -9,6 +9,8 @@ export type ChatMessage = ProviderTextMessage | ProviderAssistantToolCallMessage
 export interface ProviderTextMessage {
   role: MessageRole;
   content: string;
+  /** Internal provenance is stripped by provider adapters and preserved in session archives. */
+  provenance?: 'steer';
 }
 
 export interface ProviderAssistantToolCallMessage {

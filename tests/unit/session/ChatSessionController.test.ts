@@ -1200,8 +1200,72 @@ describe('ChatSessionController - ContextManager 集成', () => {
     expect(provider.requests[1]?.messages.at(-1)).toEqual({
       role: 'user',
       content: '<steer-guidance>\n1. focus on the test\n</steer-guidance>',
+      provenance: 'steer',
     });
     expect(states.at(-1)?.messages.filter((message) => message.role === 'user')).toHaveLength(1);
+  });
+
+  it('rejects a Steer whose activity write finishes after the final consume boundary', async () => {
+    const streamStarted = createDeferred<void>();
+    const releaseProvider = createDeferred<void>();
+    const steerPersisted = createDeferred<void>();
+    const archivePersisted = createDeferred<void>();
+    const provider: ChatModelProvider = {
+      protocol: 'openai',
+      supportsExtendedThinking: false,
+      async *stream() {
+        streamStarted.resolve();
+        await releaseProvider.promise;
+        yield { type: 'content.delta', delta: 'final' };
+        yield { type: 'response.complete' };
+      },
+    };
+    const sessionArchive = {
+      append: vi.fn(() => archivePersisted.promise),
+      appendActivity: vi.fn((activity: { type: string }) =>
+        activity.type === 'steer' ? steerPersisted.promise : Promise.resolve()),
+    };
+    const controller = createController(provider, {}, { sessionArchive });
+    const statesPromise = collectStates(controller.submitUserText('initial task'));
+    await streamStarted.promise;
+
+    const steerPromise = controller.steer('late guidance');
+    await vi.waitFor(() => expect(sessionArchive.appendActivity).toHaveBeenCalledOnce());
+    releaseProvider.resolve();
+    await vi.waitFor(() => expect(sessionArchive.append).toHaveBeenCalledOnce());
+    expect(controller.getState().status).toBe('streaming');
+
+    steerPersisted.resolve();
+    await expect(steerPromise).resolves.toEqual({ accepted: false, reason: 'run_ended' });
+    expect(controller.getState().activities ?? []).toEqual([]);
+
+    archivePersisted.resolve();
+    await statesPromise;
+  });
+
+  it('passes the active Stop signal into automatic compaction before any Provider request', async () => {
+    const compactStarted = createDeferred<AbortSignal>();
+    const contextManager = createContextManagerMock({
+      compact: async (_messages, _request, signal) => {
+        if (signal === undefined) throw new Error('missing signal');
+        compactStarted.resolve(signal);
+        await new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    const provider = new FakeProvider([]);
+    const controller = createController(provider, {}, { contextManager });
+    const statesPromise = collectStates(controller.submitUserText('compact first'));
+    const signal = await compactStarted.promise;
+
+    await expect(controller.stopRun()).resolves.toEqual({ accepted: true });
+    const states = await statesPromise;
+
+    expect(signal.aborted).toBe(true);
+    expect(provider.requests).toEqual([]);
+    expect(states.at(-1)?.status).toBe('stopped');
   });
 
   it('Stop 取消 active run、使审批过期并把 turn 归档为 stopped', async () => {
@@ -1381,6 +1445,49 @@ describe('ChatSessionController - task09 会话持久化集成', () => {
     expect(states.at(-1)?.status).toBe('idle');
   });
 
+  it('keeps Stop authoritative while final archive persistence is still pending', async () => {
+    const archiveGate = createDeferred<void>();
+    const sessionArchive = {
+      append: vi.fn(() => archiveGate.promise),
+      appendActivity: vi.fn(async () => undefined),
+    };
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'complete response' },
+      { type: 'response.complete' },
+    ]);
+    const controller = createController(provider, {}, { sessionArchive });
+    const statesPromise = collectStates(controller.submitUserText('start'));
+    await vi.waitFor(() => expect(sessionArchive.append).toHaveBeenCalledOnce());
+
+    await expect(controller.stopRun()).resolves.toEqual({ accepted: true });
+    archiveGate.resolve();
+    const states = await statesPromise;
+
+    expect(states.at(-1)).toMatchObject({
+      status: 'stopped',
+      messages: [{ role: 'user' }, { role: 'assistant', meta: { finishReason: 'stopped' } }],
+    });
+  });
+
+  it('restores typed Steer, Stop, and Review activities outside transcript turns', () => {
+    const controller = createController(new FakeProvider([]), {}, {
+      initialActivities: [
+        { type: 'steer', id: 'steer-1', runId: 'run-1', text: 'focus', createdAt: 1 },
+        { type: 'run.stopped', runId: 'run-1', createdAt: 2 },
+        { type: 'review.result', reviewId: 'review-1', content: { summary: 'done', findings: [] }, createdAt: 3 },
+      ],
+    });
+
+    expect(controller.getState()).toMatchObject({
+      messages: [],
+      activities: [
+        { id: 'steer-1', type: 'steer', text: 'focus', createdAt: 1 },
+        { type: 'stopped', runId: 'run-1', createdAt: 2 },
+        { type: 'review', reviewId: 'review-1', summary: 'done', findingCount: 0, createdAt: 3 },
+      ],
+    });
+  });
+
   it('自动笔记不阻塞最终状态，并收到本轮 completion token 累积值', async () => {
     const never = new Promise<void>(() => undefined);
     const autoNoteWriter = { maybeUpdate: vi.fn(() => never) };
@@ -1440,8 +1547,8 @@ interface CompactionRequestForTest {
 interface ContextManagerMockOptions {
   onTokenUsage?: (totalPromptTokens: number) => void;
   onMessagesAppended?: (messages: readonly unknown[]) => void;
-  offloadToolResults?: (messages: unknown[]) => Promise<void>;
-  compact?: (messages: unknown[], request: CompactionRequestForTest) => Promise<unknown>;
+  offloadToolResults?: (messages: unknown[], signal?: AbortSignal) => Promise<void>;
+  compact?: (messages: unknown[], request: CompactionRequestForTest, signal?: AbortSignal) => Promise<unknown>;
 }
 
 function createContextManagerMock(options: ContextManagerMockOptions = {}): any {
