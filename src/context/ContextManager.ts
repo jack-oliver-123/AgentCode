@@ -213,7 +213,8 @@ export class ContextManager {
   // F2：工具结果卸载（T3 实现）
   // ─────────────────────────────────────────────
 
-  async offloadToolResults(messages: ChatMessage[]): Promise<void> {
+  async offloadToolResults(messages: ChatMessage[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const { offloadThresholdBytes, turnOffloadThresholdBytes, cacheDir } = this.options;
     let didOffload = false;
 
@@ -233,6 +234,7 @@ export class ContextManager {
     }
 
     for (const [start, end] of turnRanges) {
+      signal?.throwIfAborted();
       // 步骤 1：单条卸载（> offloadThresholdBytes）
       for (let i = start; i <= end; i++) {
         const msg = messages[i]!;
@@ -257,6 +259,7 @@ export class ContextManager {
         // 按剩余字节从大到小排序，依次卸载直到合计 ≤ 阈值
         const sorted = [...toolMsgs].sort((a, b) => b.bytes - a.bytes);
         for (const { msg, bytes } of sorted) {
+          signal?.throwIfAborted();
           if (totalBytes <= turnOffloadThresholdBytes) break;
           // 只卸载尚未被卸载的（已卸载的 content 以固定前缀开头）
           if (!msg.content.startsWith('[内容已卸载至文件:')) {
@@ -309,7 +312,8 @@ export class ContextManager {
   // F3-F6/F9：统一 compact、摘要降级与熔断
   // ─────────────────────────────────────────────
 
-  async compact(messages: ChatMessage[], request: CompactionRequest): Promise<CompactionResult> {
+  async compact(messages: ChatMessage[], request: CompactionRequest, signal?: AbortSignal): Promise<CompactionResult> {
+    signal?.throwIfAborted();
     const selectedLevel = selectCompactionLevel({
       estimated: this.estimated,
       contextWindow: this.options.contextWindow,
@@ -350,12 +354,16 @@ export class ContextManager {
       }
       skillRecoveryContents = [];
     }
+    signal?.throwIfAborted();
 
     const summaryResult = await this.callSummaryWithFallback(
       summaryTurns,
       request.originalUserMessages,
       this._reusableSummary,
+      request.instructions,
+      signal,
     );
+    signal?.throwIfAborted();
 
     if (summaryResult.kind === 'failure') {
       if (level === 'emergency') {
@@ -411,12 +419,15 @@ export class ContextManager {
     turns: readonly CompleteTurn[],
     originalUserMessages: readonly string[],
     reusableSummary: string | undefined,
+    instructions: string | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<SummaryFallbackResult> {
     let currentTurns = [...turns];
     let attempts = 0;
     const dropRatios = [undefined, 0.1, 0.1, 0.1, 0.2] as const;
 
     for (const dropRatio of dropRatios) {
+      signal?.throwIfAborted();
       if (dropRatio !== undefined) {
         currentTurns = dropOldestTurns(currentTurns, dropRatio);
       }
@@ -433,6 +444,8 @@ export class ContextManager {
       const attempt = await this.requestSummaryOnce(
         summaryHistory,
         originalUserMessages,
+        instructions,
+        signal,
       );
       if (attempt.kind === 'success') {
         return {
@@ -453,15 +466,27 @@ export class ContextManager {
   private async requestSummaryOnce(
     messages: readonly ChatMessage[],
     originalUserMessages: readonly string[],
+    instructions: string | undefined,
+    signal: AbortSignal | undefined,
   ): Promise<SummaryAttemptResult> {
+    const timeoutSignal = AbortSignal.timeout(this.options.timeoutMs);
     const request = {
       model: this.model,
       system: SUMMARY_SYSTEM_PROMPT,
       tools: [],
       toolChoice: 'none' as const,
       thinking: { enabled: false },
-      messages: [...messages, { role: 'user' as const, content: SUMMARY_INSTRUCTION }],
-      signal: AbortSignal.timeout(this.options.timeoutMs),
+      messages: [
+        ...messages,
+        {
+          role: 'user' as const,
+          content:
+            instructions === undefined
+              ? SUMMARY_INSTRUCTION
+              : `${SUMMARY_INSTRUCTION}\n\n<manual-preservation-requirement>\n${instructions}\n</manual-preservation-requirement>`,
+        },
+      ],
+      signal: signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]),
     };
 
     let fullText = '';

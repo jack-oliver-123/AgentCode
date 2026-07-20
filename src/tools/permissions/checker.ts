@@ -23,6 +23,10 @@ export interface CreatePermissionCheckerOptions {
   ruleConfig: PermissionRuleConfig;
   cwd: string;
   askFn?: AskPermissionFn | undefined;
+  onRuleGranted?: (
+    scope: 'session' | 'project',
+    rule: { rule: string; action: 'allow' },
+  ) => void | Promise<void>;
 }
 
 /**
@@ -113,17 +117,21 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
         return { allowed: true, source: 'user_prompt' };
 
       case 'allow_session': {
-        sessionRules.unshift(buildRuleFromInput(input));
+        const rule = buildRuleFromInput(input);
+        sessionRules.unshift(rule.compiled);
+        await options.onRuleGranted?.('session', rule.raw);
         return { allowed: true, source: 'session_grant' };
       }
 
       case 'allow_permanent': {
-        const ruleString = buildRuleString(input);
-        sessionRules.unshift(compileRule({ rule: ruleString, action: 'allow' }));
+        const rule = buildRuleFromInput(input);
+        sessionRules.unshift(rule.compiled);
         try {
-          appendProjectRule(options.cwd, ruleString);
+          if (options.onRuleGranted === undefined) appendProjectRule(options.cwd, rule.raw.rule);
+          else await options.onRuleGranted('project', rule.raw);
         } catch (err) {
           console.warn('[permission] 写入永久规则失败，降级为 session grant:', err);
+          await options.onRuleGranted?.('session', rule.raw);
         }
         return { allowed: true, source: 'session_grant' };
       }
@@ -156,8 +164,12 @@ export function createPermissionChecker(options: CreatePermissionCheckerOptions)
   return { check, addSessionRule, getMode, setMode };
 }
 
-function buildRuleFromInput(input: PermissionCheckInput): CompiledRule {
-  return compileRule({ rule: buildRuleString(input), action: 'allow' });
+function buildRuleFromInput(input: PermissionCheckInput): {
+  raw: { rule: string; action: 'allow' };
+  compiled: CompiledRule;
+} {
+  const raw = { rule: buildRuleString(input), action: 'allow' as const };
+  return { raw, compiled: compileRule(raw) };
 }
 
 function buildRuleString(input: PermissionCheckInput): string {

@@ -96,8 +96,8 @@ function createTerminal(): {
 
 function createSummaries(): SessionSummary[] {
   return [
-    { filePath: '/sessions/first.jsonl', sessionId: 'first', messageCount: 2, lastModified: new Date(1) },
-    { filePath: '/sessions/second.jsonl', sessionId: 'second', messageCount: 4, lastModified: new Date(2) },
+    { filePath: '/sessions/first.jsonl', sessionId: 'first', messageCount: 2, turnCount: 1, lastModified: new Date(1) },
+    { filePath: '/sessions/second.jsonl', sessionId: 'second', messageCount: 4, turnCount: 2, lastModified: new Date(2) },
   ];
 }
 

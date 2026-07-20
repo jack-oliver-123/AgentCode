@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentConfig } from '../../../src/config/schema.js';
+import { PermissionManager } from '../../../src/app/permissions/PermissionManager.js';
 import type { ChatModelProvider, ProviderEvent, ProviderRequest } from '../../../src/providers/types.js';
 import {
   ChatSessionController,
@@ -108,13 +109,13 @@ describe('ChatSessionController', () => {
     expect(JSON.stringify(states.at(-1)?.messages)).not.toContain('hidden reasoning');
   });
 
-  it('permissionMode=plan 从 plan 状态启动并仅向 provider 暴露 read 工具', async () => {
+  it('agentMode=plan 从 plan 状态启动并仅向 provider 暴露 read 工具', async () => {
     const provider = new FakeProvider([
       { type: 'content.delta', delta: 'Plan answer' },
       { type: 'response.complete', finishReason: 'stop' },
     ]);
-    const controller = createController(provider, { permissionMode: 'plan' }, {
-      permissionMode: 'plan',
+    const controller = createController(provider, {}, {
+      agentMode: 'plan',
       toolRegistry: createTestToolRegistry(),
     });
 
@@ -124,19 +125,20 @@ describe('ChatSessionController', () => {
     expect(provider.requests[0]?.tools).toEqual([{ name: 'test_tool', description: expect.any(String), inputSchema: expect.any(Object) }]);
   });
 
-  it('Tab 和 /do 在 plan/full 间切换并恢复 full 权限策略', async () => {
+  it('Agent mode 在 plan/default 间切换，普通提交不再解析 /do', async () => {
     const provider = new FakeProvider([
       { type: 'content.delta', delta: 'Done' },
       { type: 'response.complete', finishReason: 'stop' },
     ]);
-    const controller = createController(provider, { permissionMode: 'plan' }, { permissionMode: 'plan' });
+    const controller = createController(provider, {}, { agentMode: 'plan' });
 
-    expect(controller.toggleMode().state.mode).toBe('full');
+    expect(controller.toggleMode().state.mode).toBe('default');
     expect(controller.toggleMode().state.mode).toBe('plan');
+    expect(controller.setAgentMode('default').state.mode).toBe('default');
 
     const states = await collectStates(controller.submitUserText('/do implement it'));
-    expect(states[0]?.mode).toBe('full');
-    expect(provider.requests[0]?.messages.at(-1)).toMatchObject({ role: 'user', content: 'implement it' });
+    expect(states[0]?.mode).toBe('default');
+    expect(provider.requests[0]?.messages.at(-1)).toMatchObject({ role: 'user', content: '/do implement it' });
   });
 
   it('omits tool choice when tool execution is not enabled', async () => {
@@ -632,6 +634,27 @@ function createTestToolRegistry(): TestToolRegistry {
   };
 }
 
+function createRegistryForTool(tool: ToolDefinition): ToolRegistry {
+  return {
+    list: () => [tool],
+    get: (name) => (name === tool.name ? tool : undefined),
+    getProviderDeclarations: () => [
+      { name: tool.name, description: tool.description, inputSchema: tool.inputSchema },
+    ],
+    filterByRisk: (allowedRisks) =>
+      allowedRisks.includes(tool.risk) ? createRegistryForTool(tool) : createEmptyTestRegistry(),
+  };
+}
+
+function createEmptyTestRegistry(): ToolRegistry {
+  return {
+    list: () => [],
+    get: () => undefined,
+    getProviderDeclarations: () => [],
+    filterByRisk: () => createEmptyTestRegistry(),
+  };
+}
+
 function createController(
   provider: ChatModelProvider,
   configOverrides: Partial<AgentConfig> = {},
@@ -839,7 +862,7 @@ describe('ChatSessionController - ContextManager 集成', () => {
 
     const provider = new FakeProvider([]);
     const controller = createController(provider, {}, { contextManager: mockContextManager });
-    const states = await collectStates(controller.submitUserText('/compact'));
+    const states = await collectStates(controller.compactContext());
 
     expect(callOrder).toEqual(['offload', 'compact']);
     expect(compactCalls).toEqual([{ trigger: 'manual', originalUserMessages: [] }]);
@@ -870,7 +893,7 @@ describe('ChatSessionController - ContextManager 集成', () => {
       const provider = new FakeProvider([]);
       const controller = createController(provider, {}, { contextManager: mockContextManager });
 
-      const states = await collectStates(controller.submitUserText('/compact'));
+      const states = await collectStates(controller.compactContext());
 
       expect(states.at(-1)).toMatchObject({
         status: 'idle',
@@ -901,7 +924,7 @@ describe('ChatSessionController - ContextManager 集成', () => {
       { type: 'response.complete' },
     ]);
     const controller = createController(provider, {}, { contextManager: mockContextManager });
-    const manualIterator = controller.submitUserText('/compact')[Symbol.asyncIterator]();
+    const manualIterator = controller.compactContext()[Symbol.asyncIterator]();
     const firstEventPromise = manualIterator.next();
     const firstOutcome = await Promise.race([
       firstEventPromise.then((event) => ({ kind: 'event' as const, event })),
@@ -996,7 +1019,7 @@ describe('ChatSessionController - ContextManager 集成', () => {
       });
       expect(appendedCallCount).toBe(1);
 
-      const manualIterator = controller.submitUserText('/compact')[Symbol.asyncIterator]();
+      const manualIterator = controller.compactContext()[Symbol.asyncIterator]();
       const busyEvent = await manualIterator.next();
       expect(busyEvent.value?.state).toMatchObject({
         status: 'streaming',
@@ -1057,7 +1080,7 @@ describe('ChatSessionController - ContextManager 集成', () => {
     const previousCompactCalls = compactCallCount;
     const previousAppendedCalls = appendedCallCount;
 
-    const manualIterator = controller.submitUserText('/compact')[Symbol.asyncIterator]();
+    const manualIterator = controller.compactContext()[Symbol.asyncIterator]();
     const busyEvent = await manualIterator.next();
     expect(busyEvent.value?.state.status).toBe('streaming');
 
@@ -1100,12 +1123,12 @@ describe('ChatSessionController - ContextManager 集成', () => {
 
     const provider = new FakeProvider([]);
     const controller = createController(provider, {}, { contextManager: mockContextManager });
-    const states = await collectStates(controller.submitUserText('/compact'));
+    const states = await collectStates(controller.compactContext());
 
     expect(states.at(-1)?.notice).toBe(notice);
   });
 
-  it('/compress 作为普通 user 文本进入 UI 和 Provider，且不触发 manual compact', async () => {
+  it.each(['/compact', '/compress'])('%s 直接提交时作为普通 user 文本进入 Provider，不触发 manual compact', async (text) => {
     const compactCalls: CompactionRequestForTest[] = [];
     const mockContextManager = createContextManagerMock({
       compact: async (_messages, request) => {
@@ -1119,14 +1142,227 @@ describe('ChatSessionController - ContextManager 集成', () => {
       { type: 'response.complete' },
     ]);
     const controller = createController(provider, {}, { contextManager: mockContextManager });
-    const states = await collectStates(controller.submitUserText('/compress'));
+    const states = await collectStates(controller.submitUserText(text));
 
-    expect(compactCalls).toEqual([{ trigger: 'auto', originalUserMessages: ['/compress'] }]);
-    expect(provider.requests[0]?.messages.at(-1)).toEqual({ role: 'user', content: '/compress' });
+    expect(compactCalls).toEqual([{ trigger: 'auto', originalUserMessages: [text] }]);
+    expect(provider.requests[0]?.messages.at(-1)).toEqual({ role: 'user', content: text });
     expect(states.at(-1)?.messages[0]).toMatchObject({
       role: 'user',
-      parts: [{ type: 'text', text: '/compress' }],
+      parts: [{ type: 'text', text }],
     });
+  });
+
+  it('Steer 在工具完成后的下一模型边界注入，不新增 turn，并先写入会话 activity', async () => {
+    const toolStarted = createDeferred<void>();
+    const releaseTool = createDeferred<void>();
+    const tool: ToolDefinition = {
+      name: 'read_file',
+      description: 'read',
+      risk: 'read',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      validate: () => ({ ok: true, value: {} }),
+      execute: async () => {
+        toolStarted.resolve();
+        await releaseTool.promise;
+        return { ok: true, toolName: 'read_file', data: 'ok', meta: { durationMs: 1, timedOut: false } };
+      },
+    };
+    const sessionArchive = {
+      append: vi.fn(async () => undefined),
+      appendActivity: vi.fn(async () => undefined),
+    };
+    const provider = new FakeProvider([
+      [
+        { type: 'tool.call', call: { id: 'call-1', name: 'read_file', argumentsText: '{}' } },
+        { type: 'response.complete' },
+      ],
+      [
+        { type: 'content.delta', delta: 'final' },
+        { type: 'response.complete' },
+      ],
+    ]);
+    const controller = createController(provider, {}, {
+      toolRegistry: createRegistryForTool(tool),
+      sessionArchive,
+    });
+    const statesPromise = collectStates(controller.submitUserText('initial task'));
+    await toolStarted.promise;
+    const turnIndexBeforeSteer = (controller as unknown as { turnIndex: number }).turnIndex;
+
+    await expect(controller.steer('focus on the test')).resolves.toEqual({ accepted: true });
+    expect((controller as unknown as { turnIndex: number }).turnIndex).toBe(turnIndexBeforeSteer);
+    expect(sessionArchive.appendActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'steer', text: 'focus on the test' }),
+    );
+
+    releaseTool.resolve();
+    const states = await statesPromise;
+    expect(provider.requests[1]?.messages.at(-1)).toEqual({
+      role: 'user',
+      content: '<steer-guidance>\n1. focus on the test\n</steer-guidance>',
+      provenance: 'steer',
+    });
+    expect(states.at(-1)?.messages.filter((message) => message.role === 'user')).toHaveLength(1);
+  });
+
+  it('rejects a Steer whose activity write finishes after the final consume boundary', async () => {
+    const streamStarted = createDeferred<void>();
+    const releaseProvider = createDeferred<void>();
+    const steerPersisted = createDeferred<void>();
+    const archivePersisted = createDeferred<void>();
+    const provider: ChatModelProvider = {
+      protocol: 'openai',
+      supportsExtendedThinking: false,
+      async *stream() {
+        streamStarted.resolve();
+        await releaseProvider.promise;
+        yield { type: 'content.delta', delta: 'final' };
+        yield { type: 'response.complete' };
+      },
+    };
+    const sessionArchive = {
+      append: vi.fn(() => archivePersisted.promise),
+      appendActivity: vi.fn((activity: { type: string }) =>
+        activity.type === 'steer' ? steerPersisted.promise : Promise.resolve()),
+    };
+    const controller = createController(provider, {}, { sessionArchive });
+    const statesPromise = collectStates(controller.submitUserText('initial task'));
+    await streamStarted.promise;
+
+    const steerPromise = controller.steer('late guidance');
+    await vi.waitFor(() => expect(sessionArchive.appendActivity).toHaveBeenCalledOnce());
+    releaseProvider.resolve();
+    await vi.waitFor(() => expect(sessionArchive.append).toHaveBeenCalledOnce());
+    expect(controller.getState().status).toBe('streaming');
+
+    steerPersisted.resolve();
+    await expect(steerPromise).resolves.toEqual({ accepted: false, reason: 'run_ended' });
+    expect(controller.getState().activities ?? []).toEqual([]);
+
+    archivePersisted.resolve();
+    await statesPromise;
+  });
+
+  it('passes the active Stop signal into automatic compaction before any Provider request', async () => {
+    const compactStarted = createDeferred<AbortSignal>();
+    const contextManager = createContextManagerMock({
+      compact: async (_messages, _request, signal) => {
+        if (signal === undefined) throw new Error('missing signal');
+        compactStarted.resolve(signal);
+        await new Promise<never>((_resolve, reject) => {
+          if (signal.aborted) reject(signal.reason);
+          else signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    const provider = new FakeProvider([]);
+    const controller = createController(provider, {}, { contextManager });
+    const statesPromise = collectStates(controller.submitUserText('compact first'));
+    const signal = await compactStarted.promise;
+
+    await expect(controller.stopRun()).resolves.toEqual({ accepted: true });
+    const states = await statesPromise;
+
+    expect(signal.aborted).toBe(true);
+    expect(provider.requests).toEqual([]);
+    expect(states.at(-1)?.status).toBe('stopped');
+  });
+
+  it('Stop 取消 active run、使审批过期并把 turn 归档为 stopped', async () => {
+    const streamStarted = createDeferred<void>();
+    const requests: ProviderRequest[] = [];
+    const provider: ChatModelProvider = {
+      protocol: 'openai',
+      supportsExtendedThinking: false,
+      async *stream(request) {
+        requests.push(request);
+        streamStarted.resolve();
+        await new Promise<void>((resolve) => {
+          if (request.signal?.aborted) resolve();
+          else request.signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+      },
+    };
+    const expireApprovals = vi.fn(async () => undefined);
+    const sessionArchive = {
+      append: vi.fn(async () => undefined),
+      appendActivity: vi.fn(async () => undefined),
+    };
+    const controller = createController(provider, {}, { expireApprovals, sessionArchive });
+    const statesPromise = collectStates(controller.submitUserText('long task'));
+    await streamStarted.promise;
+    const runId = controller.getActiveRun()?.id;
+    expect(runId).toBeDefined();
+
+    await expect(controller.stopRun()).resolves.toEqual({ accepted: true });
+    const states = await statesPromise;
+
+    expect(requests[0]?.signal?.aborted).toBe(true);
+    expect(expireApprovals).toHaveBeenCalledWith(runId);
+    expect(sessionArchive.appendActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'run.stopped', runId }),
+    );
+    expect(states.at(-1)).toMatchObject({
+      status: 'stopped',
+      messages: [
+        { role: 'user' },
+        { role: 'assistant', meta: { finishReason: 'stopped' } },
+      ],
+    });
+    expect(controller.getActiveRun()).toBeUndefined();
+  });
+
+  it('已生成但尚未执行的工具调用使用最新 permission generation 重新 preflight', async () => {
+    const manager = await PermissionManager.open({
+      selectedMode: 'yolo',
+      agentMode: 'default',
+      storage: { read: async () => undefined, write: async () => undefined },
+    });
+    const execute = vi.fn(async () => ({
+      ok: true as const,
+      toolName: 'write_file',
+      data: 'written',
+      meta: { durationMs: 1, timedOut: false },
+    }));
+    const tool: ToolDefinition = {
+      name: 'write_file',
+      description: 'write',
+      risk: 'write',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      validate: () => ({ ok: true, value: {} }),
+      execute,
+    };
+    const provider = new FakeProvider([
+      [
+        { type: 'tool.call', call: { id: 'write-1', name: 'write_file', argumentsText: '{}' } },
+        { type: 'response.complete' },
+      ],
+      [
+        { type: 'content.delta', delta: 'denied safely' },
+        { type: 'response.complete' },
+      ],
+    ]);
+    const controller = createController(provider, {}, {
+      toolRegistry: createRegistryForTool(tool),
+      permissionManager: manager,
+    });
+    const iterator = controller.submitUserText('write something')[Symbol.asyncIterator]();
+    let event = await iterator.next();
+    while (!event.done && event.value.state.draft?.activity.type !== 'tool') {
+      event = await iterator.next();
+    }
+    expect(event.done).toBe(false);
+
+    await manager.setSelectedMode('strict');
+    while (!(await iterator.next()).done) {
+      // Drain the remaining controller events.
+    }
+
+    expect(manager.snapshot().generation).toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+    expect(provider.requests[1]?.messages).toContainEqual(
+      expect.objectContaining({ role: 'tool', isError: true }),
+    );
   });
 
   it('loop.failed 的上下文过长 notice 建议使用 /compact', async () => {
@@ -1209,6 +1445,49 @@ describe('ChatSessionController - task09 会话持久化集成', () => {
     expect(states.at(-1)?.status).toBe('idle');
   });
 
+  it('keeps Stop authoritative while final archive persistence is still pending', async () => {
+    const archiveGate = createDeferred<void>();
+    const sessionArchive = {
+      append: vi.fn(() => archiveGate.promise),
+      appendActivity: vi.fn(async () => undefined),
+    };
+    const provider = new FakeProvider([
+      { type: 'content.delta', delta: 'complete response' },
+      { type: 'response.complete' },
+    ]);
+    const controller = createController(provider, {}, { sessionArchive });
+    const statesPromise = collectStates(controller.submitUserText('start'));
+    await vi.waitFor(() => expect(sessionArchive.append).toHaveBeenCalledOnce());
+
+    await expect(controller.stopRun()).resolves.toEqual({ accepted: true });
+    archiveGate.resolve();
+    const states = await statesPromise;
+
+    expect(states.at(-1)).toMatchObject({
+      status: 'stopped',
+      messages: [{ role: 'user' }, { role: 'assistant', meta: { finishReason: 'stopped' } }],
+    });
+  });
+
+  it('restores typed Steer, Stop, and Review activities outside transcript turns', () => {
+    const controller = createController(new FakeProvider([]), {}, {
+      initialActivities: [
+        { type: 'steer', id: 'steer-1', runId: 'run-1', text: 'focus', createdAt: 1 },
+        { type: 'run.stopped', runId: 'run-1', createdAt: 2 },
+        { type: 'review.result', reviewId: 'review-1', content: { summary: 'done', findings: [] }, createdAt: 3 },
+      ],
+    });
+
+    expect(controller.getState()).toMatchObject({
+      messages: [],
+      activities: [
+        { id: 'steer-1', type: 'steer', text: 'focus', createdAt: 1 },
+        { type: 'stopped', runId: 'run-1', createdAt: 2 },
+        { type: 'review', reviewId: 'review-1', summary: 'done', findingCount: 0, createdAt: 3 },
+      ],
+    });
+  });
+
   it('自动笔记不阻塞最终状态，并收到本轮 completion token 累积值', async () => {
     const never = new Promise<void>(() => undefined);
     const autoNoteWriter = { maybeUpdate: vi.fn(() => never) };
@@ -1268,8 +1547,8 @@ interface CompactionRequestForTest {
 interface ContextManagerMockOptions {
   onTokenUsage?: (totalPromptTokens: number) => void;
   onMessagesAppended?: (messages: readonly unknown[]) => void;
-  offloadToolResults?: (messages: unknown[]) => Promise<void>;
-  compact?: (messages: unknown[], request: CompactionRequestForTest) => Promise<unknown>;
+  offloadToolResults?: (messages: unknown[], signal?: AbortSignal) => Promise<void>;
+  compact?: (messages: unknown[], request: CompactionRequestForTest, signal?: AbortSignal) => Promise<unknown>;
 }
 
 function createContextManagerMock(options: ContextManagerMockOptions = {}): any {

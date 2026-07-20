@@ -166,6 +166,49 @@ describe('SessionRestore', () => {
     }
   });
 
+  it('restores typed activities and Steer provenance without creating TUI turns', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'agentcode-restore-activities-'));
+    const filePath = join(root, '20260102-030405-abcd.jsonl');
+    try {
+      await writeFile(filePath, [
+        archivedText('user', 'question', 1, 'u-1'),
+        archivedText('assistant', 'answer', 2, 'a-1'),
+        JSON.stringify({
+          role: 'user',
+          content: '<steer-guidance>focus</steer-guidance>',
+          provenance: 'steer',
+          _ts: 3,
+        }),
+        JSON.stringify({ _activity: 'steer', type: 'steer', id: 's-1', runId: 'r-1', text: 'focus', createdAt: 3, _ts: 3 }),
+        JSON.stringify({ _activity: 'run.stopped', type: 'run.stopped', runId: 'r-1', createdAt: 4, _ts: 4 }),
+        JSON.stringify({
+          _activity: 'review.result',
+          type: 'review.result',
+          reviewId: 'review-1',
+          content: { findings: [], summary: 'done' },
+          createdAt: 5,
+          _ts: 5,
+        }),
+      ].join('\n'), 'utf8');
+
+      const restored = await loadSession(filePath);
+
+      expect(restored.providerContext).toEqual([
+        { role: 'user', content: 'question' },
+        { role: 'assistant', content: 'answer' },
+        { role: 'user', content: '<steer-guidance>focus</steer-guidance>', provenance: 'steer' },
+      ]);
+      expect(restored.messages.map((message) => message.id)).toEqual(['u-1', 'a-1']);
+      expect(restored.activities).toEqual([
+        { type: 'steer', id: 's-1', runId: 'r-1', text: 'focus', createdAt: 3 },
+        { type: 'run.stopped', runId: 'r-1', createdAt: 4 },
+        { type: 'review.result', reviewId: 'review-1', content: { findings: [], summary: 'done' }, createdAt: 5 },
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('扫描普通 JSONL 文件，按 mtime 倒序返回最近 10 条和合法消息数', async () => {
     const root = await mkdtemp(join(tmpdir(), 'agentcode-restore-list-'));
     const sessionsDir = join(root, '.agentcode', 'sessions');
@@ -186,6 +229,7 @@ describe('SessionRestore', () => {
       expect(summaries).toHaveLength(10);
       expect(summaries[0]?.sessionId).toContain('20260112');
       expect(summaries[0]?.messageCount).toBe(1);
+      expect(summaries[0]?.turnCount).toBe(1);
       expect(summaries[9]?.sessionId).toContain('20260103');
     } finally {
       await rm(root, { recursive: true, force: true });

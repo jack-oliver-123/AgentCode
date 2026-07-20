@@ -72,6 +72,7 @@ describe('compaction primitives', () => {
     expectTypeOf<CompactionRequest>().toEqualTypeOf<{
       trigger: 'auto' | 'manual';
       originalUserMessages: readonly string[];
+      instructions?: string;
     }>();
     expectTypeOf<CompactionResult>().toEqualTypeOf<
       | { outcome: 'compacted'; level: CompactionLevel; attempts: number }
@@ -157,6 +158,23 @@ describe('compaction primitives', () => {
       messages: messages.slice(6),
       estimatedTokens: Math.ceil('twook'.length / 4),
     });
+  });
+
+  it('keeps Steer provenance inside the current user turn instead of creating a new turn boundary', () => {
+    const messages: Message[] = [
+      message('user', 'one'),
+      message('assistant', 'partial'),
+      message('user', 'guidance', { provenance: 'steer' } as Partial<Message>),
+      message('assistant', 'done'),
+      message('user', 'two'),
+      message('assistant', 'ok'),
+    ];
+
+    const turns = splitCompleteTurns(messages, 0);
+
+    expect(turns).toHaveLength(2);
+    expect(turns[0]?.messages).toEqual(messages.slice(0, 4));
+    expect(turns[1]?.messages).toEqual(messages.slice(4));
   });
 
   it('rejects an invalid prefix and incomplete or orphaned tool traffic', () => {

@@ -23,6 +23,7 @@ const NOTE_OPERATION_REPLY = JSON.stringify([
     body: 'Do not use the any type in this project.',
   },
 ]);
+const REVIEW_REPLY = JSON.stringify({ findings: [], summary: '未发现符合报告阈值的问题。' });
 
 const server = createServer(async (request, response) => {
   const body = await readRequestBody(request);
@@ -151,6 +152,9 @@ async function writeAnthropicStream(response: ServerResponse, rawBody: string): 
 }
 
 function chooseReply(rawBody: string): string {
+  if (rawBody.includes('<frozen-diff>')) {
+    return REVIEW_REPLY;
+  }
   if (isMemoryMaintenanceRequest(rawBody)) {
     return NOTE_OPERATION_REPLY;
   }

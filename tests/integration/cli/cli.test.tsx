@@ -3,15 +3,20 @@ import React from 'react';
 import { describe, expect, it } from 'vitest';
 
 import { bootstrapApp } from '../../../src/app/bootstrapApp.js';
+import { AppRuntime } from '../../../src/app/runtime/AppRuntime.js';
+import type { InputRouteResult } from '../../../src/app/runtime/InputRouter.js';
 import { parseCliArgs, runCli } from '../../../src/cli/main.js';
 import type { AgentConfig, ResolvedConfig } from '../../../src/config/schema.js';
 import { ChatSessionController } from '../../../src/session/ChatSessionController.js';
 import type { ChatMessage, ChatSessionDraft } from '../../../src/session/types.js';
 import { AgentCodeError } from '../../../src/shared/errors.js';
 import { App } from '../../../src/tui/App.js';
-import { InputPane, removeLastGrapheme } from '../../../src/tui/components/InputPane.js';
+import { removeLastGrapheme } from '../../../src/tui/components/InputPane.js';
 import { TranscriptPane } from '../../../src/tui/components/TranscriptPane.js';
-import { createPermissionPromptCoordinator } from '../../../src/tui/permissionPromptCoordinator.js';
+import {
+  createPermissionPromptCoordinator,
+  type PermissionPromptCoordinator,
+} from '../../../src/tui/permissionPromptCoordinator.js';
 import { FakeProvider } from '../../helpers/FakeProvider.js';
 import { createTempWorkspace, writeAgentConfig } from '../../helpers/tempConfig.js';
 
@@ -19,9 +24,7 @@ describe('TUI App', () => {
   it('renders model, config source, cwd, status, and empty input prompt', () => {
     const controller = createController(new FakeProvider([]));
 
-    const output = renderToString(
-      <App controller={controller} cwd="/workspace/demo" resolvedConfig={createResolvedConfig()} />,
-    );
+    const output = renderToString(createTestApp(controller, { cwd: '/workspace/demo' }));
 
     expect(output).toContain('AgentCode');
     expect(output).toMatch(/model:\s*test-model/);
@@ -31,7 +34,7 @@ describe('TUI App', () => {
     expect(output).toContain('ready');
     expect(output).toContain('Ready for a new AgentCode conversation');
     expect(output).toContain('Ask AgentCode about this project');
-    expect(output).toContain('Enter to send');
+    expect(output).toContain('Enter send');
   });
 
   it('有活动权限请求时渲染 PermissionPrompt 替代输入框', () => {
@@ -47,17 +50,12 @@ describe('TUI App', () => {
     );
     const controller = createController(new FakeProvider([]));
 
-    const output = renderToString(
-      <App
-        controller={controller}
-        resolvedConfig={createResolvedConfig()}
-        permissionPromptCoordinator={coordinator}
-      />,
-    );
+    const output = renderToString(createTestApp(controller, { permissionPromptCoordinator: coordinator }));
 
     expect(output).toContain('权限请求');
     expect(output).toContain('[execute]');
-    expect(output).not.toContain('Ask AgentCode about this project');
+    expect(output).toContain('Ask AgentCode about this project');
+    expect(output).toContain('Type / for runtime controls');
     coordinator.dispose();
   });
 
@@ -69,7 +67,7 @@ describe('TUI App', () => {
     const controller = createController(provider);
     await drain(controller.submitUserText('Hello'));
 
-    const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
+    const output = renderToString(createTestApp(controller));
 
     expect(output).toContain('▌');
     expect(output).toContain('Hello');
@@ -79,19 +77,20 @@ describe('TUI App', () => {
     expect(output).not.toContain('AgentCode:');
   });
 
-  it('disables input while a response is streaming', async () => {
+  it('keeps input available for Steer and Queue while a response is streaming', async () => {
     const provider = new FakeProvider([{ type: 'response.complete' }], { holdBeforeEvents: true });
     const controller = createController(provider);
     const turn = controller.submitUserText('Hello')[Symbol.asyncIterator]();
     await turn.next();
 
     try {
-      const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
+      const output = renderToString(createTestApp(controller));
 
       expect(output).toContain('generating');
       expect(output).toContain('Waiting for model response');
       expect(output).not.toContain('Thinking');
-      expect(output).toContain('Composer paused while AgentCode is generating');
+      expect(output).toContain('Steer this run or queue the next task');
+      expect(output).toContain('Enter steer');
     } finally {
       provider.release();
       await turn.next();
@@ -208,7 +207,7 @@ describe('TUI App', () => {
     const controller = createController(provider);
     await drain(controller.submitUserText('Hello'));
 
-    const output = renderToString(<App controller={controller} resolvedConfig={createResolvedConfig()} />);
+    const output = renderToString(createTestApp(controller));
 
     expect(output).toContain('Error (provider_error): Provider failed safely');
     expect(output).toContain('Fix the issue, then send another message');
@@ -322,6 +321,50 @@ function createController(provider: FakeProvider, configOverrides: Partial<Agent
     createId: (prefix) => `${prefix}-${++idCounter}`,
     now: () => 1234,
   });
+}
+
+function createTestApp(
+  controller: ChatSessionController,
+  options: {
+    cwd?: string;
+    resolvedConfig?: ResolvedConfig;
+    permissionPromptCoordinator?: PermissionPromptCoordinator;
+  } = {},
+): React.ReactElement {
+  const resolvedConfig = options.resolvedConfig ?? createResolvedConfig();
+  const runtime = new AppRuntime({ mode: controller.getState().mode, chat: controller.getState() });
+  runtime.dispatch({ type: 'chat.changed', state: controller.getState() });
+  const inputRouter = {
+    route: async (): Promise<InputRouteResult> => ({ kind: 'empty', accepted: false, clearInput: false }),
+  };
+  const statusService = {
+    getStatusBar: () => {
+      const snapshot = runtime.getSnapshot();
+      const context = controller.getContextStatus();
+      return {
+        mode: snapshot.displayMode,
+        runStatus: snapshot.run.phase,
+        model: resolvedConfig.config.model,
+        estimatedTokens: context.estimatedTokens,
+        queueCount: snapshot.queue.count,
+        queuePaused: snapshot.queue.paused,
+        contextPercent:
+          context.contextWindow <= 0 ? 0 : Math.round((context.estimatedTokens / context.contextWindow) * 100),
+      };
+    },
+  };
+  return (
+    <App
+      runtime={runtime}
+      inputRouter={inputRouter}
+      statusService={statusService}
+      resolvedConfig={resolvedConfig}
+      {...(options.cwd !== undefined ? { cwd: options.cwd } : {})}
+      {...(options.permissionPromptCoordinator !== undefined
+        ? { permissionPromptCoordinator: options.permissionPromptCoordinator }
+        : {})}
+    />
+  );
 }
 
 function createTranscriptMessages(length: number): ChatMessage[] {

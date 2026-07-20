@@ -17,7 +17,7 @@ SENTINEL_PREFIX="sk-agentcode"
 SENTINEL_SUFFIX="should-not-appear"
 
 run_tmux() {
-  tmux -L "$TMUX_SOCKET" "$@"
+  MSYS2_ARG_CONV_EXCL='*' tmux -L "$TMUX_SOCKET" "$@"
 }
 
 cleanup() {
@@ -132,6 +132,13 @@ send_prompt() {
   run_tmux send-keys -t "$SESSION_NAME" C-m
 }
 
+send_queued_prompt() {
+  local text="$1"
+
+  run_tmux send-keys -t "$SESSION_NAME" -l "$text"
+  run_tmux send-keys -t "$SESSION_NAME" M-Enter
+}
+
 wait_for_mock_url() {
   local deadline=$((SECONDS + 10))
   local url=""
@@ -185,6 +192,21 @@ TASK09_E2E_PROJECT_RULE
 TEXT
 }
 
+initialize_review_fixture() {
+  local project_dir="$1"
+
+  cat > "$project_dir/.gitignore" <<'TEXT'
+node_modules/
+.agentcode/
+start-agentcode.cmd
+start-agentcode.sh
+TEXT
+  git -C "$project_dir" init -q
+  git -C "$project_dir" add .gitignore AGENTCODE.md tool-fixture.txt
+  git -C "$project_dir" -c user.name='AgentCode E2E' -c user.email='agentcode@example.invalid' commit -qm 'fixture'
+  printf 'review fixture change\n' > "$project_dir/review-fixture.txt"
+}
+
 write_launcher() {
   local project_dir="$1"
 
@@ -218,6 +240,7 @@ write_launcher() {
 require_command tmux
 require_command node
 require_command npm
+require_command git
 
 if [[ ! -f "$ROOT_DIR/dist/cli/main.js" ]]; then
   printf 'E2E smoke blocked: build output missing. Run `npm run build` first.\n' >&2
@@ -237,6 +260,7 @@ mkdir -p "$PROJECT_DIR"
 npm install --prefix "$PROJECT_DIR" --no-save --ignore-scripts --no-audit --no-fund --prefer-offline "$PACKAGE_TARBALL_PATH" >/dev/null
 write_project_config "$PROJECT_DIR" "$MOCK_URL"
 write_tool_fixture "$PROJECT_DIR"
+initialize_review_fixture "$PROJECT_DIR"
 LAUNCHER="$(write_launcher "$PROJECT_DIR")"
 
 if [[ ! -x "$PROJECT_DIR/node_modules/.bin/agentcode" ]]; then
@@ -350,6 +374,45 @@ RESUMED_LINE_COUNT="$(node -e "const fs=require('node:fs'); const lines=fs.readF
 if (( RESUMED_LINE_COUNT <= SESSION_LINE_COUNT )); then
   fail 'resumed conversation did not append new JSONL records'
 fi
+
+# Task 10: exercise the real TUI command path and active-run controls.
+send_prompt '/help review'
+wait_for_pane_text 'Example: /review pr 42' 8
+send_prompt '/status'
+wait_for_pane_text 'Status details' 8
+send_prompt '/plan'
+wait_for_pane_text '[PLAN]' 5
+send_prompt '/do'
+wait_for_pane_text '[DEFAULT]' 5
+send_prompt '/session current'
+wait_for_pane_text 'archivePath' 5
+
+send_prompt '/queue add runtime e2e task'
+sleep 1
+send_prompt 'e2e steer'
+wait_for_pane_text 'Steer: e2e steer' 5
+send_queued_prompt 'future e2e queue'
+wait_for_pane_text 'queued: 2' 5
+send_prompt '/stop'
+wait_for_pane_text 'paused' 10
+send_prompt '/queue run'
+sleep 1
+send_prompt '/stop'
+wait_for_pane_text 'paused' 10
+
+send_prompt '/review'
+wait_for_pane_text '[REVIEW]' 8
+wait_for_pane_text '未发现符合报告阈值的问题。' 15
+
+send_prompt '/clear "next"'
+wait_for_pane_text 'Ready for a new AgentCode conversation.' 8
+send_prompt '/session'
+wait_for_pane_text 'Resume session' 8
+OLD_SESSION_ID="$(basename "$SESSION_FILE" .jsonl)"
+run_tmux send-keys -t "$SESSION_NAME" -l "$OLD_SESSION_ID"
+run_tmux send-keys -t "$SESSION_NAME" C-m
+wait_for_pane_text 'queued: 2' 8
+wait_for_pane_text 'paused' 8
 
 FINAL_PANE="$(capture_pane)"
 if has_sentinel_leak "$FINAL_PANE"; then

@@ -52,7 +52,7 @@ export interface AgentConfig {
   ui: {
     showThinking: boolean;
   };
-  permissionMode: 'plan' | 'strict' | 'normal' | 'auto' | 'yolo';
+  permissionMode: 'strict' | 'normal' | 'auto' | 'yolo';
   /** 自动笔记特性开关，默认开启 */
   autoNotesEnabled: boolean;
   /** 合并后的 MCP Server 配置，由 loadConfig 填充 */
@@ -128,7 +128,7 @@ export const rawConfigSchema = z
         show_thinking: z.boolean().optional(),
       })
       .optional(),
-    permission_mode: z.enum(['plan', 'strict', 'normal', 'auto', 'yolo']).optional(),
+    permission_mode: z.enum(['strict', 'normal', 'auto', 'yolo']).optional(),
     notes: z
       .object({
         enabled: z.boolean().optional(),

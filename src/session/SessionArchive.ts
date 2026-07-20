@@ -30,6 +30,44 @@ export interface SessionArchiveOptions {
 
 export interface SessionArchivePort {
   append(messages: readonly ProviderChatMessage[]): Promise<void>;
+  appendActivity?(activity: SessionArchiveActivity): Promise<void>;
+}
+
+export type SessionArchiveActivity =
+  | { type: 'steer'; id: string; runId: string; text: string; createdAt: number }
+  | { type: 'run.stopped'; runId: string; createdAt: number }
+  | { type: 'review.result'; reviewId: string; content: unknown; createdAt: number };
+
+export function parseSessionArchiveActivity(value: unknown): SessionArchiveActivity | undefined {
+  if (!isRecord(value) || value['_activity'] !== value['type'] || !isTimestamp(value['createdAt'])) return undefined;
+  if (value['type'] === 'steer') {
+    if (
+      typeof value['id'] !== 'string' || value['id'].length === 0 ||
+      typeof value['runId'] !== 'string' || value['runId'].length === 0 ||
+      typeof value['text'] !== 'string' || value['text'].length === 0
+    ) return undefined;
+    return {
+      type: 'steer',
+      id: value['id'],
+      runId: value['runId'],
+      text: value['text'],
+      createdAt: value['createdAt'],
+    };
+  }
+  if (value['type'] === 'run.stopped') {
+    if (typeof value['runId'] !== 'string' || value['runId'].length === 0) return undefined;
+    return { type: 'run.stopped', runId: value['runId'], createdAt: value['createdAt'] };
+  }
+  if (value['type'] === 'review.result') {
+    if (typeof value['reviewId'] !== 'string' || value['reviewId'].length === 0 || !('content' in value)) return undefined;
+    return {
+      type: 'review.result',
+      reviewId: value['reviewId'],
+      content: structuredClone(value['content']),
+      createdAt: value['createdAt'],
+    };
+  }
+  return undefined;
 }
 
 export class SessionArchive implements SessionArchivePort {
@@ -72,54 +110,58 @@ export class SessionArchive implements SessionArchivePort {
 
   append(messages: readonly ProviderChatMessage[]): Promise<void> {
     const snapshot = messages.map(cloneProviderMessage);
-    const operation = this.pending.then(() => this.appendOnce(snapshot));
+    const operation = this.pending.then(async () => {
+      try {
+        await this.appendRecords(snapshot.map((message) => this.archiveMessage(message)));
+      } catch (error) {
+        console.warn(`[SessionArchive] 会话存档失败: ${this.filePath}`, error);
+      }
+    });
     this.pending = operation.catch(() => undefined);
     return operation;
   }
 
-  private async appendOnce(messages: readonly ProviderChatMessage[]): Promise<void> {
-    if (messages.length === 0) {
-      return;
-    }
+  appendActivity(activity: SessionArchiveActivity): Promise<void> {
+    const snapshot = structuredClone(activity);
+    const operation = this.pending.then(() => this.appendRecords([{ _activity: snapshot.type, ...snapshot, _ts: snapshot.createdAt }]));
+    this.pending = operation.catch(() => undefined);
+    return operation;
+  }
 
+  private async appendRecords(records: readonly unknown[]): Promise<void> {
+    if (records.length === 0) return;
+
+    const opened = await openSafeFileForUpdate(
+      this.storageRoot,
+      this.filePath,
+      FILE_MODE,
+      this.repairOffset === undefined,
+    );
+    const { handle } = opened;
     try {
-      const opened = await openSafeFileForUpdate(
-        this.storageRoot,
-        this.filePath,
-        FILE_MODE,
-        this.repairOffset === undefined,
-      );
-      const { handle } = opened;
-      try {
-        if (this.repairOffset !== undefined) {
-          if (
-            this.expectedFile === undefined ||
-            !fingerprintsMatch(this.expectedFile, opened.fingerprint) ||
-            this.repairOffset > opened.fingerprint.size
-          ) {
-            // 指纹不匹配说明恢复后磁盘上又新增了消息（其他进程/会话已续写）。
-            // 此时绝不用陈旧 offset 截断，而是放弃本轮追加：当前 turn 不会落盘，
-            // 坏尾由下次 --resume 重新探测修复。这是有意的数据取舍——宁可本轮归档
-            // 缺失，也不能覆盖其他进程已写入的有效消息。
-            throw new Error('Session archive changed after restore; refusing to apply a stale repair offset.');
-          }
-          await handle.truncate(this.repairOffset);
-          this.repairOffset = undefined;
-          this.expectedFile = undefined;
+      if (this.repairOffset !== undefined) {
+        if (
+          this.expectedFile === undefined ||
+          !fingerprintsMatch(this.expectedFile, opened.fingerprint) ||
+          this.repairOffset > opened.fingerprint.size
+        ) {
+          // 指纹不匹配说明恢复后磁盘上又新增了消息（其他进程/会话已续写）。
+          // 此时绝不用陈旧 offset 截断，而是放弃本轮追加。
+          throw new Error('Session archive changed after restore; refusing to apply a stale repair offset.');
         }
-
-        const current = await handle.stat();
-        const needsLeadingNewline = await fileNeedsLeadingNewline(handle, current.size);
-        const archived = messages.map((message) => this.archiveMessage(message));
-        const body = `${needsLeadingNewline ? '\n' : ''}${archived.map((message) => JSON.stringify(message)).join('\n')}\n`;
-        await writeAtEnd(handle, Buffer.from(body, 'utf8'), current.size);
-        await handle.sync();
-        if (process.platform !== 'win32') await handle.chmod(FILE_MODE);
-      } finally {
-        await handle.close();
+        await handle.truncate(this.repairOffset);
+        this.repairOffset = undefined;
+        this.expectedFile = undefined;
       }
-    } catch (error) {
-      console.warn(`[SessionArchive] 会话存档失败: ${this.filePath}`, error);
+
+      const current = await handle.stat();
+      const needsLeadingNewline = await fileNeedsLeadingNewline(handle, current.size);
+      const body = `${needsLeadingNewline ? '\n' : ''}${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
+      await writeAtEnd(handle, Buffer.from(body, 'utf8'), current.size);
+      await handle.sync();
+      if (process.platform !== 'win32') await handle.chmod(FILE_MODE);
+    } finally {
+      await handle.close();
     }
   }
 
@@ -131,6 +173,7 @@ export class SessionArchive implements SessionArchivePort {
     if ('toolCalls' in message) {
       return { ...message, toolCalls: message.toolCalls.map((call) => ({ ...call })), _ts: timestamp };
     }
+    if (message.provenance === 'steer') return { ...message, _ts: timestamp };
     const author = message.role === 'user' ? 'user' : 'agent';
     return {
       ...message,
@@ -138,6 +181,14 @@ export class SessionArchive implements SessionArchivePort {
       _ui: { id: this.createUiId(author), createdAt: timestamp, author },
     };
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isTimestamp(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 async function fileNeedsLeadingNewline(handle: FileHandle, size: number): Promise<boolean> {

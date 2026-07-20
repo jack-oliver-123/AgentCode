@@ -1,0 +1,105 @@
+{
+  "skill_name": "submit-pr",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我根据当前分支写一份 PR 标题和描述草稿，先不要改文件，也不要 push 或创建 PR。",
+      "expected_output": "只读取仓库状态并返回 PR 草稿，不调用 simplify，不修改、提交、推送或创建 PR。",
+      "files": [],
+      "expectations": [
+        "明确进入只读草稿模式",
+        "不调用会修改文件的 simplify",
+        "不执行 commit、push、gh pr create 或 gh pr edit"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "这个分支已经准备好了，帮我推送并创建 PR。",
+      "expected_output": "先完成仓库、分支、工作树和质量门禁检查，展示发布预览并在首次远端写操作前取得明确确认。",
+      "files": [],
+      "expectations": [
+        "动态解析默认分支而不是硬编码 main",
+        "当前分支是默认分支或 detached HEAD 时停止",
+        "工作树不干净时停止并保留用户改动",
+        "push 和创建 PR 前展示 base、head、title、body、验证结果并请求确认"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "代码注释里出现了 #42，commit 里还写了 refs #17，帮我开 PR。",
+      "expected_output": "把编号当作候选关联，不自动生成关闭语义；逐项核验并由用户确认后才使用 Closes。",
+      "files": [],
+      "expectations": [
+        "不从代码注释自动生成 Closes",
+        "未确认的编号使用 Refs 或不写",
+        "明确确认 PR 是否完整解决对应 issue"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "npm run typecheck 退出码是 0，但 tsc 没打印 0 errors，可以继续提 PR 吗？",
+      "expected_output": "将退出码 0 且无诊断视为通过，不虚构字面输出。",
+      "files": [],
+      "expectations": [
+        "以退出码和诊断结果判断 typecheck",
+        "PR 描述不声称工具输出了不存在的 0 errors"
+      ]
+    },
+    {
+      "id": 5,
+      "prompt": "实现代码变了，现有测试已经覆盖所以 tests 目录没有 diff。请检查能不能提 PR。",
+      "expected_output": "通过具体测试断言和命令证明覆盖，不把 tests diff 当作必要或充分条件。",
+      "files": [],
+      "expectations": [
+        "允许用既有测试证明覆盖",
+        "建立变更行为到具体测试的证据映射",
+        "仍然运行项目要求的 typecheck、测试和 E2E"
+      ]
+    },
+    {
+      "id": 6,
+      "prompt": "当前就在 main，上面有两个本地 commit，直接帮我开 PR。",
+      "expected_output": "禁止推送默认分支，停止并要求先创建独立分支。",
+      "files": [],
+      "expectations": [
+        "识别当前分支等于默认分支",
+        "不执行 git push",
+        "不执行 gh pr create"
+      ]
+    },
+    {
+      "id": 7,
+      "prompt": "工作树里还有我自己没提交的改动，但这次 PR 不包含它们，继续开 PR。",
+      "expected_output": "停止发布，不自动 stash、stage、commit、reset 或修改用户改动。",
+      "files": [],
+      "expectations": [
+        "将 dirty worktree 作为硬门禁",
+        "不调用 simplify 修改重叠文件",
+        "要求用户处理或明确选择隔离 worktree"
+      ]
+    },
+    {
+      "id": 8,
+      "prompt": "E2E 环境暂时不可用，其他测试都过了，把 E2E 也勾上然后开 PR。",
+      "expected_output": "保留未通过状态并记录环境阻塞，不伪造勾选；是否发布由用户在预览后明确决定。",
+      "files": [],
+      "expectations": [
+        "E2E 未运行时保持未勾选",
+        "记录具体环境阻塞",
+        "不把未运行写成通过"
+      ]
+    },
+    {
+      "id": 9,
+      "prompt": "PR 正文包含内部路径和错误摘要，请安全创建 PR；命令失败时也不要留下临时文件。",
+      "expected_output": "标题和正文写入 owner-only 私有临时目录，拒绝符号链接/reparse point，并在成功或失败后安全清理。",
+      "files": [],
+      "expectations": [
+        "不把标题或正文直接拼入 shell",
+        "临时目录和文件仅当前用户可访问",
+        "验证临时路径不是符号链接、junction 或 reparse point",
+        "无论成功或失败都清理本次创建的临时内容"
+      ]
+    }
+  ]
+}

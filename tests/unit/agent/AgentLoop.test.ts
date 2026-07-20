@@ -43,7 +43,7 @@ function makeInput(overrides: Partial<AgentLoopInput> = {}): AgentLoopInput {
   return {
     contextMessages: [],
     userMessage: { role: 'user', content: 'Do something' },
-    mode: 'full',
+    mode: 'default',
     ...overrides,
   };
 }
@@ -543,5 +543,73 @@ describe('runAgentLoop - 边界情况', () => {
     // 应该正常完成而非因 unknown_tool_limit 终止
     const completed = events.find((e) => e.type === 'loop.completed');
     expect(completed).toMatchObject({ reason: 'natural' });
+  });
+});
+
+describe('runAgentLoop - Steer 安全边界', () => {
+  it('streaming 中收到的 Steer 在下一次模型调用前按顺序注入', async () => {
+    const pending: import('../../../src/agent/types.js').SteerGuidance[] = [];
+    const provider = new FakeProvider((_request, callIndex) => {
+      if (callIndex === 0) {
+        pending.push(
+          { id: 'steer-1', text: '先检查测试', createdAt: 1 },
+          { id: 'steer-2', text: '再解释根因', createdAt: 2 },
+        );
+        return [delta('initial answer'), complete('stop')];
+      }
+      return [delta('revised answer'), complete('stop')];
+    });
+
+    const events = await collectEvents(
+      runAgentLoop(
+        makeInput({ consumeSteer: () => pending.splice(0) }),
+        makeDeps(provider),
+      ),
+    );
+
+    expect(provider.requests).toHaveLength(2);
+    expect(provider.requests[1]?.messages).toMatchObject([
+      { role: 'user', content: 'Do something' },
+      { role: 'assistant', content: 'initial answer' },
+      { role: 'user', content: '<steer-guidance>\n1. 先检查测试\n2. 再解释根因\n</steer-guidance>' },
+    ]);
+    expect(events).toContainEqual({
+      type: 'steer.consumed',
+      items: [
+        { id: 'steer-1', text: '先检查测试', createdAt: 1 },
+        { id: 'steer-2', text: '再解释根因', createdAt: 2 },
+      ],
+    });
+    expect(events.find((event) => event.type === 'loop.completed')).toMatchObject({ finalText: 'revised answer' });
+    expect(provider.requests[1]?.messages.at(-1)).toHaveProperty('provenance', 'steer');
+  });
+
+  it('tool 执行期间收到的 Steer 不取消工具，只在工具结束后的模型边界注入', async () => {
+    const pending: import('../../../src/agent/types.js').SteerGuidance[] = [];
+    let toolCompleted = false;
+    const steeringTool = makeTool('read_file', 'read');
+    steeringTool.execute = async () => {
+      pending.push({ id: 'steer-tool', text: '结合工具结果', createdAt: 3 });
+      toolCompleted = true;
+      return { ok: true, toolName: 'read_file', data: { ok: true }, meta: { durationMs: 1, timedOut: false } };
+    };
+    const provider = new FakeProvider([
+      [toolCall('read_file'), complete('tool_calls')],
+      [delta('done'), complete('stop')],
+    ]);
+
+    await collectEvents(
+      runAgentLoop(
+        makeInput({ consumeSteer: () => pending.splice(0) }),
+        makeDeps(provider, makeRegistry([steeringTool])),
+      ),
+    );
+
+    expect(toolCompleted).toBe(true);
+    expect(provider.requests[1]?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: '<steer-guidance>\n1. 结合工具结果\n</steer-guidance>',
+    });
+    expect(provider.requests[1]?.messages.at(-1)).toHaveProperty('provenance', 'steer');
   });
 });

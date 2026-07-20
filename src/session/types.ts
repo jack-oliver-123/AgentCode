@@ -20,7 +20,15 @@ export interface ChatMessage {
   };
 }
 
-export type ChatSessionDraftActivity = { type: 'thinking' } | { type: 'tool'; toolName: string };
+export type ChatSessionDraftActivity =
+  | { type: 'thinking' }
+  | { type: 'tool'; toolName: string }
+  | { type: 'retry'; attempt: number; maxRetries: number; delayMs: number };
+
+export type ChatSessionActivity =
+  | { id: string; type: 'steer'; text: string; createdAt: number }
+  | { id: string; type: 'stopped'; runId: string; createdAt: number }
+  | { id: string; type: 'review'; reviewId: string; summary: string; findingCount: number; createdAt: number };
 
 export interface ChatSessionDraft {
   id: string;
@@ -29,7 +37,7 @@ export interface ChatSessionDraft {
   activity: ChatSessionDraftActivity;
 }
 
-export type ChatSessionStatus = 'idle' | 'streaming' | 'error';
+export type ChatSessionStatus = 'idle' | 'streaming' | 'error' | 'stopped';
 
 export interface ChatSessionState {
   messages: ChatMessage[];
@@ -40,6 +48,8 @@ export interface ChatSessionState {
   mode: AgentLoopMode;
   /** 瞬态系统提示（如 "Switched to plan mode"），下次状态更新后清除 */
   notice?: string;
+  /** 不进入普通 user/assistant transcript 语义的运行时活动。 */
+  activities?: readonly ChatSessionActivity[];
 }
 
 export type ChatSessionEvent = { type: 'state.changed'; state: ChatSessionState };

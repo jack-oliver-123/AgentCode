@@ -79,11 +79,14 @@ export function parseArchivedSessionMessage(value: unknown): ArchivedSessionMess
 
   const ui = value['_ui'] === undefined ? undefined : parseArchivedUi(value['_ui'], value['role']);
   if (value['_ui'] !== undefined && ui === undefined) return undefined;
+  const provenance = value['provenance'];
+  if (provenance !== undefined && (provenance !== 'steer' || value['role'] !== 'user')) return undefined;
   return {
     role: value['role'],
     content: value['content'],
     _ts: value['_ts'],
     ...(ui !== undefined ? { _ui: ui } : {}),
+    ...(provenance === 'steer' ? { provenance } : {}),
   };
 }
 
@@ -104,14 +107,18 @@ export function toProviderMessage(message: ArchivedSessionMessage): ProviderChat
       toolCalls: message.toolCalls.map((call) => ({ ...call })),
     };
   }
-  return { role: message.role, content: message.content };
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.provenance !== undefined ? { provenance: message.provenance } : {}),
+  };
 }
 
 export function toSessionMessage(message: ArchivedSessionMessage): SessionChatMessage | undefined {
   if (message.role === 'tool' || 'toolCalls' in message) {
     return undefined;
   }
-  if (message._ui === undefined) {
+  if (message._ui === undefined || message.provenance === 'steer') {
     return undefined;
   }
   return {

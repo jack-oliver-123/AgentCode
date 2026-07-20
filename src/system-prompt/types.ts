@@ -35,7 +35,7 @@ export interface EnvContext {
 /** 系统提示构建器输入 */
 export interface SystemPromptBuildInput {
   /** 运行模式 */
-  mode: 'full' | 'plan';
+  mode: 'default' | 'plan';
   /** 当前轮次索引（从 0 开始，每轮 +1） */
   turnIndex: number;
   /** 当前活跃计划步骤 */

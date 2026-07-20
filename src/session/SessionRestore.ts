@@ -10,6 +10,10 @@ import {
 } from '../shared/safeFs.js';
 import type { ChatMessage as SessionChatMessage } from './types.js';
 import {
+  type SessionArchiveActivity,
+  parseSessionArchiveActivity,
+} from './SessionArchive.js';
+import {
   type ArchivedSessionMessage,
   parseArchivedSessionMessage,
   toProviderMessage,
@@ -26,6 +30,7 @@ export interface SessionSummary {
   filePath: string;
   sessionId: string;
   messageCount: number;
+  turnCount: number;
   lastModified: Date;
 }
 
@@ -39,12 +44,23 @@ export interface RestoredSessionSource {
 export interface RestoredSession {
   providerContext: ProviderChatMessage[];
   messages: SessionChatMessage[];
+  activities?: SessionArchiveActivity[];
   source?: RestoredSessionSource;
 }
 
 interface ParsedRecord {
   archived: ArchivedSessionMessage;
   startOffset: number;
+}
+
+interface ParsedActivity {
+  activity: SessionArchiveActivity;
+  startOffset: number;
+}
+
+interface ParsedArchive {
+  messages: ParsedRecord[];
+  activities: ParsedActivity[];
 }
 
 interface PendingTools {
@@ -70,7 +86,7 @@ export async function listSessions(cwd: string): Promise<SessionSummary[]> {
     return [];
   }
 
-  const candidates: Array<Omit<SessionSummary, 'messageCount'>> = [];
+  const candidates: Array<Omit<SessionSummary, 'messageCount' | 'turnCount'>> = [];
   for (const entry of entries) {
     if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.endsWith('.jsonl')) continue;
     const sessionId = entry.name.slice(0, -'.jsonl'.length);
@@ -93,7 +109,14 @@ export async function listSessions(cwd: string): Promise<SessionSummary[]> {
       try {
         const result = await readSafeFile(cwd, candidate.filePath, MAX_SESSION_BYTES);
         if (result === undefined || result.truncated) return undefined;
-        return { ...candidate, messageCount: parseRecords(result.buffer).length };
+        const parsed = parseRecords(result.buffer);
+        return {
+          ...candidate,
+          messageCount: parsed.messages.length,
+          turnCount: parsed.messages.filter(
+            (record) => record.archived.role === 'user' && record.archived.provenance !== 'steer',
+          ).length,
+        };
       } catch {
         return undefined;
       }
@@ -107,11 +130,14 @@ export async function loadSession(filePath: string, cwd = inferSessionRoot(fileP
   if (result === undefined) throw new Error(`Session file does not exist: ${filePath}`);
   if (result.truncated) throw new Error(`Session file exceeds ${MAX_SESSION_BYTES} bytes: ${filePath}`);
   const records = parseRecords(result.buffer);
-  const { valid, repairOffset } = retainCompleteToolSequences(records);
+  const { valid, repairOffset } = retainCompleteToolSequences(records.messages);
   const providerContext = buildProviderContext(valid);
   const messages = valid
     .map((record) => toSessionMessage(record.archived))
     .filter((message): message is SessionChatMessage => message !== undefined);
+  const activities = records.activities
+    .filter((record) => repairOffset === undefined || record.startOffset < repairOffset)
+    .map((record) => structuredClone(record.activity));
   const sessionId = basename(filePath, '.jsonl');
   const source: RestoredSessionSource = {
     sessionId,
@@ -119,7 +145,7 @@ export async function loadSession(filePath: string, cwd = inferSessionRoot(fileP
     expectedFile: result.fingerprint,
     ...(repairOffset !== undefined ? { repairOffset } : {}),
   };
-  return { providerContext, messages, source };
+  return { providerContext, messages, activities, source };
 }
 
 function inferSessionRoot(filePath: string): string {
@@ -128,22 +154,27 @@ function inferSessionRoot(filePath: string): string {
   return basename(agentcodeDir) === '.agentcode' ? dirname(agentcodeDir) : sessionsDir;
 }
 
-function parseRecords(buffer: Buffer): ParsedRecord[] {
-  const records: ParsedRecord[] = [];
+function parseRecords(buffer: Buffer): ParsedArchive {
+  const messages: ParsedRecord[] = [];
+  const activities: ParsedActivity[] = [];
   for (const line of splitBufferLines(buffer)) {
     if (line.text.trim().length === 0) {
       continue;
     }
     try {
-      const archived = parseArchivedSessionMessage(JSON.parse(line.text));
+      const value: unknown = JSON.parse(line.text);
+      const archived = parseArchivedSessionMessage(value);
       if (archived !== undefined) {
-        records.push({ archived, startOffset: line.startOffset });
+        messages.push({ archived, startOffset: line.startOffset });
+        continue;
       }
+      const activity = parseSessionArchiveActivity(value);
+      if (activity !== undefined) activities.push({ activity, startOffset: line.startOffset });
     } catch {
       // 坏 JSON 行仅跳过，不中断后续恢复。
     }
   }
-  return records;
+  return { messages, activities };
 }
 
 function retainCompleteToolSequences(records: readonly ParsedRecord[]): {

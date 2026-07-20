@@ -62,8 +62,15 @@ export async function* runAgentLoop(
 
     yield { type: 'iteration.start', iteration, maxIterations: config.maxIterations };
 
+    const steerBeforeRequest = input.consumeSteer?.() ?? [];
+    if (steerBeforeRequest.length > 0) {
+      messages.push(formatSteerGuidance(steerBeforeRequest));
+      yield { type: 'steer.consumed', items: steerBeforeRequest };
+    }
+
     // 检查 signal — 可能在迭代之间被取消
     if (signal?.aborted) {
+      input.closeSteerInput?.();
       yield {
         type: 'loop.completed',
         finalText: '',
@@ -92,6 +99,7 @@ export async function* runAgentLoop(
       retry,
       iteration,
       signal,
+      input.closeSteerInput,
     );
 
     // streamWithRetry 返回 undefined 表示已 yield loop.failed 并需要终止
@@ -100,6 +108,7 @@ export async function* runAgentLoop(
     }
 
     const { turnText, turnToolCalls, promptTokensDelta, completionTokensDelta } = streamResult;
+    const steerAfterResponse = input.consumeSteer?.() ?? [];
 
     // 累积 token 计数并 yield
     if (promptTokensDelta > 0) totalPromptTokens += promptTokensDelta;
@@ -116,6 +125,12 @@ export async function* runAgentLoop(
 
     // 停止条件判断
     const hasToolCalls = turnToolCalls.length > 0;
+    if (!hasToolCalls && steerAfterResponse.length > 0) {
+      messages.push({ role: 'assistant', content: turnText });
+      messages.push(formatSteerGuidance(steerAfterResponse));
+      yield { type: 'steer.consumed', items: steerAfterResponse };
+      continue;
+    }
     const decision = checkStopCondition({
       iteration,
       maxIterations: config.maxIterations,
@@ -129,6 +144,7 @@ export async function* runAgentLoop(
     // 任何停止条件满足时直接退出（natural, cancelled, max_iterations, unknown_tool_limit）
     if (decision.stop) {
       const reason = decision.reason === 'provider_error' ? 'unknown_tool_limit' : decision.reason;
+      input.closeSteerInput?.();
       yield {
         type: 'loop.completed',
         finalText: turnText,
@@ -165,6 +181,7 @@ export async function* runAgentLoop(
 
       if (postCountDecision.stop) {
         const reason = postCountDecision.reason === 'provider_error' ? 'unknown_tool_limit' : postCountDecision.reason;
+        input.closeSteerInput?.();
         yield {
           type: 'loop.completed',
           finalText: turnText,
@@ -219,10 +236,16 @@ export async function* runAgentLoop(
         messages.push(toolResultMessage);
       }
 
+      if (steerAfterResponse.length > 0) {
+        messages.push(formatSteerGuidance(steerAfterResponse));
+        yield { type: 'steer.consumed', items: steerAfterResponse };
+      }
+
       // 检查 submit_plan
       const planResult = allResults.find((r) => r.call.name === SUBMIT_PLAN_TOOL_NAME && r.result.ok);
       if (planResult?.result.ok) {
         const steps = (planResult.result.data as { steps: PlanStep[] }).steps;
+        input.closeSteerInput?.();
         yield { type: 'plan.submitted', steps };
         yield {
           type: 'loop.completed',
@@ -239,6 +262,7 @@ export async function* runAgentLoop(
     }
 
     // 兜底：无工具调用已在上面 decision 处理，此处不应到达
+    input.closeSteerInput?.();
     yield {
       type: 'loop.completed',
       finalText: turnText,
@@ -250,6 +274,7 @@ export async function* runAgentLoop(
   }
 
   // 达到迭代上限
+  input.closeSteerInput?.();
   yield {
     type: 'loop.completed',
     finalText: '',
@@ -279,6 +304,7 @@ async function* streamWithRetry(
   retry: RetryConfig,
   iteration: number,
   signal: AbortSignal | undefined,
+  closeSteerInput: (() => void) | undefined,
 ): AsyncGenerator<AgentLoopEvent, ProviderStreamResult | undefined, undefined> {
   let lastError: PublicError | undefined;
 
@@ -297,6 +323,7 @@ async function* streamWithRetry(
       await sleep(delayMs, signal);
       // sleep 被 abort 打断时直接退出
       if (signal?.aborted) {
+        closeSteerInput?.();
         yield { type: 'loop.failed', error: lastError!, iteration };
         return undefined;
       }
@@ -349,6 +376,10 @@ async function* streamWithRetry(
       streamError = toPublicError(error);
     }
 
+    if (signal?.aborted) {
+      return { turnText, turnToolCalls: [], promptTokensDelta, completionTokensDelta };
+    }
+
     // 成功路径
     if (streamError === undefined && receivedComplete) {
       return { turnText, turnToolCalls, promptTokensDelta, completionTokensDelta };
@@ -361,6 +392,7 @@ async function* streamWithRetry(
         message: 'Provider stream ended without response.complete event.',
         retryable: false,
       };
+      closeSteerInput?.();
       yield { type: 'loop.failed', error: protoErr, iteration };
       return undefined;
     }
@@ -368,6 +400,7 @@ async function* streamWithRetry(
     // 有错误 — 检查是否可重试
     lastError = streamError!;
     if (!lastError.retryable) {
+      closeSteerInput?.();
       yield { type: 'loop.failed', error: lastError, iteration };
       return undefined;
     }
@@ -375,6 +408,7 @@ async function* streamWithRetry(
   }
 
   // 超过重试上限
+  closeSteerInput?.();
   yield { type: 'loop.failed', error: lastError!, iteration };
   return undefined;
 }
@@ -406,12 +440,21 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────
 
-function resolveRegistry(registry: ToolRegistry, mode: 'full' | 'plan'): ToolRegistry {
-  if (mode === 'full') {
+function resolveRegistry(registry: ToolRegistry, mode: 'default' | 'plan'): ToolRegistry {
+  if (mode === 'default') {
     return registry;
   }
   // Plan Mode：只注入 read 类工具（submit_plan 的 risk 是 read，自然包含在内）
   return registry.filterByRisk(['read']);
+}
+
+function formatSteerGuidance(items: readonly import('./types.js').SteerGuidance[]): ProviderMessage {
+  const lines = items.map((item, index) => `${index + 1}. ${item.text}`);
+  return {
+    role: 'user',
+    content: `<steer-guidance>\n${lines.join('\n')}\n</steer-guidance>`,
+    provenance: 'steer',
+  };
 }
 
 function serializeToolResult(result: ToolExecutionResult): string {

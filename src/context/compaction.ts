@@ -24,6 +24,8 @@ export type CompactionLevel = 'normal' | 'force' | 'emergency';
 export interface CompactionRequest {
   trigger: CompactionTrigger;
   originalUserMessages: readonly string[];
+  /** 仅本次手动压缩使用的附加保留要求。 */
+  instructions?: string;
 }
 
 export type CompactionResult =
@@ -82,14 +84,14 @@ export function splitCompleteTurns(messages: readonly ChatMessage[], prefixLengt
   if (prefixLength === messages.length) {
     return [];
   }
-  if (messages[prefixLength]?.role !== 'user') {
+  if (!isTurnBoundary(messages[prefixLength])) {
     throw new Error('压缩前缀必须结束在完整 turn 的边界上');
   }
 
   const turns: CompleteTurn[] = [];
   let start = prefixLength;
   for (let index = prefixLength + 1; index <= messages.length; index++) {
-    if (index === messages.length || messages[index]?.role === 'user') {
+    if (index === messages.length || isTurnBoundary(messages[index])) {
       const turnMessages = messages.slice(start, index);
       validateToolPairs(turnMessages);
       const characterCount = turnMessages.reduce((total, current) => total + current.content.length, 0);
@@ -104,6 +106,10 @@ export function splitCompleteTurns(messages: readonly ChatMessage[], prefixLengt
   }
 
   return turns;
+}
+
+function isTurnBoundary(message: ChatMessage | undefined): boolean {
+  return message?.role === 'user' && message.provenance !== 'steer';
 }
 
 function validateToolPairs(messages: readonly ChatMessage[]): void {
