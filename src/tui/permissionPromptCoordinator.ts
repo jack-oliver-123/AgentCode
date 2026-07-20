@@ -13,6 +13,7 @@ export interface PermissionPromptCoordinator {
   getSnapshot(): PermissionPromptSnapshot | undefined;
   subscribe(listener: () => void): () => void;
   respond(requestId: number, response: PromptResponse): void;
+  expireAll(): void;
   dispose(): void;
 }
 
@@ -79,6 +80,14 @@ export function createPermissionPromptCoordinator(
     updateSnapshot(undefined);
   }
 
+  function expireAll(): void {
+    while (queue.length > 0) {
+      const request = queue.shift();
+      if (request !== undefined) settle(request, { action: 'deny' });
+    }
+    updateSnapshot(undefined);
+  }
+
   function activateNext(): void {
     if (snapshot !== undefined || disposed) {
       return;
@@ -126,5 +135,5 @@ export function createPermissionPromptCoordinator(
     }
   }
 
-  return { askPermission, getSnapshot, subscribe, respond, dispose };
+  return { askPermission, getSnapshot, subscribe, respond, expireAll, dispose };
 }

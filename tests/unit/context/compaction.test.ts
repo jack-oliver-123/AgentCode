@@ -72,6 +72,7 @@ describe('compaction primitives', () => {
     expectTypeOf<CompactionRequest>().toEqualTypeOf<{
       trigger: 'auto' | 'manual';
       originalUserMessages: readonly string[];
+      instructions?: string;
     }>();
     expectTypeOf<CompactionResult>().toEqualTypeOf<
       | { outcome: 'compacted'; level: CompactionLevel; attempts: number }

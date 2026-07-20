@@ -355,6 +355,7 @@ export class ContextManager {
       summaryTurns,
       request.originalUserMessages,
       this._reusableSummary,
+      request.instructions,
     );
 
     if (summaryResult.kind === 'failure') {
@@ -411,6 +412,7 @@ export class ContextManager {
     turns: readonly CompleteTurn[],
     originalUserMessages: readonly string[],
     reusableSummary: string | undefined,
+    instructions: string | undefined,
   ): Promise<SummaryFallbackResult> {
     let currentTurns = [...turns];
     let attempts = 0;
@@ -433,6 +435,7 @@ export class ContextManager {
       const attempt = await this.requestSummaryOnce(
         summaryHistory,
         originalUserMessages,
+        instructions,
       );
       if (attempt.kind === 'success') {
         return {
@@ -453,6 +456,7 @@ export class ContextManager {
   private async requestSummaryOnce(
     messages: readonly ChatMessage[],
     originalUserMessages: readonly string[],
+    instructions: string | undefined,
   ): Promise<SummaryAttemptResult> {
     const request = {
       model: this.model,
@@ -460,7 +464,16 @@ export class ContextManager {
       tools: [],
       toolChoice: 'none' as const,
       thinking: { enabled: false },
-      messages: [...messages, { role: 'user' as const, content: SUMMARY_INSTRUCTION }],
+      messages: [
+        ...messages,
+        {
+          role: 'user' as const,
+          content:
+            instructions === undefined
+              ? SUMMARY_INSTRUCTION
+              : `${SUMMARY_INSTRUCTION}\n\n<manual-preservation-requirement>\n${instructions}\n</manual-preservation-requirement>`,
+        },
+      ],
       signal: AbortSignal.timeout(this.options.timeoutMs),
     };
 

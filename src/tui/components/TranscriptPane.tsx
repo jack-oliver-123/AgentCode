@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import React, { useEffect, useState, type ReactElement } from 'react';
 
-import type { ChatMessage, ChatSessionDraft } from '../../session/types.js';
+import type { ChatMessage, ChatSessionActivity, ChatSessionDraft } from '../../session/types.js';
 
 const MAX_VISIBLE_MESSAGES = 8;
 const MAX_VISIBLE_MESSAGES_WITH_DRAFT = 5;
@@ -13,6 +13,7 @@ const ACTIVITY_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧']
 export interface TranscriptPaneProps {
   messages: ChatMessage[];
   draft?: ChatSessionDraft | undefined;
+  activities?: readonly ChatSessionActivity[] | undefined;
   showThinking: boolean;
 }
 
@@ -25,7 +26,7 @@ interface DraftMessageProps {
   showThinking: boolean;
 }
 
-export function TranscriptPane({ messages, draft, showThinking }: TranscriptPaneProps): ReactElement {
+export function TranscriptPane({ messages, draft, activities = [], showThinking }: TranscriptPaneProps): ReactElement {
   const visibleMessageLimit = draft === undefined ? MAX_VISIBLE_MESSAGES : MAX_VISIBLE_MESSAGES_WITH_DRAFT;
   const hiddenMessageCount = Math.max(0, messages.length - visibleMessageLimit);
   const visibleMessages = messages.slice(-visibleMessageLimit);
@@ -45,9 +46,25 @@ export function TranscriptPane({ messages, draft, showThinking }: TranscriptPane
       {visibleMessages.map((message) => (
         <TranscriptMessage key={message.id} message={message} />
       ))}
+      {activities.slice(-4).map((activity) => (
+        <Text key={activity.id} color={activity.type === 'steer' ? 'cyan' : 'yellow'}>
+          {formatActivity(activity)}
+        </Text>
+      ))}
       {draft !== undefined ? <DraftMessage draft={draft} showThinking={showThinking} /> : null}
     </Box>
   );
+}
+
+function formatActivity(activity: ChatSessionActivity): string {
+  switch (activity.type) {
+    case 'steer':
+      return `↪ Steer: ${activity.text}`;
+    case 'stopped':
+      return '■ Run stopped';
+    case 'review':
+      return `◆ Review: ${activity.findingCount} finding(s) · ${activity.summary}`;
+  }
 }
 
 function TranscriptMessage({ message }: TranscriptMessageProps): ReactElement {
@@ -127,6 +144,9 @@ function formatDraftVisibleText(visibleText: string): string {
 function formatDraftStatus(draft: ChatSessionDraft, showThinking: boolean): string {
   if (draft.activity.type === 'tool') {
     return `Using ${draft.activity.toolName}`;
+  }
+  if (draft.activity.type === 'retry') {
+    return `Retrying ${draft.activity.attempt}/${draft.activity.maxRetries} · ${draft.activity.delayMs}ms`;
   }
 
   const hasVisibleText = draft.visibleText.length > 0;

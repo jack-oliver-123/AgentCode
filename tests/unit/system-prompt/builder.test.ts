@@ -7,7 +7,7 @@ import type { SystemPromptBuildInput, SystemPromptModule } from '../../../src/sy
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 function baseInput(overrides: Partial<SystemPromptBuildInput> = {}): SystemPromptBuildInput {
-  return { mode: 'full', turnIndex: 0, ...overrides };
+  return { mode: 'default', turnIndex: 0, ...overrides };
 }
 
 // ─── AC1: 固定模块按 order 升序拼装 + disabled ────────────────────────────
@@ -132,11 +132,11 @@ describe('buildSystemPrompt - reminderInterval', () => {
   });
 });
 
-// ─── AC6b: full mode 不含模式提醒 ─────────────────────────────────────────
+// ─── AC6b: default mode 不含模式提醒 ───────────────────────────────────────
 
-describe('buildSystemPrompt - full mode 无模式提醒', () => {
-  it('AC6b: full mode turnIndex=0 时 reminder 不含"mode"也不含"模式"', () => {
-    const result = buildSystemPrompt(baseInput({ mode: 'full', turnIndex: 0 }));
+describe('buildSystemPrompt - default mode 无模式提醒', () => {
+  it('AC6b: default mode turnIndex=0 时 reminder 不含"mode"也不含"模式"', () => {
+    const result = buildSystemPrompt(baseInput({ mode: 'default', turnIndex: 0 }));
     expect(result.reminder).not.toContain('mode');
     expect(result.reminder).not.toContain('模式');
   });

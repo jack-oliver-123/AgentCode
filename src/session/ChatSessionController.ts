@@ -6,7 +6,10 @@ import type {
   AgentLoopInput,
   AgentLoopMode,
   PlanStep,
+  SteerGuidance,
 } from '../agent/types.js';
+import type { AgentMode } from '../app/runtime/types.js';
+import type { PermissionManager } from '../app/permissions/PermissionManager.js';
 import { DEFAULT_AGENT_LOOP_CONFIG } from '../agent/types.js';
 import type { AgentConfig } from '../config/schema.js';
 import { ContextManager } from '../context/ContextManager.js';
@@ -28,6 +31,7 @@ import { cloneProviderMessage } from './archiveSchema.js';
 import type { SessionArchivePort } from './SessionArchive.js';
 import type {
   ChatMessage,
+  ChatSessionActivity,
   ChatSessionDraft,
   ChatSessionEvent,
   ChatSessionState,
@@ -52,6 +56,10 @@ export interface ChatSessionControllerOptions {
   systemPromptRegistry?: SystemPromptModule[];
   /** 权限模式覆盖（默认从 config 读取，fallback 'normal'） */
   permissionMode?: PermissionMode;
+  /** 与权限模式独立的持久 Agent 模式。 */
+  agentMode?: AgentMode;
+  /** 热更新权限管理器；存在时每次工具 preflight 都读取最新 generation。 */
+  permissionManager?: PermissionManager;
   /** 权限弹窗回调（TUI 层注入） */
   askPermission?: AskPermissionFn;
   /** 用户 home 目录（用于加载全局权限配置） */
@@ -66,11 +74,21 @@ export interface ChatSessionControllerOptions {
   sessionArchive?: SessionArchivePort;
   /** 自动笔记端口（可注入，便于测试） */
   autoNoteWriter?: AutoNoteWriterPort;
+  /** Stop 时使当前 run 的待决工具审批过期。 */
+  expireApprovals?: (runId: string) => void | Promise<void>;
 }
 
 export interface SubmitUserTextOptions {
   signal?: AbortSignal;
 }
+
+export type SessionControlAcceptance =
+  | { accepted: true }
+  | { accepted: false; reason: 'no_active_run' | 'run_ended' | 'persistence_failed' | 'empty' };
+
+export type RecordedSteerAcceptance =
+  | { accepted: true; guidance: SteerGuidance }
+  | { accepted: false; reason: 'persistence_failed' | 'empty' };
 
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
@@ -111,12 +129,19 @@ export class ChatSessionController {
   private readonly systemPromptRegistry: SystemPromptModule[] | undefined;
   /** 权限检查器（可选） */
   private readonly permissionChecker: PermissionChecker | undefined;
-  /** full 模式下的权限策略；初始 plan 配置回退到 normal */
-  private readonly fullPermissionMode: Exclude<PermissionMode, 'plan'>;
+  /** default 模式下的权限策略；旧 plan 配置仅迁移为 Agent mode。 */
+  private readonly defaultPermissionMode: Exclude<PermissionMode, 'plan'>;
+  private readonly permissionManager: PermissionManager | undefined;
   /** F1/F2/F3：上下文管理器 */
   private readonly contextManager: ContextManager;
   private readonly sessionArchive: SessionArchivePort | undefined;
   private readonly autoNoteWriter: AutoNoteWriterPort | undefined;
+  private readonly expireApprovals: ((runId: string) => void | Promise<void>) | undefined;
+  private activeAbortController: AbortController | undefined;
+  private activeRunId: string | undefined;
+  private pendingSteers: SteerGuidance[] = [];
+  private turnSteers: SteerGuidance[] = [];
+  private readonly activities: ChatSessionActivity[] = [];
   /** 当前 turn 内累计的 completion token 数 */
   private _turnCompletionTokens = 0;
 
@@ -136,10 +161,12 @@ export class ChatSessionController {
     };
     this.sessionArchive = options.sessionArchive;
     this.autoNoteWriter = options.autoNoteWriter;
+    this.expireApprovals = options.expireApprovals;
+    this.permissionManager = options.permissionManager;
 
     const configuredPermissionMode = options.permissionMode ?? this.config.permissionMode;
-    this.fullPermissionMode = configuredPermissionMode === 'plan' ? 'normal' : configuredPermissionMode;
-    this.currentMode = configuredPermissionMode === 'plan' ? 'plan' : 'full';
+    this.defaultPermissionMode = configuredPermissionMode === 'plan' ? 'normal' : configuredPermissionMode;
+    this.currentMode = options.agentMode ?? (configuredPermissionMode === 'plan' ? 'plan' : 'default');
 
     // 系统提示初始化
     this.buildSystemPromptFn = options.buildSystemPrompt ?? buildSystemPrompt;
@@ -198,13 +225,150 @@ export class ChatSessionController {
     return this.snapshotState();
   }
 
-  /** 切换运行模式（full ↔ plan），返回切换后的状态事件 */
+  /** 切换运行模式（default ↔ plan），返回切换后的状态事件 */
   toggleMode(): ChatSessionEvent {
-    const nextMode = this.currentMode === 'full' ? 'plan' : 'full';
+    const nextMode = this.currentMode === 'default' ? 'plan' : 'default';
     this.setLoopMode(nextMode);
-    const label = nextMode === 'plan' ? 'plan' : 'full';
+    const label = nextMode === 'plan' ? 'plan' : 'default';
     this.notice = `Switched to ${label} mode`;
     return this.createStateChangedEvent();
+  }
+
+  setAgentMode(mode: AgentMode): ChatSessionEvent {
+    this.setLoopMode(mode);
+    this.notice = `Switched to ${mode} mode`;
+    return this.createStateChangedEvent();
+  }
+
+  getActiveRun(): { id: string; phase: 'streaming' } | undefined {
+    return this.status === 'streaming' && this.activeRunId !== undefined
+      ? { id: this.activeRunId, phase: 'streaming' }
+      : undefined;
+  }
+
+  getContextStatus(): { estimatedTokens: number; contextWindow: number; compaction: string } {
+    return {
+      estimatedTokens: this.contextManager.estimated,
+      contextWindow: this.contextManager.contextWindow,
+      compaction: this.contextManager.circuitOpen ? 'circuit_open' : 'ready',
+    };
+  }
+
+  async persistReviewResult(reviewId: string, content: unknown): Promise<void> {
+    const createdAt = this.now();
+    await this.sessionArchive?.appendActivity?.({
+      type: 'review.result',
+      reviewId,
+      content,
+      createdAt,
+    });
+    this.activities.push({
+      id: this.createIdFn('activity'),
+      type: 'review',
+      reviewId,
+      summary: reviewSummary(content),
+      findingCount: reviewFindingCount(content),
+      createdAt,
+    });
+  }
+
+  async steer(text: string): Promise<SessionControlAcceptance> {
+    const normalized = text.trim();
+    if (normalized.length === 0) return { accepted: false, reason: 'empty' };
+    const runId = this.activeRunId;
+    if (this.status !== 'streaming' || runId === undefined) return { accepted: false, reason: 'no_active_run' };
+    const guidance: SteerGuidance = {
+      id: this.createIdFn('steer'),
+      text: normalized,
+      createdAt: this.now(),
+    };
+    try {
+      await this.sessionArchive?.appendActivity?.({ type: 'steer', ...guidance, runId });
+    } catch {
+      return { accepted: false, reason: 'persistence_failed' };
+    }
+    if (this.status !== 'streaming' || this.activeRunId !== runId) {
+      return { accepted: false, reason: 'run_ended' };
+    }
+    this.pendingSteers.push(guidance);
+    this.turnSteers.push(guidance);
+    this.activities.push({ id: guidance.id, type: 'steer', text: guidance.text, createdAt: guidance.createdAt });
+    return { accepted: true };
+  }
+
+  async recordExternalSteer(runId: string, text: string): Promise<RecordedSteerAcceptance> {
+    const normalized = text.trim();
+    if (normalized.length === 0) return { accepted: false, reason: 'empty' };
+    const guidance: SteerGuidance = {
+      id: this.createIdFn('steer'),
+      text: normalized,
+      createdAt: this.now(),
+    };
+    try {
+      await this.sessionArchive?.appendActivity?.({ type: 'steer', ...guidance, runId });
+    } catch {
+      return { accepted: false, reason: 'persistence_failed' };
+    }
+    this.activities.push({ id: guidance.id, type: 'steer', text: guidance.text, createdAt: guidance.createdAt });
+    return { accepted: true, guidance };
+  }
+
+  async stopRun(): Promise<SessionControlAcceptance> {
+    const runId = this.activeRunId;
+    if (this.status !== 'streaming' || runId === undefined || this.activeAbortController === undefined) {
+      return { accepted: false, reason: 'no_active_run' };
+    }
+    this.activeAbortController.abort();
+    await this.expireApprovals?.(runId);
+    this.activities.push({ id: this.createIdFn('activity'), type: 'stopped', runId, createdAt: this.now() });
+    try {
+      await this.sessionArchive?.appendActivity?.({ type: 'run.stopped', runId, createdAt: this.now() });
+    } catch (error) {
+      console.warn('[SessionArchive] Stop activity persistence failed', error);
+    }
+    return { accepted: true };
+  }
+
+  async *compactContext(instructions?: string): AsyncIterable<ChatSessionEvent> {
+    if (this.status === 'streaming') {
+      this.lastError = {
+        code: 'provider_error',
+        message: 'Cannot compact while a response is streaming.',
+        retryable: false,
+      };
+      yield this.createStateChangedEvent();
+      return;
+    }
+
+    const previousStatus = this.status;
+    const previousLastError = this.lastError;
+    this.status = 'streaming';
+    try {
+      yield this.createStateChangedEvent();
+      try {
+        await this.contextManager.offloadToolResults(this.providerContext);
+        const result = await this.contextManager.compact(this.providerContext, {
+          trigger: 'manual',
+          originalUserMessages: this.getOriginalUserMessages(),
+          ...(instructions !== undefined ? { instructions } : {}),
+        });
+        if (result.outcome === 'compacted') {
+          this.notice = '上下文已压缩';
+        } else if (result.outcome === 'emergency_fallback') {
+          this.notice = '上下文已紧急压缩，摘要失败后已使用机械兜底';
+        } else if (result.outcome === 'skipped' && result.reason === 'no_history') {
+          this.notice = '没有可压缩的历史';
+        } else {
+          this.notice = '上下文压缩失败，请稍后重试';
+        }
+      } catch {
+        this.notice = '上下文压缩失败，请稍后重试';
+      }
+    } finally {
+      this.status = previousStatus;
+      this.lastError = previousLastError;
+    }
+    yield this.createStateChangedEvent();
   }
 
   async *submitUserText(text: string, options: SubmitUserTextOptions = {}): AsyncIterable<ChatSessionEvent> {
@@ -221,46 +385,15 @@ export class ChatSessionController {
     // 清除上一次切换产生的瞬态通知
     this.notice = undefined;
 
-    // 识别命令（/compact、/plan、/do）
-    const { mode, actualText, isCompact } = this.parseCommand(text);
-
-    // /compact 在写入 UI 历史前拦截，且始终由 ContextManager 决定压缩档位。
-    if (isCompact === true) {
-      const previousStatus = this.status;
-      const previousLastError = this.lastError;
-      this.status = 'streaming';
-      try {
-        yield this.createStateChangedEvent();
-        try {
-          await this.contextManager.offloadToolResults(this.providerContext);
-          const result = await this.contextManager.compact(this.providerContext, {
-            trigger: 'manual',
-            originalUserMessages: this.getOriginalUserMessages(),
-          });
-          if (result.outcome === 'compacted') {
-            this.notice = '上下文已压缩';
-          } else if (result.outcome === 'emergency_fallback') {
-            this.notice = '上下文已紧急压缩，摘要失败后已使用机械兜底';
-          } else if (result.outcome === 'skipped' && result.reason === 'no_history') {
-            this.notice = '没有可压缩的历史';
-          } else {
-            this.notice = '上下文压缩失败，请稍后重试';
-          }
-        } catch {
-          this.notice = '上下文压缩失败，请稍后重试';
-        }
-      } finally {
-        this.status = previousStatus;
-        this.lastError = previousLastError;
-      }
-      yield this.createStateChangedEvent();
-      return;
-    }
-
-    this.setLoopMode(mode);
     this._turnCompletionTokens = 0;
+    this.pendingSteers = [];
+    this.turnSteers = [];
+    const runId = this.createIdFn('run');
+    const abortController = new AbortController();
+    this.activeRunId = runId;
+    this.activeAbortController = abortController;
 
-    const userMessage = this.createMessage('user', actualText);
+    const userMessage = this.createMessage('user', text);
     this.messages.push(userMessage);
     this.draft = {
       id: this.createIdFn('draft'),
@@ -316,25 +449,32 @@ export class ChatSessionController {
         originalUserMessages: [...this.getOriginalUserMessages(), toProviderMessage(userMessage).content],
       });
 
+      const signal = options.signal === undefined
+        ? abortController.signal
+        : AbortSignal.any([options.signal, abortController.signal]);
       const input: AgentLoopInput = {
         contextMessages: [...this.providerContext],
         userMessage: toProviderMessage(userMessage),
         mode: this.currentMode,
         ...(reminder.length > 0 ? { reminder } : {}),
-        ...(options.signal !== undefined ? { signal: options.signal } : {}),
+        signal,
+        consumeSteer: () => this.pendingSteers.splice(0),
       };
 
       const deps: AgentLoopDeps = {
         provider: this.provider,
         toolRegistry: registry ?? createEmptyRegistry(),
-        createToolContext: (signal?: AbortSignal): ToolExecutionContext => ({
-          cwd: this.cwd,
-          timeoutMs: this.toolTimeoutMs,
-          secrets: [this.config.apiKey, ...this.toolSecrets],
-          maxOutputBytes: this.maxToolOutputBytes,
-          ...(signal !== undefined ? { signal } : {}),
-          ...(this.permissionChecker !== undefined ? { permissionChecker: this.permissionChecker } : {}),
-        }),
+        createToolContext: (signal?: AbortSignal): ToolExecutionContext => {
+          const permissionChecker = this.currentPermissionChecker();
+          return {
+            cwd: this.cwd,
+            timeoutMs: this.toolTimeoutMs,
+            secrets: [this.config.apiKey, ...this.toolSecrets],
+            maxOutputBytes: this.maxToolOutputBytes,
+            ...(signal !== undefined ? { signal } : {}),
+            ...(permissionChecker !== undefined ? { permissionChecker } : {}),
+          };
+        },
         config: this.agentLoopConfig,
         model: this.config.model,
         thinking: this.config.thinking,
@@ -348,8 +488,18 @@ export class ChatSessionController {
         }
       }
     } catch (error) {
-      this.failTurn(userMessage, toPublicError(error));
+      if (abortController.signal.aborted) {
+        await this.completeTurn(userMessage, '', [], 'stopped');
+      } else {
+        this.failTurn(userMessage, toPublicError(error));
+      }
       yield this.createStateChangedEvent();
+    } finally {
+      if (this.activeRunId === runId) {
+        this.activeRunId = undefined;
+        this.activeAbortController = undefined;
+        this.pendingSteers = [];
+      }
     }
   }
 
@@ -408,7 +558,21 @@ export class ChatSessionController {
         return undefined;
 
       case 'loop.retrying':
-        // 重试中：更新 draft activity 提示用户
+        {
+          const draft = this.requireDraft();
+          this.draft = {
+            ...draft,
+            activity: {
+              type: 'retry',
+              attempt: event.attempt,
+              maxRetries: event.maxRetries,
+              delayMs: event.delayMs,
+            },
+          };
+          return this.createStateChangedEvent();
+        }
+
+      case 'steer.consumed':
         return undefined;
 
       case 'loop.completed':
@@ -416,7 +580,11 @@ export class ChatSessionController {
           userMessage,
           event.finalText,
           event.turnMessages,
-          event.reason === 'max_iterations' ? 'max_iterations' : undefined,
+          event.reason === 'cancelled'
+            ? 'stopped'
+            : event.reason === 'max_iterations'
+              ? 'max_iterations'
+              : undefined,
         );
         return this.createStateChangedEvent();
 
@@ -439,27 +607,35 @@ export class ChatSessionController {
     }
   }
 
-  private parseCommand(text: string): { mode: AgentLoopMode; actualText: string; isCompact?: boolean } {
-    const trimmed = text.trim();
-    if (/^\/compact\b/i.test(trimmed)) {
-      return { mode: this.currentMode, actualText: '', isCompact: true };
-    }
-    if (/^\/plan\b/i.test(trimmed)) {
-      return { mode: 'plan', actualText: trimmed.slice(5).trim() || trimmed };
-    }
-    if (/^\/do\b/i.test(trimmed)) {
-      return { mode: 'full', actualText: trimmed.slice(3).trim() || trimmed };
-    }
-    return { mode: this.currentMode, actualText: text };
-  }
-
   private setLoopMode(mode: AgentLoopMode): void {
     this.currentMode = mode;
     this.permissionChecker?.setMode(this.resolvePermissionMode(mode));
+    void this.permissionManager?.setModeCap({ agentMode: mode, reviewActive: false });
   }
 
   private resolvePermissionMode(mode: AgentLoopMode): PermissionMode {
-    return mode === 'plan' ? 'plan' : this.fullPermissionMode;
+    return mode === 'plan' ? 'plan' : this.defaultPermissionMode;
+  }
+
+  private currentPermissionChecker(): PermissionChecker | undefined {
+    if (this.permissionManager === undefined) return this.permissionChecker;
+    const manager = this.permissionManager;
+    return {
+      check: async (input) => (
+        await manager.preflight(input, {
+          ...(this.activeRunId !== undefined ? { activeRunId: this.activeRunId } : {}),
+        })
+      ).decision,
+      addSessionRule: (rule) => {
+        const ruleText = rule.argPattern === undefined ? rule.toolName : `${rule.toolName}(${rule.argPattern})`;
+        void manager.addSessionRule({ rule: ruleText, action: rule.action });
+      },
+      getMode: () => {
+        const mode = manager.snapshot().effectiveMode;
+        return mode === 'readonly' ? 'plan' : mode;
+      },
+      setMode: () => undefined,
+    };
   }
 
   private async completeTurn(
@@ -505,7 +681,7 @@ export class ChatSessionController {
       try {
         void this.autoNoteWriter
           .maybeUpdate({
-            userText: toProviderMessage(userMessage).content,
+            userText: formatAutoNoteInput(toProviderMessage(userMessage).content, this.turnSteers),
             assistantText: finalText,
             completionTokens,
           })
@@ -518,8 +694,9 @@ export class ChatSessionController {
     }
 
     this.toolActivities = [];
+    this.turnSteers = [];
     this.draft = undefined;
-    this.status = 'idle';
+    this.status = finishReason === 'stopped' ? 'stopped' : 'idle';
     this.lastError = undefined;
   }
 
@@ -592,6 +769,10 @@ export class ChatSessionController {
       state.notice = this.notice;
     }
 
+    if (this.activities.length > 0) {
+      state.activities = this.activities.map((activity) => ({ ...activity }));
+    }
+
     return state;
   }
 }
@@ -637,6 +818,11 @@ function cloneMessage(message: ChatMessage): ChatMessage {
   return cloned;
 }
 
+function formatAutoNoteInput(initialUserText: string, steers: readonly SteerGuidance[]): string {
+  if (steers.length === 0) return initialUserText;
+  return `${initialUserText}\n\n[本轮 Steer]\n${steers.map((steer, index) => `${index + 1}. ${steer.text}`).join('\n')}`;
+}
+
 function createEmptyRegistry(): ToolRegistry {
   return {
     list: () => [],
@@ -644,4 +830,16 @@ function createEmptyRegistry(): ToolRegistry {
     getProviderDeclarations: () => [],
     filterByRisk: () => createEmptyRegistry(),
   };
+}
+
+function reviewSummary(content: unknown): string {
+  return typeof content === 'object' && content !== null && 'summary' in content && typeof content.summary === 'string'
+    ? content.summary
+    : 'Review completed.';
+}
+
+function reviewFindingCount(content: unknown): number {
+  return typeof content === 'object' && content !== null && 'findings' in content && Array.isArray(content.findings)
+    ? content.findings.length
+    : 0;
 }

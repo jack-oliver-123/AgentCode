@@ -39,7 +39,13 @@ export const DEFAULT_AGENT_LOOP_CONFIG: AgentLoopConfig = {
 // ─── 输入 ─────────────────────────────────────────────────────────────
 
 /** Agent Loop 运行模式 */
-export type AgentLoopMode = 'full' | 'plan';
+export type AgentLoopMode = 'default' | 'plan';
+
+export interface SteerGuidance {
+  id: string;
+  text: string;
+  createdAt: number;
+}
 
 /** Agent Loop 输入 */
 export interface AgentLoopInput {
@@ -47,12 +53,14 @@ export interface AgentLoopInput {
   contextMessages: ProviderMessage[];
   /** 当前用户消息 */
   userMessage: ProviderMessage;
-  /** 运行模式：full 注入全部工具，plan 只注入 read 类 + submit_plan */
+  /** 运行模式：default 注入全部工具，plan 只注入 read 类 + submit_plan */
   mode: AgentLoopMode;
   /** 当前轮 reminder 文本（注入到 userMessage 前部） */
   reminder?: string;
   /** 取消信号 */
   signal?: AbortSignal;
+  /** 在每个安全模型边界提取运行中追加的 Steer 指导。 */
+  consumeSteer?: () => readonly SteerGuidance[];
 }
 
 /** Agent Loop 依赖（注入） */
@@ -90,6 +98,7 @@ export type AgentLoopEvent =
   | AgentLoopPlanSubmitted
   | AgentLoopTokenUsage
   | AgentLoopRetrying
+  | AgentLoopSteerConsumed
   | AgentLoopCompleted
   | AgentLoopFailed;
 
@@ -165,6 +174,11 @@ export interface AgentLoopRetrying {
   error: PublicError;
   /** 所属迭代轮次 */
   iteration: number;
+}
+
+export interface AgentLoopSteerConsumed {
+  type: 'steer.consumed';
+  items: readonly SteerGuidance[];
 }
 
 export interface AgentLoopCompleted {

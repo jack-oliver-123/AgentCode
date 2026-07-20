@@ -1,86 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 
-import type { ChatSessionController } from '../session/ChatSessionController.js';
-import type { ChatSessionState } from '../session/types.js';
+import type { AppRuntime } from '../app/runtime/AppRuntime.js';
+import type { InputIntent, InputRouteResult, InputRouter } from '../app/runtime/InputRouter.js';
+import type { AppSnapshot } from '../app/runtime/types.js';
 
-const NOTICE_AUTO_DISMISS_MS = 3000;
-
-export interface UseChatControllerResult {
-  state: ChatSessionState;
-  submitText(text: string): void;
-  toggleMode(): void;
+export interface UseAppRuntimeResult {
+  snapshot: AppSnapshot;
+  routeInput(text: string, intent: InputIntent): Promise<InputRouteResult>;
 }
 
-export function useChatController(controller: ChatSessionController): UseChatControllerResult {
-  const [state, setState] = useState(() => controller.getState());
-  const activeTurnAbortController = useRef<AbortController | undefined>(undefined);
-  const generation = useRef(0);
-  const noticeDismissTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  useEffect(() => {
-    const currentGeneration = generation.current + 1;
-    generation.current = currentGeneration;
-    setState(controller.getState());
-
-    return () => {
-      if (generation.current === currentGeneration) {
-        generation.current += 1;
-      }
-
-      activeTurnAbortController.current?.abort();
-      activeTurnAbortController.current = undefined;
-
-      if (noticeDismissTimer.current !== undefined) {
-        clearTimeout(noticeDismissTimer.current);
-        noticeDismissTimer.current = undefined;
-      }
-    };
-  }, [controller]);
-
-  const submitText = useCallback(
-    (text: string) => {
-      const turnGeneration = generation.current;
-      const turnAbortController = new AbortController();
-      activeTurnAbortController.current = turnAbortController;
-
-      void (async () => {
-        try {
-          for await (const event of controller.submitUserText(text, { signal: turnAbortController.signal })) {
-            if (generation.current === turnGeneration) {
-              setState(event.state);
-            }
-          }
-        } finally {
-          if (activeTurnAbortController.current === turnAbortController) {
-            activeTurnAbortController.current = undefined;
-          }
-        }
-      })();
-    },
-    [controller],
+/** React only observes the authoritative AppRuntime snapshot and emits input intents. */
+export function useAppRuntime(
+  runtime: AppRuntime,
+  inputRouter: Pick<InputRouter, 'route'>,
+): UseAppRuntimeResult {
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => runtime.subscribe(() => onStoreChange()),
+    [runtime],
   );
-
-  const toggleMode = useCallback(() => {
-    const event = controller.toggleMode();
-    setState(event.state);
-
-    // 自动消除 notice
-    if (noticeDismissTimer.current !== undefined) {
-      clearTimeout(noticeDismissTimer.current);
-    }
-    noticeDismissTimer.current = setTimeout(() => {
-      noticeDismissTimer.current = undefined;
-      setState((prev) => {
-        if (prev.notice === undefined) return prev;
-        const { notice: _, ...rest } = prev;
-        return rest as typeof prev;
-      });
-    }, NOTICE_AUTO_DISMISS_MS);
-  }, [controller]);
-
-  return {
-    state,
-    submitText,
-    toggleMode,
-  };
+  const snapshot = useSyncExternalStore(subscribe, runtime.getSnapshot, runtime.getSnapshot);
+  const routeInput = useCallback(
+    (text: string, intent: InputIntent) => inputRouter.route(text, intent),
+    [inputRouter],
+  );
+  return { snapshot, routeInput };
 }

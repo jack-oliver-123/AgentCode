@@ -62,6 +62,12 @@ export async function* runAgentLoop(
 
     yield { type: 'iteration.start', iteration, maxIterations: config.maxIterations };
 
+    const steerBeforeRequest = input.consumeSteer?.() ?? [];
+    if (steerBeforeRequest.length > 0) {
+      messages.push({ role: 'user', content: formatSteerGuidance(steerBeforeRequest) });
+      yield { type: 'steer.consumed', items: steerBeforeRequest };
+    }
+
     // 检查 signal — 可能在迭代之间被取消
     if (signal?.aborted) {
       yield {
@@ -100,6 +106,7 @@ export async function* runAgentLoop(
     }
 
     const { turnText, turnToolCalls, promptTokensDelta, completionTokensDelta } = streamResult;
+    const steerAfterResponse = input.consumeSteer?.() ?? [];
 
     // 累积 token 计数并 yield
     if (promptTokensDelta > 0) totalPromptTokens += promptTokensDelta;
@@ -116,6 +123,12 @@ export async function* runAgentLoop(
 
     // 停止条件判断
     const hasToolCalls = turnToolCalls.length > 0;
+    if (!hasToolCalls && steerAfterResponse.length > 0) {
+      messages.push({ role: 'assistant', content: turnText });
+      messages.push({ role: 'user', content: formatSteerGuidance(steerAfterResponse) });
+      yield { type: 'steer.consumed', items: steerAfterResponse };
+      continue;
+    }
     const decision = checkStopCondition({
       iteration,
       maxIterations: config.maxIterations,
@@ -217,6 +230,11 @@ export async function* runAgentLoop(
           isError: !result.ok,
         };
         messages.push(toolResultMessage);
+      }
+
+      if (steerAfterResponse.length > 0) {
+        messages.push({ role: 'user', content: formatSteerGuidance(steerAfterResponse) });
+        yield { type: 'steer.consumed', items: steerAfterResponse };
       }
 
       // 检查 submit_plan
@@ -349,6 +367,10 @@ async function* streamWithRetry(
       streamError = toPublicError(error);
     }
 
+    if (signal?.aborted) {
+      return { turnText, turnToolCalls: [], promptTokensDelta, completionTokensDelta };
+    }
+
     // 成功路径
     if (streamError === undefined && receivedComplete) {
       return { turnText, turnToolCalls, promptTokensDelta, completionTokensDelta };
@@ -406,12 +428,17 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 // ─── 辅助函数 ─────────────────────────────────────────────────────────
 
-function resolveRegistry(registry: ToolRegistry, mode: 'full' | 'plan'): ToolRegistry {
-  if (mode === 'full') {
+function resolveRegistry(registry: ToolRegistry, mode: 'default' | 'plan'): ToolRegistry {
+  if (mode === 'default') {
     return registry;
   }
   // Plan Mode：只注入 read 类工具（submit_plan 的 risk 是 read，自然包含在内）
   return registry.filterByRisk(['read']);
+}
+
+function formatSteerGuidance(items: readonly import('./types.js').SteerGuidance[]): string {
+  const lines = items.map((item, index) => `${index + 1}. ${item.text}`);
+  return `<steer-guidance>\n${lines.join('\n')}\n</steer-guidance>`;
 }
 
 function serializeToolResult(result: ToolExecutionResult): string {

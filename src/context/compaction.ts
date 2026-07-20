@@ -24,6 +24,8 @@ export type CompactionLevel = 'normal' | 'force' | 'emergency';
 export interface CompactionRequest {
   trigger: CompactionTrigger;
   originalUserMessages: readonly string[];
+  /** 仅本次手动压缩使用的附加保留要求。 */
+  instructions?: string;
 }
 
 export type CompactionResult =

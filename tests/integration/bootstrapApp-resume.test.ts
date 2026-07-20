@@ -12,6 +12,8 @@ import {
   type ChatSessionControllerOptions,
 } from '../../src/session/ChatSessionController.js';
 import type { RestoredSession } from '../../src/session/SessionRestore.js';
+import { SessionQueueStore } from '../../src/app/session/SessionQueueStore.js';
+import type { AppProps } from '../../src/tui/App.js';
 import { createTempWorkspace, writeAgentConfig } from '../helpers/tempConfig.js';
 
 describe('bootstrapApp task09 resume 编排', () => {
@@ -166,6 +168,86 @@ api_key: sk-test-bootstrap-nested
 
       expect(loadedCwd).toBe(workspace.project);
       expect(sessionsDir).toBe(join(workspace.project, '.agentcode', 'sessions'));
+    } finally {
+      await rm(workspace.root, { recursive: true, force: true });
+    }
+  });
+
+  it('restores the session Queue as paused without automatically starting it', async () => {
+    const workspace = await createTempWorkspace();
+    const restored = createRestoredSession();
+    const queue = await SessionQueueStore.open({
+      storageRoot: workspace.project,
+      sessionId: restored.source!.sessionId,
+    });
+    await queue.add('pending after restart', 'plan');
+    let renderedNode: React.ReactElement<AppProps> | undefined;
+    await writeAgentConfig(
+      workspace.project,
+      `
+protocol: openai
+model: gpt-4.1
+base_url: https://api.openai.com/v1
+api_key: sk-test-bootstrap-queue
+`,
+    );
+
+    try {
+      await bootstrapApp(
+        {
+          cwd: workspace.project,
+          homeDir: workspace.home,
+          resumeMode: true,
+          renderApp: (node) => {
+            if (React.isValidElement<AppProps>(node)) renderedNode = node;
+            return createFakeInkInstance();
+          },
+        },
+        {
+          pickSession: async () => restored,
+          maybeClean: async () => undefined,
+          createSessionArchive: () => ({ append: async () => undefined }),
+          createAutoNoteWriter: () => ({ maybeUpdate: async () => undefined }),
+        },
+      );
+
+      expect(renderedNode?.props.runtime.getSnapshot()).toMatchObject({
+        session: { id: restored.source!.sessionId, resumed: true },
+        queue: { count: 1, paused: true, draining: false },
+      });
+      expect(queue.snapshot().items[0]).toMatchObject({ text: 'pending after restart', agentMode: 'plan' });
+    } finally {
+      await rm(workspace.root, { recursive: true, force: true });
+    }
+  });
+
+  it('treats command registry startup conflicts as fatal before rendering', async () => {
+    const workspace = await createTempWorkspace();
+    const renderApp = vi.fn(() => createFakeInkInstance());
+    await writeAgentConfig(
+      workspace.project,
+      `
+protocol: openai
+model: gpt-4.1
+base_url: https://api.openai.com/v1
+api_key: sk-test-bootstrap-registry
+`,
+    );
+
+    try {
+      await expect(bootstrapApp(
+        {
+          cwd: workspace.project,
+          homeDir: workspace.home,
+          renderApp,
+        },
+        {
+          createCommandRegistry: () => {
+            throw new Error('command registry conflict');
+          },
+        },
+      )).rejects.toThrow('command registry conflict');
+      expect(renderApp).not.toHaveBeenCalled();
     } finally {
       await rm(workspace.root, { recursive: true, force: true });
     }

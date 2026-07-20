@@ -35,8 +35,8 @@ export function buildSystemPrompt(
     parts.push(envLine);
   }
 
-  // 2. 模式指令（full 模式跳过）
-  if (input.mode !== 'full') {
+  // 2. 模式指令（default 模式跳过）
+  if (input.mode !== 'default') {
     const interval = Math.max(1, Math.floor(input.reminderInterval ?? 4));
     const isFullReminder = input.turnIndex === 0 || input.turnIndex % interval === 0;
     if (isFullReminder) {
